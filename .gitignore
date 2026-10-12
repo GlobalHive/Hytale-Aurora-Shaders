@@ -5,6 +5,8 @@ dist/
 tools/zig/
 install.config
 shaderpack/hook.log
+shaderpack/shot.bmp
+shaderpack/_shot
 shaderpack/errors/
 shaderpack/dump/
 shaderpack/programs/_*
@@ -14,6 +16,7 @@ shaderpack/programs/_*
 shaderpack/original/
 shaderpack/index.txt
 shaderpack/programs/MapChunkFS.glsl
+shaderpack/programs/MapChunkVS.glsl
 
 # The unmodified original pack, kept locally for reference only
 reference/
@@ -22,3 +25,4 @@ reference/
 tools/focus_game.ps1
 tools/game_input.ps1
 tools/grab_game.ps1
+tools/shot.ps1

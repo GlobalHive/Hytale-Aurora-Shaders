@@ -1,4 +1,5 @@
 #version 410 core
+#extension GL_ARB_shader_image_load_store : enable
 
 // Aurora Shaders for Hytale - deferred lighting.
 // Replaces Hytale's albedo * (light + ambient) * shadow with a full lighting model,
@@ -15,6 +16,9 @@
 #include "AU_Rainbow.glsl"
 #if AU_PRESET >= 2 || AU_RAIN_PUDDLES
 #include "AU_RTX.glsl"
+#endif
+#if AU_VOXELS
+#include "AU_Voxel.glsl"
 #endif
 
 #ifndef INPUT_NORMALS_IN_WS
@@ -126,6 +130,7 @@ void main()
 
     float dither = GetDither(gl_FragCoord.xy);
 
+
     // Material classes from Hytale's G-buffer flags:
     //  bloom      -> emissive (no shadows, glows)
     //  no SSAO    -> foliage / wind-animated blocks: subsurface scattering, no side shading
@@ -142,6 +147,10 @@ void main()
         noDirectionalShading = !axisAligned;
     }
 #endif
+#if AU_VOXELS
+    AU_VoxFeed(playerPos, normal, albedo, subsurfaceMode != 0 || !hasSSAO, hasBloom, fract(dither * 7.31 + float(uHookFrame % 3600) * 0.137));
+#endif
+
     // Emissive (lava, flames, crystals): brighter texels glow more.
     if (hasBloom) { emission = AU_EMISSION_STRENGTH * mix(0.5, 1.6, smoothstep(0.15, 0.9, GetLuminance(albedo))); shadow = 1.0; }
 
@@ -167,7 +176,11 @@ void main()
     float giVisibility = 1.0;
     vec3 gi = vec3(0.0);
     if (!hasBloom) {
+#if AU_VOXELS
+        gi = AU_GetVoxelGI(uDepthTexture, playerPos, normal, giVisibility);
+#else
         gi = AU_GetSSGI(uDepthTexture, playerPos, normal, dither, giVisibility);
+#endif
         // AO darkens indirect light; where the sun hits, direct light dominates.
         aoUse *= mix(1.0, giVisibility, AU_RTX_GI_AO * (1.0 - 0.75 * shadow));
     }
@@ -268,6 +281,22 @@ void main()
     color = sqrt(GetVolumetricLight(playerPos / max(lViewPos, 0.0001), lViewPos, false, dither) * 3.0);
 #elif AU_DEBUG_CLASS == 4
     color = fragTexCoords.x < 0.5 ? rawStaticLight : blockLight;
+#endif
+#if AU_VOXELS && AU_VOXEL_DEBUG
+    {
+        // Voxel grid debug: what the path tracer sees, cast from the camera. Magenta = block
+        // never seen on screen (no colour yet), green tint = leaves, blue tint = small model.
+        ivec3 hb; vec3 hn; float ht; uint hv;
+        vec3 dbg = vec3(0.02, 0.03, 0.08);
+        if (AU_VoxTrace(CameraPosition, normalize(playerPos), 250.0, 512, 0.99, hb, hn, ht, hv)) {
+            vec4 vc = AU_VoxGetColor(hb);
+            vec3 base = vc.a > 0.5 ? vc.rgb : vec3(0.9, 0.1, 0.9);
+            if ((hv & 3u) == AU_VOX_POROUS) base *= vec3(0.5, 1.0, 0.5);
+            if ((hv & AU_VOX_SMALL) != 0u) base *= vec3(0.5, 0.6, 1.0);
+            dbg = base * (0.3 + 0.7 * max(dot(hn, sunVec), 0.0) + 0.15 * hn.y) * 2.0;
+        }
+        color = AU_VOXEL_DEBUG == 1 ? dbg : mix(color, dbg, 0.5);
+    }
 #endif
     outColor = vec4(color, packGBufferMeta(hasSSAO, hasBloom));
 }

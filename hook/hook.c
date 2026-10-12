@@ -425,6 +425,7 @@ typedef struct {
     GLint ctexLoc[8];
     GLint fwdLoc[16];
     GLint locFrame, locTime, locWetness;
+    GLint locVoxGeo, locVoxCol;
     int shareGen, shareSrc;  // cached: is this program the source of a texture share
 } ProgRec;
 
@@ -1208,6 +1209,100 @@ static void ensure_textures(void)
 }
 
 // ----------------------------------------------------------------------------------------
+// Voxel grid for the path tracer (shaderpack/include/AU_Voxel.glsl): two 3D images that
+// live for the whole session, auVoxGeo (R32UI) on image unit 6 and auVoxCol (RGBA8) on
+// unit 7. The game only uses image units 0-1 (its OIT k-buffer). Programs that declare
+// those images get the units assigned, and a memory barrier separates the passes that
+// write the grid (MapChunk) from the ones that read it.
+
+#define GL_TEXTURE_3D 0x806F
+#define GL_TEXTURE_BINDING_3D 0x806A
+#define GL_TEXTURE_MAX_LEVEL 0x813D
+#define GL_R32UI 0x8236
+#define GL_RED_INTEGER 0x8D94
+#define GL_UNSIGNED_INT 0x1405
+#define GL_READ_WRITE 0x88BA
+#define GL_PIXEL_UNPACK_BUFFER 0x88EC
+#define GL_PIXEL_UNPACK_BUFFER_BINDING 0x88EF
+#define GL_SHADER_IMAGE_ACCESS_BARRIER_BIT 0x20
+#define VOX_X 256
+#define VOX_Y 128
+#define VOX_Z 256
+#define VOX_UNIT_GEO 6
+#define VOX_UNIT_COL 7
+
+typedef void (APIENTRY *PFN_glTexImage3D)(GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *);
+typedef void (APIENTRY *PFN_glBindImageTexture)(GLuint, GLuint, GLint, GLboolean, GLint, GLenum, GLenum);
+typedef void (APIENTRY *PFN_glMemoryBarrier)(GLuint);
+typedef void (APIENTRY *PFN_glBindBuffer)(GLenum, GLuint);
+typedef GLenum (APIENTRY *PFN_glGetError)(void);
+static PFN_glBindImageTexture r_glBindImageTexture;
+static PFN_glMemoryBarrier r_glMemoryBarrier;
+static GLuint g_voxTex[2];
+static int g_voxState;            // 0 not created yet, 1 ready, -1 unavailable
+static char g_voxLastUser[64];    // pname of the last program that used the grid
+
+static void vox_create(void)
+{
+    g_voxState = -1;
+    PFN_glTexImage3D img3d = (PFN_glTexImage3D)real_wglGetProcAddress("glTexImage3D");
+    PFN_glBindBuffer bindBuf = (PFN_glBindBuffer)real_wglGetProcAddress("glBindBuffer");
+    PFN_glGenTextures gen = (PFN_glGenTextures)GetProcAddress(g_real, "glGenTextures");
+    PFN_glTexParameteri par = (PFN_glTexParameteri)GetProcAddress(g_real, "glTexParameteri");
+    PFN_glGetError getErr = (PFN_glGetError)GetProcAddress(g_real, "glGetError");
+    r_glBindImageTexture = (PFN_glBindImageTexture)real_wglGetProcAddress("glBindImageTexture");
+    r_glMemoryBarrier = (PFN_glMemoryBarrier)real_wglGetProcAddress("glMemoryBarrier");
+    if (!img3d || !bindBuf || !r_glBindImageTexture || !r_glMemoryBarrier) { logf_("voxels: image load/store not available"); return; }
+    void *zero = calloc((size_t)VOX_X * VOX_Y * VOX_Z, 4);
+    if (!zero) return;
+    while (getErr() != 0) {}
+    GLint prevTex = 0, prevPbo = 0;
+    r_glGetIntegerv(GL_TEXTURE_BINDING_3D, &prevTex);
+    r_glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, &prevPbo);
+    if (prevPbo) bindBuf(GL_PIXEL_UNPACK_BUFFER, 0);
+    gen(2, g_voxTex);
+    for (int i = 0; i < 2; i++) {
+        r_glBindTexture(GL_TEXTURE_3D, g_voxTex[i]);
+        par(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        par(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        par(GL_TEXTURE_3D, GL_TEXTURE_MAX_LEVEL, 0);
+        if (i == 0) img3d(GL_TEXTURE_3D, 0, GL_R32UI, VOX_X, VOX_Y, VOX_Z, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, zero);
+        else img3d(GL_TEXTURE_3D, 0, GL_RGBA8, VOX_X, VOX_Y, VOX_Z, 0, GL_RGBA, GL_UNSIGNED_BYTE, zero);
+    }
+    r_glBindTexture(GL_TEXTURE_3D, (GLuint)prevTex);
+    if (prevPbo) bindBuf(GL_PIXEL_UNPACK_BUFFER, (GLuint)prevPbo);
+    free(zero);
+    GLenum err = getErr();
+    if (err) { logf_("voxels: creating the grid failed (GL error 0x%x)", err); return; }
+    g_voxState = 1;
+    logf_("voxels: %dx%dx%d grid on image units %d/%d", VOX_X, VOX_Y, VOX_Z, VOX_UNIT_GEO, VOX_UNIT_COL);
+}
+
+// Empties the grid; shader reloads do this, since the shaders that fill it may have changed.
+static void vox_clear(void)
+{
+    typedef void (APIENTRY *PFN_glClearTexImage)(GLuint, GLint, GLenum, GLenum, const void *);
+    static PFN_glClearTexImage clr;
+    if (g_voxState != 1) return;
+    if (!clr) clr = (PFN_glClearTexImage)real_wglGetProcAddress("glClearTexImage");
+    if (!clr) return;
+    clr(g_voxTex[0], 0, GL_RED_INTEGER, GL_UNSIGNED_INT, NULL);
+    clr(g_voxTex[1], 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+}
+
+static void vox_use(ProgRec *p)
+{
+    if (!g_voxState) vox_create();
+    if (g_voxState != 1) return;
+    r_glBindImageTexture(VOX_UNIT_GEO, g_voxTex[0], 0, 1, 0, GL_READ_WRITE, GL_R32UI);
+    r_glBindImageTexture(VOX_UNIT_COL, g_voxTex[1], 0, 1, 0, GL_READ_WRITE, GL_RGBA8);
+    if (strcmp(g_voxLastUser, p->pname)) {
+        r_glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+        strncpy(g_voxLastUser, p->pname, sizeof(g_voxLastUser) - 1);
+    }
+}
+
+// ----------------------------------------------------------------------------------------
 // Uniform forwarding (shaderpack/forward.txt):  <SourceProgram> <srcUniform> <DestProgram|*> <dstUniform>
 // The last value the game set on the source program is replayed into the destination
 // program whenever it is used (e.g. SkyFS.uSunPosition -> DeferredFS.uHookSunPos).
@@ -1286,6 +1381,11 @@ static void check_extras(GLuint prog, ProgRec *p)
     p->locTime = r_glGetUniformLocation(prog, "uHookTime");
     p->locWetness = r_glGetUniformLocation(prog, "uHookWetness");
     if (p->locFrame >= 0 || p->locTime >= 0 || p->locWetness >= 0) p->hasExtras = 1;
+    p->locVoxGeo = r_glGetUniformLocation(prog, "auVoxGeo");
+    p->locVoxCol = r_glGetUniformLocation(prog, "auVoxCol");
+    if (p->locVoxGeo >= 0) r_glUniform1i(p->locVoxGeo, VOX_UNIT_GEO);
+    if (p->locVoxCol >= 0) r_glUniform1i(p->locVoxCol, VOX_UNIT_COL);
+    if (p->locVoxGeo >= 0 || p->locVoxCol >= 0) p->hasExtras = 1;
 }
 
 // Minecraft-style "wetness": follows the rain signal with Optifine's default half-lives
@@ -1348,6 +1448,7 @@ static void apply_extras(ProgRec *p)
             if (!strcmp(src->uni[k].name, g_fwd[i].srcUni)) { replay_uniform_at(&src->uni[k], p->fwdLoc[i]); break; }
         }
     }
+    if (p->locVoxGeo >= 0 || p->locVoxCol >= 0) vox_use(p);
     if (p->locFrame >= 0) r_glUniform1i(p->locFrame, g_frame);
     if (p->locWetness >= 0) r_glUniform1f(p->locWetness, g_wetness);
     if (p->locTime >= 0) {
@@ -1467,6 +1568,7 @@ static void do_reload(void)
         DeleteFileW(path);
         g_traceRemaining = 800;
     }
+    vox_clear();
     int relinked = 0, failed = 0;
     for (size_t id = 1; id < g_progCap; id++) {
         ProgRec *p = &g_progs[id];
@@ -2307,11 +2409,97 @@ static void menu_frame(HDC hdc)
     LeaveCriticalSection(&g_menuLock);
 }
 
+// Screenshot for testing: creating shaderpack/_shot makes the next frame (before the menu
+// overlay) be saved as shaderpack/shot.bmp, box-filtered down to at most 1600 pixels wide.
+// Reads the back buffer, so it works where desktop capture of the game window does not.
+#define GL_READ_FRAMEBUFFER 0x8CA8
+#define GL_READ_FRAMEBUFFER_BINDING 0x8CAA
+#define GL_PIXEL_PACK_BUFFER 0x88EB
+#define GL_PIXEL_PACK_BUFFER_BINDING 0x88ED
+#define GL_READ_BUFFER 0x0C02
+#define GL_PACK_ALIGNMENT 0x0D05
+#define GL_BACK 0x0405
+typedef void (APIENTRY *PFN_glReadPixels)(GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void *);
+typedef void (APIENTRY *PFN_glReadBuffer)(GLenum);
+typedef void (APIENTRY *PFN_glBindFramebuffer)(GLenum, GLuint);
+
+static void shot_frame(HDC hdc)
+{
+    static int counter;
+    if (++counter % 10 || !pack_flag("_shot")) return;
+    wchar_t flag[MAX_PATH];
+    pack_path(flag, "_shot");
+    DeleteFileW(flag);
+    PFN_glReadPixels readPx = (PFN_glReadPixels)GetProcAddress(g_real, "glReadPixels");
+    PFN_glReadBuffer readBuf = (PFN_glReadBuffer)GetProcAddress(g_real, "glReadBuffer");
+    PFN_glPixelStorei pst = (PFN_glPixelStorei)GetProcAddress(g_real, "glPixelStorei");
+    PFN_glBindFramebuffer bindFb = (PFN_glBindFramebuffer)real_wglGetProcAddress("glBindFramebuffer");
+    PFN_glBindBuffer bindBuf = (PFN_glBindBuffer)real_wglGetProcAddress("glBindBuffer");
+    RECT rc;
+    if (!readPx || !readBuf || !pst || !bindFb || !bindBuf || !GetClientRect(WindowFromDC(hdc), &rc)) return;
+    int w = rc.right - rc.left, h = rc.bottom - rc.top;
+    if (w <= 0 || h <= 0) return;
+    unsigned char *px = (unsigned char *)malloc((size_t)w * h * 4);
+    if (!px) return;
+    GLint prevFb = 0, prevPbo = 0, prevBuf = 0, prevAlign = 4;
+    r_glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevFb);
+    r_glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &prevPbo);
+    r_glGetIntegerv(GL_READ_BUFFER, &prevBuf);
+    r_glGetIntegerv(GL_PACK_ALIGNMENT, &prevAlign);
+    bindFb(GL_READ_FRAMEBUFFER, 0);
+    bindBuf(GL_PIXEL_PACK_BUFFER, 0);
+    readBuf(GL_BACK);
+    pst(GL_PACK_ALIGNMENT, 1);
+    readPx(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    pst(GL_PACK_ALIGNMENT, prevAlign);
+    readBuf((GLenum)prevBuf);
+    bindBuf(GL_PIXEL_PACK_BUFFER, (GLuint)prevPbo);
+    bindFb(GL_READ_FRAMEBUFFER, (GLuint)prevFb);
+
+    int f = (w + 1599) / 1600;
+    int ow = w / f, oh = h / f, stride = (ow * 3 + 3) & ~3;
+    unsigned char *out = (unsigned char *)calloc((size_t)stride * oh, 1);
+    if (out) {
+        for (int y = 0; y < oh; y++)
+            for (int x = 0; x < ow; x++) {
+                unsigned sum[3] = {0, 0, 0};
+                for (int j = 0; j < f; j++)
+                    for (int i = 0; i < f; i++) {
+                        const unsigned char *s = px + (((size_t)(y * f + j) * w) + x * f + i) * 4;
+                        sum[0] += s[2]; sum[1] += s[1]; sum[2] += s[0];
+                    }
+                unsigned char *d = out + (size_t)y * stride + x * 3;
+                for (int c = 0; c < 3; c++) d[c] = (unsigned char)(sum[c] / (unsigned)(f * f));
+            }
+        // GL rows run bottom-up like a BMP's.
+        BITMAPFILEHEADER fh = {0};
+        BITMAPINFOHEADER ih = {0};
+        fh.bfType = 0x4D42;
+        fh.bfOffBits = sizeof(fh) + sizeof(ih);
+        fh.bfSize = fh.bfOffBits + (DWORD)(stride * oh);
+        ih.biSize = sizeof(ih);
+        ih.biWidth = ow;
+        ih.biHeight = oh;
+        ih.biPlanes = 1;
+        ih.biBitCount = 24;
+        Str bmp = {0};
+        str_add(&bmp, (const char *)&fh, sizeof(fh));
+        str_add(&bmp, (const char *)&ih, sizeof(ih));
+        str_add(&bmp, (const char *)out, (size_t)stride * oh);
+        write_file("shot.bmp", bmp.p, bmp.n);
+        free(bmp.p);
+        free(out);
+        logf_("screenshot %dx%d -> shot.bmp (%dx%d)", w, h, ow, oh);
+    }
+    free(px);
+}
+
 typedef BOOL (WINAPI *PFN_wglSwapBuffers)(HDC);
 static PFN_wglSwapBuffers r_wglSwapBuffers;
 
 __declspec(dllexport) BOOL WINAPI wglSwapBuffers(HDC hdc)
 {
+    shot_frame(hdc);
     menu_frame(hdc);
     return r_wglSwapBuffers(hdc);
 }

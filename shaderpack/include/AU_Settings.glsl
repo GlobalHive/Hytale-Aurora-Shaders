@@ -126,6 +126,15 @@
 #define AU_RTX_SSR_STEPS 32
 #define AU_RTX_SMOOTHNESS 0.0          // dry surfaces stay matte (only rain makes them reflective)
 
+// ---- Path tracing (RTX preset) -------------------------------------------------------
+// Voxel path tracing: the hook keeps a 256x128x256 block grid of the world around the
+// player (include/AU_Voxel.glsl) and the bounce light traces rays through it.
+#define AU_PATH_TRACING 1
+#define AU_VOXELS (AU_PRESET >= 2 && AU_PATH_TRACING)
+#define AU_PT_RAYS 4                  // bounce rays per pixel
+#define AU_PT_REACH 24.0              // how far (blocks) bounce rays travel
+#define AU_VOXEL_DEBUG 0              // 1 = show the voxel grid (ray cast from the camera), 2 = blend over the scene
+
 // ---- Post ----------------------------------------------------------------------------
 #define AU_TM_EXPOSURE 1.00
 #define AU_TM_CONTRAST 1.05
