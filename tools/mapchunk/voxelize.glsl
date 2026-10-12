@@ -37,6 +37,29 @@
                 else if (auType == auOldType && auCorner && (auOld & AU_VOX_SMALL) != 0u)
                     imageAtomicAnd(auVoxGeo, auCell, ~AU_VOX_SMALL);
             }
+#if AU_PT_LIGHTS
+            // Light sources: Hytale draws glowing faces (flames, crystals) FULLBRIGHT. The first
+            // such vertex of a block this frame (frame stamp in the cell's top 16 bits) adds the
+            // block to this frame's light list, with Hytale's light colour there.
+            vec3 auGlow = glowColorAndSunlight.rgb;
+            if (shadingMode == SHADING_FULLBRIGHT && max(auGlow.r, max(auGlow.g, auGlow.b)) > 0.25)
+            {
+                ivec3 auLCell = auBlock & AU_VOX_MASK;
+                uint auStamp = (uint(uHookFrame) & 0xFFFFu) << 16;
+                uint auCur = imageLoad(auVoxGeo, auLCell).r;
+                if ((auCur & 0xFFFF0000u) != auStamp
+                    && imageAtomicCompSwap(auVoxGeo, auLCell, auCur, (auCur & 0xFFFFu) | auStamp) == auCur)
+                {
+                    int auRow = uHookFrame & 1;
+                    uint auIdx = imageAtomicAdd(auLights, ivec2(0, auRow), 1u);
+                    if (auIdx < AU_PT_MAX_LIGHTS)
+                    {
+                        imageStore(auLights, ivec2(1 + 2 * int(auIdx), auRow), uvec4(uint(auLCell.x | (auLCell.y << 8) | (auLCell.z << 15))));
+                        imageStore(auLights, ivec2(2 + 2 * int(auIdx), auRow), uvec4(packUnorm4x8(vec4(auGlow, 0.0))));
+                    }
+                }
+            }
+#endif
         }
     }
 #endif

@@ -92,6 +92,15 @@ vec3 AU_ExtractBlockLight(vec3 staticLight, float skyLight, vec3 normal, bool fl
     return staticLight / (2.0 * exposition) * isBlock;
 }
 
+// Terrain drawn by the pack's MapChunkVS stores the pure glow instead (G-buffer meta bit 7,
+// AU_GBUFFER_PURE_GLOW), so torches keep their light by day.
+#define AU_GBUFFER_PURE_GLOW 128u
+vec3 AU_GlowToBlockLight(vec3 glowLight, vec3 normal, bool flatShading)
+{
+    float exposition = flatShading ? 1.0 : 0.6 + max(0.4 * clamp(normal.y, 0.0, 1.0), 0.2 * abs(normal.z));
+    return glowLight / (2.0 * exposition);
+}
+
 // subsurfaceMode: 0 = solid, 1 = grass-like, 2 = leaves-like.
 // shadowVis: raw sun shadow visibility (1 = lit). ao: screen-space AO (1 = none).
 // Sky light scale from the path tracer (DeferredFS sets it before AU_DoLighting): the

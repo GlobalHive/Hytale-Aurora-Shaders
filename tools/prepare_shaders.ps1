@@ -159,6 +159,9 @@ public static class AuroraPrep
                  + "        vec4 shininess = computeFakeShininess(texColor.rgb, normalWS, CameraDirection.xyz);\n"
                  + "        light = max(light, vec3(shininess.a));\n        albedo.rgb += shininess.rgb;\n    }\n",
                 "    // (Hytale fake shininess removed by Aurora Shaders)\n");
+        s = Rep(s, "writeToGBuffer(albedo, normalWS, light, fragStaticLight.a, hasSSAO, hasBloom, useCleanShadowBackfaces, outColor0, outColor1, outColor2);\n",
+                "writeToGBuffer(albedo, normalWS, light, fragStaticLight.a, hasSSAO, hasBloom, useCleanShadowBackfaces, outColor0, outColor1, outColor2);\n"
+                + "    outColor0.a = (round(outColor0.a * 255.0) + 128.0) / 255.0;   // Aurora: the light target holds pure glow\n");
         s = Rep(s, "    bool useCleanShadowBackfaces = effectID > EFFECT_WIND;\n\n#if DEFERRED\n\n    writeToGBuffer(",
                 "    bool useCleanShadowBackfaces = effectID > EFFECT_WIND;\n\n#if DEFERRED\n"
                 + Read(Path.Combine(snip, "gennormals.glsl")) + "\n    writeToGBuffer(");
@@ -202,6 +205,13 @@ public static class AuroraPrep
                 + "#define AU_VOX_WRITER_ONLY\n#include \"AU_Voxel.glsl\"\n#endif\n");
         s = Rep(s, "    fragPackedData = packData(effectID, shadingMode);\n",
                 Read(Path.Combine(snip, "voxelize.glsl")) + "\n    fragPackedData = packData(effectID, shadingMode);\n");
+        // The G-buffer gets the pure block light (glow); DeferredFS adds the sun part from the
+        // sky light itself. Hytale's max(sun, glow) here threw torch light away by day wherever
+        // the sky reaches. Forward passes keep the game's combined light.
+        string mx = "    fragStaticLight.rgb = max(SunLightColor.rgb * SunLightColor.a * staticLight.a, staticLight.rgb * StaticLightMultiplier);\n";
+        s = Rep(s, mx, "#if DEFERRED && !USE_SCENE_DATA_OVERRIDE\n"
+                + "    fragStaticLight.rgb = staticLight.rgb * StaticLightMultiplier;   // Aurora: pure glow (AU_GBUFFER_PURE_GLOW)\n"
+                + "#else\n" + mx + "#endif\n");
         File.WriteAllText(Path.Combine(pack, "programs", "MapChunkVS.glsl"), s, Utf8);
     }
 }

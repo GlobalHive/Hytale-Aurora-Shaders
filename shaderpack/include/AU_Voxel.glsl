@@ -30,6 +30,15 @@
 layout(r32ui) uniform uimage3D auVoxGeo;
 layout(rgba8) uniform image3D auVoxCol;
 
+// This frame's light sources (MapChunkVS): row = frame parity; texel 0 the count, then per
+// light its cell (x | y << 8 | z << 15) and colour (RGBA8). DeferredFS empties the other row
+// for the next frame. The top 16 bits of a light's auVoxGeo cell stamp the frame it was listed.
+layout(r32ui) uniform uimage2D auLights;
+#define AU_PT_MAX_LIGHTS 1024u
+#ifdef AU_VOX_WRITER_ONLY
+uniform int uHookFrame;
+#endif
+
 uint AU_VoxTag(ivec3 b)
 {
     ivec3 k = (b >> AU_VOX_SHIFT) & 3;
@@ -156,13 +165,13 @@ void AU_VoxFeed(vec3 playerPos, vec3 normal, vec3 albedo, bool foliage, bool emi
 // has been on screen) lit by the sun when a shadow ray through the grid reaches the sky.
 vec3 AU_VoxHitLight(ivec3 hb, vec3 hn, uint hv, vec3 hitWorld, float rnd)
 {
-    float NdotL = (hv & 3u) == AU_VOX_POROUS ? 0.6 : dot(hn, lightVec);
-    if (NdotL <= 0.0) return vec3(0.0);
+    float NdotL = (hv & 3u) == AU_VOX_POROUS ? 0.6 : max0(dot(hn, lightVec));
     vec4 c = AU_VoxGetColor(hb);
     vec3 alb = c.a > 0.5 ? c.rgb : vec3(0.3);
+    vec3 amb = ambientColor * (AU_PT_AMBIENT_BOUNCE * 0.5);   // its sky light is unknown off screen
     ivec3 sb; vec3 sn; float st; uint sv;
-    if (AU_VoxTrace(hitWorld + hn * 0.02, lightVec, 64.0, 64, rnd, sb, sn, st, sv)) return vec3(0.0);
-    return alb * lightColor * NdotL;
+    if (AU_VoxTrace(hitWorld + hn * 0.02, lightVec, 64.0, 64, rnd, sb, sn, st, sv)) return alb * amb;
+    return alb * (lightColor * NdotL + amb);
 }
 
 // Path-traced diffuse bounce + ambient occlusion through the voxel grid; same outputs as
@@ -171,6 +180,49 @@ vec3 AU_VoxHitLight(ivec3 hb, vec3 hn, uint hv, vec3 hitWorld, float rnd)
 // that is on screen takes that surface's light from the G-buffer (exact shadows, texture
 // colour); hits behind objects or off screen are lit from the grid.
 vec2 AU_GIHitAlbedoSky(vec2 uv);   // defined by the including program (G-buffer access)
+
+float AU_PTHash(float salt)
+{
+    return fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233)) + salt + float(uHookFrame % 997) * 0.731) * 43758.5453);
+}
+
+// Direct light from this frame's light list (next event estimation): 8 random candidate
+// lights, one kept in proportion to what it could give this point (resampled importance
+// sampling), then a shadow ray through the grid to it. Hytale's own torch light can not do
+// this: its vertex light keeps only the brighter of sunlight and glow, so by day anywhere the
+// sky reaches the torches give nothing.
+vec3 AU_PTDirectLight(vec3 playerPos, vec3 normal, bool flatShading, float rnd)
+{
+    int row = uHookFrame & 1;
+    uint n = min(imageLoad(auLights, ivec2(0, row)).r, AU_PT_MAX_LIGHTS);
+    if (n == 0u) return vec3(0.0);
+    ivec3 base = ivec3(floor(CameraPosition)) - AU_VOX_HALF;
+    vec3 wp = playerPos + CameraPosition + normal * 0.03;
+    float wSum = 0.0, pickW = 0.0;
+    vec3 pickPos = vec3(0.0), pickF = vec3(0.0);
+    ivec3 pickBlock = ivec3(0);
+    const int M = 8;
+    for (int i = 0; i < M; i++) {
+        uint k = min(uint(fract(rnd + float(i) * 0.618034) * float(n)), n - 1u);
+        uint c = imageLoad(auLights, ivec2(1 + 2 * int(k), row)).r;
+        ivec3 lb = base + ((ivec3(c & 255u, (c >> 8) & 127u, (c >> 15) & 255u) - base) & AU_VOX_MASK);
+        vec3 lp = vec3(lb) + vec3(0.5, 0.6, 0.5);
+        vec3 d = lp - wp;
+        float dist = length(d);
+        float fall = pow2(max0(1.0 - dist / AU_PT_LIGHT_RANGE));
+        float nl = flatShading ? 0.7 : max0(dot(normal, d / max(dist, 0.001)));
+        vec3 f = unpackUnorm4x8(imageLoad(auLights, ivec2(2 + 2 * int(k), row)).r).rgb * (fall * nl);
+        float w = GetLuminance(f);
+        wSum += w;
+        if (w > 0.0 && AU_PTHash(float(i) * 1.37) * wSum < w) { pickW = w; pickF = f; pickPos = lp; pickBlock = lb; }
+    }
+    if (pickW <= 0.0) return vec3(0.0);
+    vec3 d = pickPos - wp;
+    float dist = length(d);
+    ivec3 hb; vec3 hn; float ht; uint hv;
+    if (AU_VoxTrace(wp, d / dist, dist + 0.5, 48, AU_PTHash(9.1), hb, hn, ht, hv) && hb != pickBlock) return vec3(0.0);
+    return pickF / pickW * (wSum / float(M)) * float(n);
+}
 
 vec3 AU_GetVoxelGI(sampler2D depthTex, vec3 playerPos, vec3 normal, float skyLightHere,
                    out float occlusion, out float skyVis)
@@ -214,16 +266,19 @@ vec3 AU_GetVoxelGI(sampler2D depthTex, vec3 playerPos, vec3 normal, float skyLig
 // surface was not there last frame (disocclusion, moving things) starts over.
 uniform sampler2D auGIHist;      // last frame: bounce rgb, sky visibility
 uniform sampler2D auGIHistPos;   // last frame: world position, frames + AO fraction
+uniform sampler2D auGIHistLight; // last frame: direct light from the light list
 layout(rgba16f) uniform image2D auGIOut;
 layout(rgba32f) uniform image2D auGIOutPos;
+layout(rgba16f) uniform image2D auGIOutLight;
 
-void AU_PTAccumulate(vec3 playerPos, inout vec3 gi, inout float occlusion, inout float skyVis)
+void AU_PTAccumulate(vec3 playerPos, inout vec3 gi, inout float occlusion, inout float skyVis, inout vec3 directLight)
 {
     vec3 wp = playerPos + CameraPosition;
     vec4 prev = ReprojectionMatrix * vec4((ViewMatrix * vec4(playerPos, 1.0)).xyz, 1.0);
     vec2 puv = prev.xy / prev.w * 0.5 + 0.5;
     float len = 0.0, histAO = 1.0;
     vec4 hist = vec4(0.0);
+    vec3 histLight = vec3(0.0);
     if (all(greaterThan(puv, vec2(0.0))) && all(lessThan(puv, vec2(1.0)))) {
         ivec2 pp = ivec2(puv * vec2(textureSize(auGIHistPos, 0)));
         vec4 hp = texelFetch(auGIHistPos, pp, 0);
@@ -231,6 +286,7 @@ void AU_PTAccumulate(vec3 playerPos, inout vec3 gi, inout float occlusion, inout
             len = floor(hp.w);
             histAO = fract(hp.w) / 0.999;
             hist = texelFetch(auGIHist, pp, 0);
+            histLight = texelFetch(auGIHistLight, pp, 0).rgb;
         }
     }
     len = min(len + 1.0, AU_PT_HISTORY);
@@ -240,6 +296,8 @@ void AU_PTAccumulate(vec3 playerPos, inout vec3 gi, inout float occlusion, inout
     ivec2 pix = ivec2(gl_FragCoord.xy);
     imageStore(auGIOut, pix, acc);
     imageStore(auGIOutPos, pix, vec4(wp, len + occlusion * 0.999));
+    directLight = mix(histLight, directLight, w);
+    imageStore(auGIOutLight, pix, vec4(directLight, 1.0));
     gi = acc.rgb;
     skyVis = acc.a;
 }

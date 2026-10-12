@@ -67,7 +67,15 @@ vec3 AU_GIHitLight(vec2 uv)
     vec3 n = decodeNormal(textureLod(uNormalTexture, uv, 0.0).rg);
     // Foliage is lit flat (no N.L) by Hytale's shading.
     float NdotL = hitSSAO ? max(dot(n, lightVec), 0.0) : 0.6;
-    return alb * lightColor * (getShadowFactor(uv) * NdotL);
+    // Plus the torch light it gets (Hytale's glow), so that bounces too.
+    vec3 hitStatic = textureLod(uLightTexture, uv, 0.0).rgb;
+    vec3 hitGlow = (uint(round(g0.a * 255.0)) & AU_GBUFFER_PURE_GLOW) != 0u
+                 ? AU_GlowToBlockLight(hitStatic, n, !hitSSAO)
+                 : AU_ExtractBlockLight(hitStatic, textureLod(uNormalTexture, uv, 0.0).b, n, !hitSSAO);
+    // And the sky light it gets, for the further bounces (what fills a room with light):
+    // Hytale's sky light there, through the same curve as the ambient term.
+    float hitSky = smoothstep1(clamp(textureLod(uNormalTexture, uv, 0.0).b, 0.0, 1.0));
+    return alb * (lightColor * (getShadowFactor(uv) * NdotL) + hitGlow * 0.5 + ambientColor * (hitSky * AU_PT_AMBIENT_BOUNCE));
 }
 
 // For the path tracer's sky light: albedo luminance and Hytale sky light of an on-screen
@@ -109,6 +117,10 @@ void main()
     AU_InitCommon();
 
     vec2 texCoords = fragTexCoords;
+#if AU_VOXELS && AU_PT_LIGHTS
+    // Empty next frame's light list; MapChunkVS fills it before this pass runs again.
+    if (gl_FragCoord.x < 1.0 && gl_FragCoord.y < 1.0) imageStore(auLights, ivec2(0, 1 - (uHookFrame & 1)), uvec4(0u));
+#endif
     float depth = texture(uDepthTexture, texCoords).r;
     if (depth >= 1.0) discard;
 
@@ -175,7 +187,9 @@ void main()
 
     vec3 rawStaticLight = blockLight;
     // Foliage (wind-animated) and emissive blocks use Hytale's flat shading: exposition 1.
-    blockLight = AU_ExtractBlockLight(blockLight, skyLight, normal, hasBloom || !hasSSAO);
+    blockLight = (uint(round(gbuffer0.a * 255.0)) & AU_GBUFFER_PURE_GLOW) != 0u
+               ? AU_GlowToBlockLight(blockLight, normal, hasBloom || !hasSSAO)
+               : AU_ExtractBlockLight(blockLight, skyLight, normal, hasBloom || !hasSSAO);
 
     float aoUse = (hasSSAO || subsurfaceMode != 0) ? ao : 1.0;
 
@@ -183,11 +197,15 @@ void main()
     // RTX: the GI rays double as ray-traced ambient occlusion.
     float giVisibility = 1.0;
     vec3 gi = vec3(0.0);
+    vec3 ptLight = vec3(0.0);
     if (!hasBloom) {
 #if AU_VOXELS
         float skyVis;
         gi = AU_GetVoxelGI(uDepthTexture, playerPos, normal, skyLight, giVisibility, skyVis);
-        AU_PTAccumulate(playerPos, gi, giVisibility, skyVis);
+#if AU_PT_LIGHTS
+        ptLight = AU_PTDirectLight(playerPos, normal, noDirectionalShading, GetDither2(gl_FragCoord.xy).y);
+#endif
+        AU_PTAccumulate(playerPos, gi, giVisibility, skyVis, ptLight);
         // Path-traced sky light: the ambient follows how much open sky the surface sees,
         // relative to an open field (a wall there sees half the sky, a floor all of it).
         // Hytale's flood-fill sky light already darkens rooms and caves, so the traced sky
@@ -219,6 +237,9 @@ void main()
     // RTX preset: screen-space GI bounce + glossy reflections on solid surfaces.
     if (!hasBloom) {
         color += albedo * gi * AU_RTX_GI_STRENGTH;
+#if AU_VOXELS && AU_PT_LIGHTS
+        color += albedo * ptLight * AU_PT_LIGHT_STRENGTH;
+#endif
 
         vec3 nView = normalize(playerPos);
         float fresnel = clamp(1.0 + dot(normal, nView), 0.0, 1.0);
@@ -299,7 +320,7 @@ void main()
 #elif AU_DEBUG_CLASS == 4
     color = fragTexCoords.x < 0.5 ? rawStaticLight : blockLight;
 #endif
-#if AU_VOXELS && AU_VOXEL_DEBUG
+#if AU_VOXELS && (AU_VOXEL_DEBUG == 1 || AU_VOXEL_DEBUG == 2)
     {
         // Voxel grid debug: what the path tracer sees, cast from the camera. Magenta = block
         // never seen on screen (no colour yet), green tint = leaves, blue tint = small model.
@@ -313,6 +334,29 @@ void main()
             dbg = base * (0.3 + 0.7 * max(dot(hn, sunVec), 0.0) + 0.15 * hn.y) * 2.0;
         }
         color = AU_VOXEL_DEBUG == 1 ? dbg : mix(color, dbg, 0.5);
+    }
+#endif
+#if AU_VOXELS && AU_PT_LIGHTS && AU_VOXEL_DEBUG == 3
+    {
+        // Light list probe: red = empty, green brighter with more lights.
+        uint nl = imageLoad(auLights, ivec2(0, uHookFrame & 1)).r;
+        color = mix(color, nl == 0u ? vec3(1.0, 0.0, 0.0) : vec3(0.0, min(float(nl) / 8.0, 1.0), 0.0), 0.5);
+    }
+#elif AU_VOXELS && AU_PT_LIGHTS && AU_VOXEL_DEBUG == 4
+    color = sqrt(ptLight) * 0.7;   // traced torch light only
+#elif AU_VOXELS && AU_PT_LIGHTS && AU_VOXEL_DEBUG == 5
+    {
+        // Distance to the nearest listed light: rings every 2 blocks, red beyond 32.
+        int row = uHookFrame & 1;
+        uint nl = min(imageLoad(auLights, ivec2(0, row)).r, 64u);
+        ivec3 base = ivec3(floor(CameraPosition)) - AU_VOX_HALF;
+        float md = 1e9;
+        for (uint k = 0u; k < nl; k++) {
+            uint c = imageLoad(auLights, ivec2(1 + 2 * int(k), row)).r;
+            ivec3 lb = base + ((ivec3(c & 255u, (c >> 8) & 127u, (c >> 15) & 255u) - base) & AU_VOX_MASK);
+            md = min(md, distance(vec3(lb) + 0.5, playerPos + CameraPosition));
+        }
+        color = md > 32.0 ? vec3(0.5, 0.0, 0.0) : vec3(fract(md * 0.5), 1.0 - md / 32.0, 0.2);
     }
 #endif
     outColor = vec4(color, packGBufferMeta(hasSSAO, hasBloom));

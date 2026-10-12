@@ -1235,6 +1235,8 @@ static void ensure_textures(void)
 #define VOX_Z 256
 #define VOX_UNIT_GEO 6
 #define VOX_UNIT_COL 7
+#define VOX_UNIT_LIGHTS 3
+#define VOX_LIGHTS_W 2049   // per frame parity row: count, then 2 texels per light (1024 lights)
 
 typedef void (APIENTRY *PFN_glTexImage3D)(GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *);
 typedef void (APIENTRY *PFN_glBindImageTexture)(GLuint, GLuint, GLint, GLboolean, GLint, GLenum, GLenum);
@@ -1244,6 +1246,7 @@ typedef GLenum (APIENTRY *PFN_glGetError)(void);
 static PFN_glBindImageTexture r_glBindImageTexture;
 static PFN_glMemoryBarrier r_glMemoryBarrier;
 static GLuint g_voxTex[2];
+static GLuint g_voxLights;        // R32UI 2049x2: the emissive blocks found this frame (MapChunkVS)
 static int g_voxState;            // 0 not created yet, 1 ready, -1 unavailable
 static char g_voxLastUser[64];    // pname of the last program that used the grid
 
@@ -1275,6 +1278,16 @@ static void vox_create(void)
         else img3d(GL_TEXTURE_3D, 0, GL_RGBA8, VOX_X, VOX_Y, VOX_Z, 0, GL_RGBA, GL_UNSIGNED_BYTE, zero);
     }
     r_glBindTexture(GL_TEXTURE_3D, (GLuint)prevTex);
+    PFN_glTexImage2D img2d = (PFN_glTexImage2D)GetProcAddress(g_real, "glTexImage2D");
+    GLint prev2d = 0;
+    r_glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev2d);
+    gen(1, &g_voxLights);
+    r_glBindTexture(GL_TEXTURE_2D, g_voxLights);
+    par(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    par(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    par(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+    img2d(GL_TEXTURE_2D, 0, GL_R32UI, VOX_LIGHTS_W, 2, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, zero);
+    r_glBindTexture(GL_TEXTURE_2D, (GLuint)prev2d);
     if (prevPbo) bindBuf(GL_PIXEL_UNPACK_BUFFER, (GLuint)prevPbo);
     free(zero);
     GLenum err = getErr();
@@ -1295,10 +1308,11 @@ static void vox_clear(void)
     clr(g_voxTex[1], 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 }
 
-// Temporal accumulation for the path tracer (DeferredFS): two ping-pong pairs of
-// screen-sized textures, radiance (RGBA16F: bounce rgb, sky visibility) and the world position
-// each pixel was accumulated for (RGBA32F: xyz, history length). Each frame the shader reads
-// last frame's pair as textures (units 21/22) and writes this frame's through images (4/5).
+// Temporal accumulation for the path tracer (DeferredFS): two ping-pong sets of
+// screen-sized textures, radiance (RGBA16F: bounce rgb, sky visibility), the world position
+// each pixel was accumulated for (RGBA32F: xyz, history length) and block light (RGBA16F,
+// torches). Each frame the shader reads last frame's set as textures (units 21/22/20) and
+// writes this frame's through images (4/5/2).
 // Sized from the viewport at the draw, since the program switch comes before it.
 #define GL_RGBA16F 0x881A
 #define GL_RGBA32F 0x8814
@@ -1307,10 +1321,12 @@ static void vox_clear(void)
 #define GL_TEXTURE_FETCH_BARRIER_BIT 0x8
 #define GI_IMG_RAD 4
 #define GI_IMG_POS 5
+#define GI_IMG_LIGHT 2
 #define GI_TEX_RAD 21
 #define GI_TEX_POS 22
+#define GI_TEX_LIGHT 20
 static int g_frame;            // counted at PostEffectFS (defined with the uniform forwarding)
-static GLuint g_giTex[2][2];   // [frame parity][0 radiance, 1 position]
+static GLuint g_giTex[2][3];   // [frame parity][0 radiance, 1 position, 2 block light]
 static int g_giW, g_giH;
 
 static void gi_bind(void)
@@ -1327,17 +1343,17 @@ static void gi_bind(void)
         PFN_glTexImage2D img = (PFN_glTexImage2D)GetProcAddress(g_real, "glTexImage2D");
         PFN_glTexParameteri par = (PFN_glTexParameteri)GetProcAddress(g_real, "glTexParameteri");
         if (!clr) clr = (PFN_glClearTexImage)real_wglGetProcAddress("glClearTexImage");
-        if (g_giTex[0][0]) del(4, &g_giTex[0][0]);
-        gen(4, &g_giTex[0][0]);
+        if (g_giTex[0][0]) del(6, &g_giTex[0][0]);
+        gen(6, &g_giTex[0][0]);
         GLint prevTex = 0;
         r_glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTex);
         for (int f = 0; f < 2; f++)
-            for (int k = 0; k < 2; k++) {
+            for (int k = 0; k < 3; k++) {
                 r_glBindTexture(GL_TEXTURE_2D, g_giTex[f][k]);
                 par(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
                 par(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
                 par(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
-                img(GL_TEXTURE_2D, 0, k ? GL_RGBA32F : GL_RGBA16F, vp[2], vp[3], 0, GL_RGBA, GL_FLOAT, NULL);
+                img(GL_TEXTURE_2D, 0, k == 1 ? GL_RGBA32F : GL_RGBA16F, vp[2], vp[3], 0, GL_RGBA, GL_FLOAT, NULL);
                 if (clr) clr(g_giTex[f][k], 0, GL_RGBA, GL_FLOAT, NULL);
             }
         r_glBindTexture(GL_TEXTURE_2D, (GLuint)prevTex);
@@ -1348,8 +1364,9 @@ static void gi_bind(void)
     int cur = g_frame & 1;
     r_glBindImageTexture(GI_IMG_RAD, g_giTex[cur][0], 0, 0, 0, GL_READ_WRITE, GL_RGBA16F);
     r_glBindImageTexture(GI_IMG_POS, g_giTex[cur][1], 0, 0, 0, GL_READ_WRITE, GL_RGBA32F);
-    for (int k = 0; k < 2; k++) {
-        GLuint unit = k ? GI_TEX_POS : GI_TEX_RAD;
+    r_glBindImageTexture(GI_IMG_LIGHT, g_giTex[cur][2], 0, 0, 0, GL_READ_WRITE, GL_RGBA16F);
+    for (int k = 0; k < 3; k++) {
+        GLuint unit = k == 0 ? GI_TEX_RAD : (k == 1 ? GI_TEX_POS : GI_TEX_LIGHT);
         r_glActiveTexture(GL_TEXTURE0 + unit);
         r_glBindTexture(GL_TEXTURE_2D, g_giTex[cur ^ 1][k]);
         if (r_glBindSampler) r_glBindSampler(unit, 0);
@@ -1366,6 +1383,7 @@ static void vox_use(ProgRec *p)
     if (g_voxState != 1) return;
     r_glBindImageTexture(VOX_UNIT_GEO, g_voxTex[0], 0, 1, 0, GL_READ_WRITE, GL_R32UI);
     r_glBindImageTexture(VOX_UNIT_COL, g_voxTex[1], 0, 1, 0, GL_READ_WRITE, GL_RGBA8);
+    r_glBindImageTexture(VOX_UNIT_LIGHTS, g_voxLights, 0, 0, 0, GL_READ_WRITE, GL_R32UI);
     if (strcmp(g_voxLastUser, p->pname)) {
         r_glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
         strncpy(g_voxLastUser, p->pname, sizeof(g_voxLastUser) - 1);
@@ -1455,11 +1473,14 @@ static void check_extras(GLuint prog, ProgRec *p)
     p->locVoxCol = r_glGetUniformLocation(prog, "auVoxCol");
     if (p->locVoxGeo >= 0) r_glUniform1i(p->locVoxGeo, VOX_UNIT_GEO);
     if (p->locVoxCol >= 0) r_glUniform1i(p->locVoxCol, VOX_UNIT_COL);
+    GLint locLights = r_glGetUniformLocation(prog, "auLights");
+    if (locLights >= 0) r_glUniform1i(locLights, VOX_UNIT_LIGHTS);
     if (p->locVoxGeo >= 0 || p->locVoxCol >= 0) p->hasExtras = 1;
-    static const struct { const char *name; GLint unit; } giUni[4] = {
-        {"auGIOut", GI_IMG_RAD}, {"auGIOutPos", GI_IMG_POS}, {"auGIHist", GI_TEX_RAD}, {"auGIHistPos", GI_TEX_POS}};
+    static const struct { const char *name; GLint unit; } giUni[6] = {
+        {"auGIOut", GI_IMG_RAD}, {"auGIOutPos", GI_IMG_POS}, {"auGIOutLight", GI_IMG_LIGHT},
+        {"auGIHist", GI_TEX_RAD}, {"auGIHistPos", GI_TEX_POS}, {"auGIHistLight", GI_TEX_LIGHT}};
     p->usesGI = 0;
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 6; i++) {
         GLint loc = r_glGetUniformLocation(prog, giUni[i].name);
         if (loc >= 0) { r_glUniform1i(loc, giUni[i].unit); p->usesGI = 1; p->hasExtras = 1; }
     }

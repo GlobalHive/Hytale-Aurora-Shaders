@@ -30,7 +30,11 @@ AU_PT_RAYS | Rays per pixel | range 1 8 1 | 3
 AU_PT_REACH | Ray reach | range 8.0 48.0 4.0 | 24.0
 AU_PT_SKY_LIGHT | Traced sky light | range 0.0 1.0 0.05 | 0.8
 AU_PT_HISTORY | Denoiser frames | range 4.0 64.0 4.0 | 24.0
-AU_RTX_GI_STRENGTH | Bounce light | range 0.0 3.0 0.1 | 1.0
+AU_PT_LIGHTS | Traced glow light (experimental) | bool | 0
+AU_PT_LIGHT_STRENGTH | Torch light strength | range 0.0 4.0 0.25 | 1.5
+AU_PT_LIGHT_RANGE | Torch light reach | range 6.0 32.0 1.0 | 14.0
+AU_RTX_GI_STRENGTH | Bounce light | range 0.0 4.0 0.1 | 1.5
+AU_PT_AMBIENT_BOUNCE | Multi-bounce sky light | range 0.0 2.0 0.1 | 1.0
 AU_RTX_GI_AO | Ray-traced AO | range 0.0 1.0 0.05 | 0.55
 AU_RTX_GI_RAYS | Screen-space rays (no PT) | range 4 32 4 | 8
 AU_RTX_GI_RADIUS | Screen-space reach (no PT) | range 2.0 16.0 0.5 | 8.0
