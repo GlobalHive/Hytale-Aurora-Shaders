@@ -199,6 +199,10 @@ parts of them.
 - **Antivirus warning:** some antivirus tools flag DLLs that load next to a game. Use
   `Build From Source.bat` to build the DLL from the source yourself.
 
+## Known Issue
+
+- **When Sunrise hits for few seconds there is flicker on the opposite side from where the sun is.**
+
 ## Credits and license
 
 Aurora Shaders is a modified pack based on Complementary Shaders by Complementary Development
