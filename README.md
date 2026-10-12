@@ -1,3 +1,8 @@
+<img width="3840" height="2160" alt="HytaleClient_nKmVvN2vCb" src="https://github.com/user-attachments/assets/287daae9-44d0-4441-810f-5fac7b174c9a" />
+
+<img width="3840" height="2160" alt="image" src="https://github.com/user-attachments/assets/6c50f4f3-098d-4eac-86d0-67ac4d0e60f9" />
+
+
 # Aurora Shaders for Hytale
 
 A shader pack for Hytale: soft sun shadows, volumetric clouds, light shafts through trees and
