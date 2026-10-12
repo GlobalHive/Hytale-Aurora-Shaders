@@ -426,8 +426,10 @@ typedef struct {
     GLint fwdLoc[16];
     GLint locFrame, locTime, locWetness;
     GLint locVoxGeo, locVoxCol;
+    GLint locJitter;
     int usesGI;
     int usesDlss;
+    GLint locDlssActive;
     int shareGen, shareSrc;  // cached: is this program the source of a texture share
 } ProgRec;
 
@@ -1033,20 +1035,25 @@ static PFN_glDrawElementsInstanced r_glDrawElementsInstanced;
 
 static GLuint g_giProg;   // program that wants the GI history bound at its draw (see gi_bind)
 static void gi_bind(void);
-static GLuint g_dlssProg; // TemporalAAFS in DLSS mode (see dlss_draw)
+static GLuint g_dlssProg; // the program writing the DLSS inputs (PostEffectFS, see dlss_draw)
+static int g_dlssPending; // inputs written this frame, DLSS runs at the present (dlss_present)
 static void dlss_draw(GLenum mode, GLint first, GLsizei count);
+static int dlss_present(void);
+static float g_jitterNdc[2], g_jitterPx[2], g_jitterNextPx[2];   // see jitter_next_frame
 
 __declspec(dllexport) void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsizei count)
 {
     share_draw_capture();
     if (g_giProg && g_giProg == g_curProg) gi_bind();
     if (g_dlssProg && g_dlssProg == g_curProg) { dlss_draw(mode, first, count); return; }
+    if (g_dlssPending && dlss_present()) return;
     r_glDrawArrays(mode, first, count);
 }
 
 __declspec(dllexport) void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices)
 {
     share_draw_capture();
+    if (g_dlssPending && dlss_present()) return;
     r_glDrawElements(mode, count, type, indices);
 }
 
@@ -1395,10 +1402,10 @@ static void vox_use(ProgRec *p)
 }
 
 // ----------------------------------------------------------------------------------------
-// DLSS (hook/aud_dlss.c). With AU_DLSS the pack's TemporalAAFS writes the frame's colour,
-// depth and motion into textures shared with a Vulkan device (image units 2-4) instead of
-// blending history; right after that draw the hook runs DLSS and blits its output over the
-// pass's target. The DLSS runtime (nvngx_dlss.dll) is loaded from shaderpack\dlss.
+// DLSS (hook/aud_dlss.c). With AU_DLSS the pack's PostEffectFS (the last pass at render
+// size) also writes the frame's colour, depth and camera motion into textures shared with a
+// Vulkan device (image units 2-4). DLSS upscales them to the window in place of Hytale's own
+// scale-to-window draw, so Hytale's Render Scale setting is the DLSS render size. The DLSS runtime (nvngx_dlss.dll) is loaded from shaderpack\dlss.
 
 #if AU_HAS_DLSS
 #include "aud_dlss.h"
@@ -1438,7 +1445,21 @@ static void *dlss_getproc(const char *name)
     return p;
 }
 
-static void dlss_draw(GLenum mode, GLint first, GLsizei count)
+// Sizes of the configured feature (render = PostEffectFS viewport, output = the present's
+// viewport) and the present size seen last frame.
+static int g_dlssOW, g_dlssOH, g_presentW, g_presentH;
+
+static int dlss_quality(int renderW, int outW)
+{
+    float r = (float)renderW / (float)outW;
+    if (r > 0.99f) return 5;    // DLAA
+    if (r > 0.60f) return 2;    // Quality (67%)
+    if (r > 0.54f) return 1;    // Balanced (58%)
+    if (r > 0.40f) return 0;    // Performance (50%)
+    return 3;                   // Ultra Performance (33%)
+}
+
+static int dlss_ready(void)
 {
     if (g_dlssState == 0) {
         g_dlssState = -1;
@@ -1454,31 +1475,66 @@ static void dlss_draw(GLenum mode, GLint first, GLsizei count)
         dl.Enable = (PFN_dlEnable)dlss_getproc("glEnable");
         dl.Disable = (PFN_dlEnable)dlss_getproc("glDisable");
         if (r_glBindImageTexture && r_glMemoryBarrier && dl.Blit && dl.GenFb && dl.BindFb && dl.FbTex &&
-            aud_init(logf_, dlss_getproc, dir, dir))
+            dl.IsEnabled && dl.Enable && dl.Disable && aud_init(logf_, dlss_getproc, dir, dir))
             g_dlssState = 1;
-        logf_("dlss: %s", g_dlssState == 1 ? "ready" : "unavailable, TemporalAAFS output passes through");
+        logf_("dlss: %s", g_dlssState == 1 ? "ready" : "unavailable, the game upscales as usual");
     }
-    if (g_dlssState != 1) { r_glDrawArrays(mode, first, count); return; }
+    return g_dlssState == 1;
+}
 
+// PostEffectFS: writes the DLSS inputs at render size (image units 2-4).
+static void dlss_draw(GLenum mode, GLint first, GLsizei count)
+{
+    if (!dlss_ready()) {
+        ProgRec *pp = prog_rec(g_curProg, 0);
+        if (pp && pp->locDlssActive >= 0) r_glUniform1i(pp->locDlssActive, 0);
+        r_glDrawArrays(mode, first, count);
+        return;
+    }
     GLint vp[4] = {0};
     r_glGetIntegerv(GL_VIEWPORT, vp);
-    if (vp[2] != g_dlssW || vp[3] != g_dlssH) {
-        // DLAA for now: DLSS at the game's render size.
-        if (!aud_configure(vp[2], vp[3], vp[2], vp[3], 5 /* NVSDK_NGX_PerfQuality_Value_DLAA */, 0)) {
+    if (g_presentW > 0 && (vp[2] != g_dlssW || vp[3] != g_dlssH || g_presentW != g_dlssOW || g_presentH != g_dlssOH)) {
+        int q = dlss_quality(vp[2], g_presentW);
+        if (!aud_configure(vp[2], vp[3], g_presentW, g_presentH, q, 0)) {
             g_dlssState = -1;
             r_glDrawArrays(mode, first, count);
             return;
         }
         g_dlssW = vp[2];
         g_dlssH = vp[3];
+        g_dlssOW = g_presentW;
+        g_dlssOH = g_presentH;
         g_dlssReset = 2;
     }
-    r_glBindImageTexture(DLSS_IMG_COLOR, aud_texture(AUD_TEX_COLOR), 0, 0, 0, GL_WRITE_ONLY, GL_RGBA16F);
-    r_glBindImageTexture(DLSS_IMG_DEPTH, aud_texture(AUD_TEX_DEPTH), 0, 0, 0, GL_WRITE_ONLY, GL_R32F);
-    r_glBindImageTexture(DLSS_IMG_MOTION, aud_texture(AUD_TEX_MOTION), 0, 0, 0, GL_WRITE_ONLY, GL_RG16F);
+    // Units 2-4 hold the path tracer's history between its passes: they must get the DLSS
+    // textures or nothing (writes to an empty unit are dropped), never stay as they are.
+    int active = g_dlssOW > 0 && vp[2] == g_dlssW && vp[3] == g_dlssH;
+    r_glBindImageTexture(DLSS_IMG_COLOR, active ? aud_texture(AUD_TEX_COLOR) : 0, 0, 0, 0, GL_WRITE_ONLY, GL_RGBA16F);
+    r_glBindImageTexture(DLSS_IMG_DEPTH, active ? aud_texture(AUD_TEX_DEPTH) : 0, 0, 0, 0, GL_WRITE_ONLY, GL_R32F);
+    r_glBindImageTexture(DLSS_IMG_MOTION, active ? aud_texture(AUD_TEX_MOTION) : 0, 0, 0, 0, GL_WRITE_ONLY, GL_RG16F);
+    ProgRec *pp = prog_rec(g_curProg, 0);
+    if (pp && pp->locDlssActive >= 0) r_glUniform1i(pp->locDlssActive, active);
     r_glDrawArrays(mode, first, count);
+    g_dlssPending = 1;
+}
+
+// Hytale puts the finished frame on the window either with a BasicFS draw (scaling it, Render
+// Scale below 100) or a framebuffer blit; the first of those after PostEffectFS is replaced
+// by DLSS's output. Returns 1 when it did.
+static int dlss_present_rect(int x, int y, int w, int h, const char *how)
+{
+    g_dlssPending = 0;
+    g_presentW = w;
+    g_presentH = h;
+    static char loggedHow[64];
+    if (strcmp(loggedHow, how)) {
+        snprintf(loggedHow, sizeof(loggedHow), "%s", how);
+        logf_("dlss: frame presented by %s (%dx%d)", how, w, h);
+    }
+    if (g_dlssState != 1 || g_dlssOW != w || g_dlssOH != h) return 0;
+    GLint vp[4] = {x, y, w, h};
     r_glMemoryBarrier(0xFFFFFFFFu);
-    aud_evaluate(0.0f, 0.0f, 1.0f, 1.0f, g_dlssReset > 0);
+    if (!aud_evaluate(g_jitterPx[0], g_jitterPx[1], 1.0f, 1.0f, g_dlssReset > 0)) return 0;
     if (g_dlssReset > 0) g_dlssReset--;
 
     GLint readFb = 0;
@@ -1488,13 +1544,74 @@ static void dlss_draw(GLenum mode, GLint first, GLsizei count)
     dl.FbTex(GL_READ_FRAMEBUFFER_, GL_COLOR_ATTACHMENT0_, GL_TEXTURE_2D, aud_texture(AUD_TEX_OUTPUT), 0);
     GLboolean scissor = dl.IsEnabled(GL_SCISSOR_TEST);
     if (scissor) dl.Disable(GL_SCISSOR_TEST);
-    dl.Blit(0, 0, g_dlssW, g_dlssH, vp[0], vp[1], vp[0] + vp[2], vp[1] + vp[3], GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    dl.Blit(0, 0, g_dlssOW, g_dlssOH, vp[0], vp[1], vp[0] + vp[2], vp[1] + vp[3], GL_COLOR_BUFFER_BIT, GL_NEAREST);
     if (scissor) dl.Enable(GL_SCISSOR_TEST);
     dl.BindFb(GL_READ_FRAMEBUFFER_, (GLuint)readFb);
+    return 1;
+}
+
+// The first draw into the window after PostEffectFS: BasicFS scaling the frame (Render Scale
+// below 100) or TemporalAAFS drawing straight into it (100).
+static int dlss_present(void)
+{
+    GLint fbo = -1;
+    r_glGetIntegerv(0x8CA6 /*GL_DRAW_FRAMEBUFFER_BINDING*/, &fbo);
+    if (fbo != 0) return 0;
+    ProgRec *p = g_curProg ? prog_rec(g_curProg, 0) : NULL;
+    GLint vp[4] = {0};
+    r_glGetIntegerv(GL_VIEWPORT, vp);
+    return dlss_present_rect(vp[0], vp[1], vp[2], vp[3], p && p->pname[0] ? p->pname : "a draw");
+}
+
+static int dlss_present_blit(GLint x0, GLint y0, GLint x1, GLint y1)
+{
+    GLint fbo = -1;
+    r_glGetIntegerv(0x8CA6 /*GL_DRAW_FRAMEBUFFER_BINDING*/, &fbo);
+    if (fbo != 0) return 0;
+    return dlss_present_rect(x0 < x1 ? x0 : x1, y0 < y1 ? y0 : y1, abs(x1 - x0), abs(y1 - y0), "a framebuffer blit");
 }
 #else
 static void dlss_draw(GLenum mode, GLint first, GLsizei count) { r_glDrawArrays(mode, first, count); }
+static int dlss_present(void) { g_dlssPending = 0; return 0; }
+static int dlss_present_blit(GLint x0, GLint y0, GLint x1, GLint y1) { (void)x0; (void)y0; (void)x1; (void)y1; return 0; }
 #endif
+
+typedef void (APIENTRY *PFN_glBlitFramebuffer)(GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLuint, GLenum);
+static PFN_glBlitFramebuffer r_glBlitFramebuffer;
+static void APIENTRY hook_glBlitFramebuffer(GLint sx0, GLint sy0, GLint sx1, GLint sy1, GLint dx0, GLint dy0, GLint dx1, GLint dy1, GLuint mask, GLenum filter)
+{
+    if (g_dlssPending && (mask & 0x4000u /*GL_COLOR_BUFFER_BIT*/) && dlss_present_blit(dx0, dy0, dx1, dy1)) return;
+    r_glBlitFramebuffer(sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, mask, filter);
+}
+
+// Camera jitter for DLSS: a Halton(2,3) sub-pixel offset per frame, added to gl_Position by
+// the pack's vertex shaders (uHookJitter, in NDC). g_jitterPx is what this frame's geometry
+// used (passed to DLSS); the next frame's offset is chosen when PostEffectFS starts.
+
+static float halton(int i, int base)
+{
+    float f = 1.0f, r = 0.0f;
+    for (; i > 0; i /= base) { f /= (float)base; r += f * (float)(i % base); }
+    return r;
+}
+
+static void jitter_next_frame(void)
+{
+    g_jitterPx[0] = g_jitterNextPx[0];
+    g_jitterPx[1] = g_jitterNextPx[1];
+#if AU_HAS_DLSS
+    if (g_dlssState == 1 && g_dlssProg && g_dlssW > 0) {
+        int i = 1 + g_frame % 32;
+        g_jitterNextPx[0] = halton(i, 2) - 0.5f;
+        g_jitterNextPx[1] = halton(i, 3) - 0.5f;
+        g_jitterNdc[0] = 2.0f * g_jitterNextPx[0] / (float)g_dlssW;
+        g_jitterNdc[1] = 2.0f * g_jitterNextPx[1] / (float)g_dlssH;
+        return;
+    }
+#endif
+    g_jitterNextPx[0] = g_jitterNextPx[1] = 0.0f;
+    g_jitterNdc[0] = g_jitterNdc[1] = 0.0f;
+}
 
 // ----------------------------------------------------------------------------------------
 // Uniform forwarding (shaderpack/forward.txt):  <SourceProgram> <srcUniform> <DestProgram|*> <dstUniform>
@@ -1554,7 +1671,9 @@ static void trace_use(GLuint prog, ProgRec *p)
             o += snprintf(fmt + o, sizeof(fmt) - o, " c%d:%d/%d/%d/%d", a, bits[0], bits[1], bits[2], bits[3]);
         }
     }
-    logf_("TRACE use %u %s fbo=%d%s", prog, p ? p->pname : "?", fbo, fmt);
+    GLint vp[4] = {0};
+    r_glGetIntegerv(0x0BA2 /*GL_VIEWPORT*/, vp);
+    logf_("TRACE use %u %s fbo=%d vp=%dx%d%s", prog, p ? p->pname : "?", fbo, vp[2], vp[3], fmt);
 }
 
 static void check_extras(GLuint prog, ProgRec *p)
@@ -1575,6 +1694,8 @@ static void check_extras(GLuint prog, ProgRec *p)
     p->locTime = r_glGetUniformLocation(prog, "uHookTime");
     p->locWetness = r_glGetUniformLocation(prog, "uHookWetness");
     if (p->locFrame >= 0 || p->locTime >= 0 || p->locWetness >= 0) p->hasExtras = 1;
+    p->locJitter = r_glGetUniformLocation(prog, "uHookJitter");
+    if (p->locJitter >= 0) p->hasExtras = 1;
     p->locVoxGeo = r_glGetUniformLocation(prog, "auVoxGeo");
     p->locVoxCol = r_glGetUniformLocation(prog, "auVoxCol");
     if (p->locVoxGeo >= 0) r_glUniform1i(p->locVoxGeo, VOX_UNIT_GEO);
@@ -1593,6 +1714,7 @@ static void check_extras(GLuint prog, ProgRec *p)
     static const struct { const char *name; GLint unit; } dlssUni[3] = {
         {"auDlssColor", 2}, {"auDlssDepth", 3}, {"auDlssMotion", 4}};
     p->usesDlss = 0;
+    p->locDlssActive = r_glGetUniformLocation(prog, "uHookDlssActive");
     for (int i = 0; i < 3; i++) {
         GLint loc = r_glGetUniformLocation(prog, dlssUni[i].name);
         if (loc >= 0) { r_glUniform1i(loc, dlssUni[i].unit); p->usesDlss = 1; p->hasExtras = 1; }
@@ -1661,6 +1783,7 @@ static void apply_extras(ProgRec *p)
         }
     }
     if (p->locVoxGeo >= 0 || p->locVoxCol >= 0) vox_use(p);
+    if (p->locJitter >= 0) r_glUniform2f(p->locJitter, g_jitterNdc[0], g_jitterNdc[1]);
     if (p->usesGI) g_giProg = g_curProg;
     if (p->usesDlss) g_dlssProg = g_curProg;
     if (p->locFrame >= 0) r_glUniform1i(p->locFrame, g_frame);
@@ -1819,7 +1942,7 @@ static void APIENTRY hook_glUseProgram(GLuint prog)
         if (!p->blkChecked && g_nKnownBlocks) apply_known_blocks(prog, p);
         if (g_nShares) apply_shares(prog, p);
         for (int i = 0; i < g_nFwd; i++) if (!strcmp(g_fwd[i].src, p->pname)) g_fwd[i].srcProg = prog;
-        if (!strcmp(p->pname, "PostEffectFS")) { g_frame++; update_wetness(); profile_frame_marker(); profile_collect(); }
+        if (!strcmp(p->pname, "PostEffectFS")) { g_frame++; update_wetness(); profile_frame_marker(); profile_collect(); jitter_next_frame(); }
         if (g_nCtex) ensure_textures();
         if (!p->extrasChecked) check_extras(prog, p);
         if (p->hasExtras) apply_extras(p);
@@ -2731,7 +2854,7 @@ __declspec(dllexport) PROC WINAPI wglGetProcAddress(LPCSTR name)
     HOOK(glUniform3i) HOOK(glUniform4i) HOOK(glUniform3ui) HOOK(glUniform1fv) HOOK(glUniform2fv) HOOK(glUniform3fv)
     HOOK(glUniform4fv) HOOK(glUniform1iv) HOOK(glUniform1uiv) HOOK(glUniformMatrix2fv) HOOK(glUniformMatrix3fv)
     HOOK(glUniformMatrix4fv) HOOK(glActiveTexture) HOOK(glBindSampler)
-    HOOK(glDrawArraysInstanced) HOOK(glDrawElementsInstanced)
+    HOOK(glDrawArraysInstanced) HOOK(glDrawElementsInstanced) HOOK(glBlitFramebuffer)
 #undef HOOK
     if (!strcmp(name, "glBindTexture")) return (PROC)glBindTexture;
     if (!strcmp(name, "glDrawArrays")) return (PROC)glDrawArrays;

@@ -1,5 +1,4 @@
 #version 410 core
-#extension GL_ARB_shader_image_load_store : enable
 
 // Aurora Shaders for Hytale - temporal anti-aliasing / accumulation.
 // Hytale's TAA blends 50% of the previous frame at the same pixel, without reprojection, so the
@@ -17,14 +16,6 @@ uniform sampler2D uPreviousColorTexture;
 uniform vec2 uPixelSize;
 uniform int uNeighborHoodCheck;
 uniform sampler2D uHookDepth;   // DeferredFS linear depth (0..1 of the far plane), shared by the hook
-
-#if AU_DLSS
-// DLSS inputs: textures shared with the hook's Vulkan device (hook/aud_dlss.c). The hook runs
-// DLSS right after this pass and writes its output over this pass's target.
-layout(rgba16f) uniform writeonly image2D auDlssColor;
-layout(r32f) uniform writeonly image2D auDlssDepth;
-layout(rg16f) uniform writeonly image2D auDlssMotion;
-#endif
 
 in vec2 fragTexCoords;
 
@@ -70,22 +61,10 @@ void main()
     vec4 current = texture(uColorTexture, uv);
 
 #if AU_DLSS
-    {
-        // Motion: where this pixel's surface was last frame (camera motion through Hytale's
-        // ReprojectionMatrix), in pixels. The first-person hand moves with the camera.
-        float lin = min(texture(uHookDepth, uv).r, 1.0);
-        vec3 posVS = PositionFromLinearDepth(uv, -lin * FarClip, ProjInfos);
-        vec4 prevClip = ReprojectionMatrix * vec4(posVS, 1.0);
-        vec2 prevUV = prevClip.xy / prevClip.w * 0.5 + 0.5;
-        vec2 motion = lin * FarClip < AU_NEAR_IGNORE ? vec2(0.0) : (prevUV - uv) / uPixelSize;
-        ivec2 pix = ivec2(gl_FragCoord.xy);
-        imageStore(auDlssColor, pix, vec4(current.rgb, 1.0));
-        imageStore(auDlssDepth, pix, vec4(lin));
-        imageStore(auDlssMotion, pix, vec4(motion, 0.0, 0.0));
-        if (uNeighborHoodCheck < -1000) current.r += texture(uPreviousColorTexture, uv).r;   // keep the game's uniforms referenced
-        outColor = current;
-        return;
-    }
+    // DLSS (fed by PostEffectFS) replaces the anti-aliasing: pass the frame through.
+    if (uNeighborHoodCheck < -1000) current.r += texture(uPreviousColorTexture, uv).r + texture(uHookDepth, uv).r;   // keep the game's uniforms referenced
+    outColor = current;
+    return;
 #endif
 
 #if AU_TAA

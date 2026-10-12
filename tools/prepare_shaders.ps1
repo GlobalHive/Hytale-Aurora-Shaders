@@ -205,6 +205,10 @@ public static class AuroraPrep
                 + "#define AU_VOX_WRITER_ONLY\n#include \"AU_Voxel.glsl\"\n#endif\n");
         s = Rep(s, "    fragPackedData = packData(effectID, shadingMode);\n",
                 Read(Path.Combine(snip, "voxelize.glsl")) + "\n    fragPackedData = packData(effectID, shadingMode);\n");
+        // DLSS camera jitter (sub-pixel offset per frame, set by the hook; 0 without DLSS).
+        s = Rep(s, "uniform mat4 uModelMatrix;\n", "uniform mat4 uModelMatrix;\nuniform vec2 uHookJitter;\n");
+        s = Rep(s, "#endif // ALPHA_BLEND\n\n    float lightExposition;\n",
+                "#endif // ALPHA_BLEND\n#if !USE_SCENE_DATA_OVERRIDE\n    gl_Position.xy += uHookJitter * gl_Position.w;\n#endif\n\n    float lightExposition;\n");
         // The G-buffer gets the pure block light (glow); DeferredFS adds the sun part from the
         // sky light itself. Hytale's max(sun, glow) here threw torch light away by day wherever
         // the sky reaches. Forward passes keep the game's combined light.

@@ -1,4 +1,5 @@
 #version 410 core
+#extension GL_ARB_shader_image_load_store : enable
 
 #define PIXELSIZE uPixelSize
 #include "Fallback_inc.glsl"
@@ -16,12 +17,23 @@
 uniform vec2 uPixelSize;
 #include "DepthOfField_inc.glsl"
 #include "AU_Tonemap.glsl"
-#if AU_DEBUG || AU_LENSFLARE
+#if AU_DEBUG || AU_LENSFLARE || AU_DLSS
 #include "SceneData_inc.glsl"
 #include "AU_Common.glsl"
 #endif
-#if AU_LENSFLARE
+#if AU_LENSFLARE || AU_DLSS
 uniform sampler2D uHookDepth;   // DeferredFS linear depth (0..1 of the far plane), shared by the hook
+#endif
+#if AU_DLSS
+#include "Reconstruction_inc.glsl"
+// DLSS inputs: textures shared with the hook's Vulkan device (hook/aud_dlss.c). The hook
+// upscales them with DLSS in place of Hytale's final scale-to-window draw.
+layout(rgba16f) uniform writeonly image2D auDlssColor;
+layout(r32f) uniform writeonly image2D auDlssDepth;
+layout(rg16f) uniform writeonly image2D auDlssMotion;
+uniform int uHookDlssActive;    // 1 only while the hook has the DLSS textures bound to units 2-4
+#endif
+#if AU_LENSFLARE
 
 // Lens flare (sun and moon).
 float auAspect;
@@ -448,5 +460,21 @@ void main()
     ivec2 tileSize = ivec2(vec2(textureSize(uColorTexture, 0)) / uDebugTileResolution.xy);
     vec2 v = floor(mod(gl_FragCoord.xy, tileSize.xy));
     if(v.x == 0 || v.y == 0) outColor =  vec4(1);
+#endif
+
+#if AU_DLSS
+    if (uHookDlssActive == 1) {
+        // The finished frame, its depth and the camera motion (where each pixel's surface was
+        // last frame, in pixels; the first-person hand moves with the camera).
+        float lin = min(texture(uHookDepth, fragTexCoords).r, 1.0);
+        vec3 posVS = PositionFromLinearDepth(fragTexCoords, -lin * FarClip, ProjInfos);
+        vec4 prevClip = ReprojectionMatrix * vec4(posVS, 1.0);
+        vec2 prevUV = prevClip.xy / prevClip.w * 0.5 + 0.5;
+        vec2 motion = lin * FarClip < AU_NEAR_IGNORE ? vec2(0.0) : (prevUV - fragTexCoords) / uPixelSize;
+        ivec2 pix = ivec2(gl_FragCoord.xy);
+        imageStore(auDlssColor, pix, vec4(outColor.rgb, 1.0));
+        imageStore(auDlssDepth, pix, vec4(lin));
+        imageStore(auDlssMotion, pix, vec4(motion, 0.0, 0.0));
+    }
 #endif
 }
