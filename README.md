@@ -65,3 +65,5 @@ parts of them.
 Aurora Shaders is a modified pack based on Complementary Shaders by Complementary Development
 (https://www.complementary.dev/). It is distributed under the Complementary License Agreement,
 included unchanged in [LICENSE.txt](LICENSE.txt).
+
+Shaders have been assisted by Claude.
