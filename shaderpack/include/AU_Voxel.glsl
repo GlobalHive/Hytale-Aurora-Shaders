@@ -166,25 +166,25 @@ vec3 AU_VoxHitLight(ivec3 hb, vec3 hn, uint hv, vec3 hitWorld, float rnd)
 }
 
 // Path-traced diffuse bounce + ambient occlusion through the voxel grid; same outputs as
-// AU_GetSSGI (AU_RTX.glsl), which it replaces. Rays are stratified over the cosine
-// hemisphere with blue noise. A hit on a surface that is on screen takes that surface's
-// light from the G-buffer (exact shadows, texture colour); hits behind objects or off screen
-// are lit from the grid.
-vec3 AU_GetVoxelGI(sampler2D depthTex, vec3 playerPos, vec3 normal, out float occlusion)
+// AU_GetSSGI (AU_RTX.glsl), which it replaces, plus the share of rays that reach the open
+// sky. Rays are stratified over the cosine hemisphere with blue noise. A hit on a surface
+// that is on screen takes that surface's light from the G-buffer (exact shadows, texture
+// colour); hits behind objects or off screen are lit from the grid.
+vec3 AU_GetVoxelGI(sampler2D depthTex, vec3 playerPos, vec3 normal, out float occlusion, out float skyVis)
 {
     const int rays = AU_PT_RAYS;
     const float reach = AU_PT_REACH;
     vec3 origin = playerPos + CameraPosition + normal * 0.02;
     vec2 pn = GetDither2(gl_FragCoord.xy);
     vec3 gi = vec3(0.0);
-    float occluded = 0.0;
+    float occluded = 0.0, escaped = 0.0;
     for (int r = 0; r < rays; r++) {
         float u1 = (float(r) + pn.x) / float(rays);
         float u2 = fract(float(r) * 0.618034 + pn.y);
         vec3 dir = AU_HemisphereDir(normal, u1, u2);
         float rnd = fract(pn.x * 13.73 + pn.y * 7.31 + float(r) * 0.381966);
         ivec3 hb; vec3 hn; float ht; uint hv;
-        if (!AU_VoxTrace(origin, dir, reach, 96, rnd, hb, hn, ht, hv)) continue;
+        if (!AU_VoxTrace(origin, dir, reach, 96, rnd, hb, hn, ht, hv)) { escaped += 1.0; continue; }
         occluded += max(0.0, 1.0 - ht / AU_RTX_AO_RADIUS);
         vec3 hitRel = origin - CameraPosition + dir * ht;
         vec2 uv = AU_ProjectToScreen(hitRel);
@@ -196,7 +196,45 @@ vec3 AU_GetVoxelGI(sampler2D depthTex, vec3 playerPos, vec3 normal, out float oc
         gi += min(light, vec3(1.5)) * (0.5 + 0.5 * (1.0 - ht / reach));
     }
     occlusion = 1.0 - occluded / float(rays);
+    skyVis = escaped / float(rays);
     return gi / float(rays);
+}
+
+// Temporal accumulation of the path tracer's output (history kept by the hook, see
+// hook.c gi_bind): each pixel finds where its surface was last frame (Hytale's
+// ReprojectionMatrix) and averages with what was accumulated there, over up to
+// AU_PT_HISTORY frames. The history stores the world position it belongs to; a pixel whose
+// surface was not there last frame (disocclusion, moving things) starts over.
+uniform sampler2D auGIHist;      // last frame: bounce rgb, sky visibility
+uniform sampler2D auGIHistPos;   // last frame: world position, frames + AO fraction
+layout(rgba16f) uniform image2D auGIOut;
+layout(rgba32f) uniform image2D auGIOutPos;
+
+void AU_PTAccumulate(vec3 playerPos, inout vec3 gi, inout float occlusion, inout float skyVis)
+{
+    vec3 wp = playerPos + CameraPosition;
+    vec4 prev = ReprojectionMatrix * vec4((ViewMatrix * vec4(playerPos, 1.0)).xyz, 1.0);
+    vec2 puv = prev.xy / prev.w * 0.5 + 0.5;
+    float len = 0.0, histAO = 1.0;
+    vec4 hist = vec4(0.0);
+    if (all(greaterThan(puv, vec2(0.0))) && all(lessThan(puv, vec2(1.0)))) {
+        ivec2 pp = ivec2(puv * vec2(textureSize(auGIHistPos, 0)));
+        vec4 hp = texelFetch(auGIHistPos, pp, 0);
+        if (distance(hp.xyz, wp) < 0.06 + length(playerPos) * 0.006) {
+            len = floor(hp.w);
+            histAO = fract(hp.w) / 0.999;
+            hist = texelFetch(auGIHist, pp, 0);
+        }
+    }
+    len = min(len + 1.0, AU_PT_HISTORY);
+    float w = 1.0 / len;
+    vec4 acc = mix(hist, vec4(gi, skyVis), w);
+    occlusion = mix(histAO, clamp(occlusion, 0.0, 1.0), w);
+    ivec2 pix = ivec2(gl_FragCoord.xy);
+    imageStore(auGIOut, pix, acc);
+    imageStore(auGIOutPos, pix, vec4(wp, len + occlusion * 0.999));
+    gi = acc.rgb;
+    skyVis = acc.a;
 }
 #endif // AU_RTX
 

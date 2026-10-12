@@ -25,10 +25,16 @@ AU_CONTACT_SHADOWS | Contact shadows | bool | 1
 AU_FAR_SHADOWS | Distant shadows | bool | 1
 
 @ RTX
+AU_PATH_TRACING | Path tracing | bool | 1
+AU_PT_RAYS | Rays per pixel | range 1 8 1 | 3
+AU_PT_REACH | Ray reach | range 8.0 48.0 4.0 | 24.0
+AU_PT_SKY_LIGHT | Traced sky light | range 0.0 1.0 0.05 | 0.8
+AU_PT_HISTORY | Denoiser frames | range 4.0 64.0 4.0 | 24.0
 AU_RTX_GI_STRENGTH | Bounce light | range 0.0 3.0 0.1 | 1.0
-AU_RTX_GI_RAYS | Bounce rays | range 4 32 4 | 8
-AU_RTX_GI_RADIUS | Bounce reach | range 2.0 16.0 0.5 | 8.0
 AU_RTX_GI_AO | Ray-traced AO | range 0.0 1.0 0.05 | 0.55
+AU_RTX_GI_RAYS | Screen-space rays (no PT) | range 4 32 4 | 8
+AU_RTX_GI_RADIUS | Screen-space reach (no PT) | range 2.0 16.0 0.5 | 8.0
+AU_VOXEL_DEBUG | Voxel view | enum 0:Off 1:Voxels 2:Blend | 0
 
 @ Sky
 AU_STARS | Stars | enum 0:Off 1:Procedural 2:Hytale | 2

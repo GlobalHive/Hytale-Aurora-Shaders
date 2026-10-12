@@ -94,6 +94,10 @@ vec3 AU_ExtractBlockLight(vec3 staticLight, float skyLight, vec3 normal, bool fl
 
 // subsurfaceMode: 0 = solid, 1 = grass-like, 2 = leaves-like.
 // shadowVis: raw sun shadow visibility (1 = lit). ao: screen-space AO (1 = none).
+// Sky light scale from the path tracer (DeferredFS sets it before AU_DoLighting): the
+// share of the open sky the surface sees, which Hytale's flood-fill sky light can't tell.
+float auPTSky = 1.0;
+
 vec3 AU_DoLighting(vec3 albedo, vec3 normalM, vec3 playerPos, float skyLight, vec3 hytaleBlockLight,
                    float shadowVis, float ao, int subsurfaceMode, float emission, float smoothnessG,
                    float highlightMult, bool noDirectionalShading)
@@ -183,6 +187,7 @@ vec3 AU_DoLighting(vec3 albedo, vec3 normalM, vec3 playerPos, float skyLight, ve
         ambientMult *= lightFogTweaks;
         lightColorM *= lightFogTweaks;
     }
+    ambientMult *= auPTSky;
 
     // ---- Directional shading ----
     float directionShade = 1.0;

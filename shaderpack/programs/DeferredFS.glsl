@@ -177,7 +177,12 @@ void main()
     vec3 gi = vec3(0.0);
     if (!hasBloom) {
 #if AU_VOXELS
-        gi = AU_GetVoxelGI(uDepthTexture, playerPos, normal, giVisibility);
+        float skyVis;
+        gi = AU_GetVoxelGI(uDepthTexture, playerPos, normal, giVisibility, skyVis);
+        AU_PTAccumulate(playerPos, gi, giVisibility, skyVis);
+        // Path-traced sky light: the ambient follows how much open sky the surface sees,
+        // relative to an open field (a wall there sees half the sky, a floor all of it).
+        auPTSky = mix(1.0, clamp(skyVis / max(0.5 + 0.5 * normal.y, 0.15), 0.0, 1.0), AU_PT_SKY_LIGHT);
 #else
         gi = AU_GetSSGI(uDepthTexture, playerPos, normal, dither, giVisibility);
 #endif

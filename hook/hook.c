@@ -426,6 +426,7 @@ typedef struct {
     GLint fwdLoc[16];
     GLint locFrame, locTime, locWetness;
     GLint locVoxGeo, locVoxCol;
+    int usesGI;
     int shareGen, shareSrc;  // cached: is this program the source of a texture share
 } ProgRec;
 
@@ -1029,9 +1030,13 @@ static PFN_glDrawElements r_glDrawElements;
 static PFN_glDrawArraysInstanced r_glDrawArraysInstanced;
 static PFN_glDrawElementsInstanced r_glDrawElementsInstanced;
 
+static GLuint g_giProg;   // program that wants the GI history bound at its draw (see gi_bind)
+static void gi_bind(void);
+
 __declspec(dllexport) void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsizei count)
 {
     share_draw_capture();
+    if (g_giProg && g_giProg == g_curProg) gi_bind();
     r_glDrawArrays(mode, first, count);
 }
 
@@ -1290,6 +1295,71 @@ static void vox_clear(void)
     clr(g_voxTex[1], 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 }
 
+// Temporal accumulation for the path tracer (DeferredFS): two ping-pong pairs of
+// screen-sized textures, radiance (RGBA16F: bounce rgb, sky visibility) and the world position
+// each pixel was accumulated for (RGBA32F: xyz, history length). Each frame the shader reads
+// last frame's pair as textures (units 21/22) and writes this frame's through images (4/5).
+// Sized from the viewport at the draw, since the program switch comes before it.
+#define GL_RGBA16F 0x881A
+#define GL_RGBA32F 0x8814
+#define GL_FLOAT 0x1406
+#define GL_VIEWPORT 0x0BA2
+#define GL_TEXTURE_FETCH_BARRIER_BIT 0x8
+#define GI_IMG_RAD 4
+#define GI_IMG_POS 5
+#define GI_TEX_RAD 21
+#define GI_TEX_POS 22
+static int g_frame;            // counted at PostEffectFS (defined with the uniform forwarding)
+static GLuint g_giTex[2][2];   // [frame parity][0 radiance, 1 position]
+static int g_giW, g_giH;
+
+static void gi_bind(void)
+{
+    typedef void (APIENTRY *PFN_glClearTexImage)(GLuint, GLint, GLenum, GLenum, const void *);
+    static PFN_glClearTexImage clr;
+    if (g_voxState != 1) return;
+    GLint vp[4] = {0};
+    r_glGetIntegerv(GL_VIEWPORT, vp);
+    if (vp[2] <= 0 || vp[3] <= 0) return;
+    if (vp[2] != g_giW || vp[3] != g_giH) {
+        PFN_glGenTextures gen = (PFN_glGenTextures)GetProcAddress(g_real, "glGenTextures");
+        PFN_glDeleteTextures del = (PFN_glDeleteTextures)GetProcAddress(g_real, "glDeleteTextures");
+        PFN_glTexImage2D img = (PFN_glTexImage2D)GetProcAddress(g_real, "glTexImage2D");
+        PFN_glTexParameteri par = (PFN_glTexParameteri)GetProcAddress(g_real, "glTexParameteri");
+        if (!clr) clr = (PFN_glClearTexImage)real_wglGetProcAddress("glClearTexImage");
+        if (g_giTex[0][0]) del(4, &g_giTex[0][0]);
+        gen(4, &g_giTex[0][0]);
+        GLint prevTex = 0;
+        r_glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTex);
+        for (int f = 0; f < 2; f++)
+            for (int k = 0; k < 2; k++) {
+                r_glBindTexture(GL_TEXTURE_2D, g_giTex[f][k]);
+                par(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                par(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+                par(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+                img(GL_TEXTURE_2D, 0, k ? GL_RGBA32F : GL_RGBA16F, vp[2], vp[3], 0, GL_RGBA, GL_FLOAT, NULL);
+                if (clr) clr(g_giTex[f][k], 0, GL_RGBA, GL_FLOAT, NULL);
+            }
+        r_glBindTexture(GL_TEXTURE_2D, (GLuint)prevTex);
+        g_giW = vp[2];
+        g_giH = vp[3];
+        logf_("path tracer history %dx%d", g_giW, g_giH);
+    }
+    int cur = g_frame & 1;
+    r_glBindImageTexture(GI_IMG_RAD, g_giTex[cur][0], 0, 0, 0, GL_READ_WRITE, GL_RGBA16F);
+    r_glBindImageTexture(GI_IMG_POS, g_giTex[cur][1], 0, 0, 0, GL_READ_WRITE, GL_RGBA32F);
+    for (int k = 0; k < 2; k++) {
+        GLuint unit = k ? GI_TEX_POS : GI_TEX_RAD;
+        r_glActiveTexture(GL_TEXTURE0 + unit);
+        r_glBindTexture(GL_TEXTURE_2D, g_giTex[cur ^ 1][k]);
+        if (r_glBindSampler) r_glBindSampler(unit, 0);
+        g_units[unit].target = GL_TEXTURE_2D;
+        g_units[unit].tex = g_giTex[cur ^ 1][k];
+        g_units[unit].sampler = 0;
+    }
+    r_glActiveTexture(GL_TEXTURE0 + g_activeUnit);
+}
+
 static void vox_use(ProgRec *p)
 {
     if (!g_voxState) vox_create();
@@ -1297,7 +1367,7 @@ static void vox_use(ProgRec *p)
     r_glBindImageTexture(VOX_UNIT_GEO, g_voxTex[0], 0, 1, 0, GL_READ_WRITE, GL_R32UI);
     r_glBindImageTexture(VOX_UNIT_COL, g_voxTex[1], 0, 1, 0, GL_READ_WRITE, GL_RGBA8);
     if (strcmp(g_voxLastUser, p->pname)) {
-        r_glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+        r_glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
         strncpy(g_voxLastUser, p->pname, sizeof(g_voxLastUser) - 1);
     }
 }
@@ -1386,6 +1456,13 @@ static void check_extras(GLuint prog, ProgRec *p)
     if (p->locVoxGeo >= 0) r_glUniform1i(p->locVoxGeo, VOX_UNIT_GEO);
     if (p->locVoxCol >= 0) r_glUniform1i(p->locVoxCol, VOX_UNIT_COL);
     if (p->locVoxGeo >= 0 || p->locVoxCol >= 0) p->hasExtras = 1;
+    static const struct { const char *name; GLint unit; } giUni[4] = {
+        {"auGIOut", GI_IMG_RAD}, {"auGIOutPos", GI_IMG_POS}, {"auGIHist", GI_TEX_RAD}, {"auGIHistPos", GI_TEX_POS}};
+    p->usesGI = 0;
+    for (int i = 0; i < 4; i++) {
+        GLint loc = r_glGetUniformLocation(prog, giUni[i].name);
+        if (loc >= 0) { r_glUniform1i(loc, giUni[i].unit); p->usesGI = 1; p->hasExtras = 1; }
+    }
 }
 
 // Minecraft-style "wetness": follows the rain signal with Optifine's default half-lives
@@ -1449,6 +1526,7 @@ static void apply_extras(ProgRec *p)
         }
     }
     if (p->locVoxGeo >= 0 || p->locVoxCol >= 0) vox_use(p);
+    if (p->usesGI) g_giProg = g_curProg;
     if (p->locFrame >= 0) r_glUniform1i(p->locFrame, g_frame);
     if (p->locWetness >= 0) r_glUniform1f(p->locWetness, g_wetness);
     if (p->locTime >= 0) {

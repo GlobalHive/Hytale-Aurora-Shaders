@@ -131,8 +131,10 @@
 // player (include/AU_Voxel.glsl) and the bounce light traces rays through it.
 #define AU_PATH_TRACING 1
 #define AU_VOXELS (AU_PRESET >= 2 && AU_PATH_TRACING)
-#define AU_PT_RAYS 4                  // bounce rays per pixel
-#define AU_PT_REACH 24.0              // how far (blocks) bounce rays travel
+#define AU_PT_RAYS 3                  // rays per pixel per frame
+#define AU_PT_REACH 24.0              // how far (blocks) rays travel
+#define AU_PT_HISTORY 24.0            // frames the path tracer averages over (more = smoother, slower to react)
+#define AU_PT_SKY_LIGHT 0.8           // how much the traced sky visibility shapes the ambient light
 #define AU_VOXEL_DEBUG 0              // 1 = show the voxel grid (ray cast from the camera), 2 = blend over the scene
 
 // ---- Post ----------------------------------------------------------------------------
