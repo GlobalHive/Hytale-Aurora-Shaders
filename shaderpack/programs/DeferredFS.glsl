@@ -69,6 +69,14 @@ vec3 AU_GIHitLight(vec2 uv)
     float NdotL = hitSSAO ? max(dot(n, lightVec), 0.0) : 0.6;
     return alb * lightColor * (getShadowFactor(uv) * NdotL);
 }
+
+// For the path tracer's sky light: albedo luminance and Hytale sky light of an on-screen
+// surface (the sky light it passes on when a ray hits it).
+vec2 AU_GIHitAlbedoSky(vec2 uv)
+{
+    vec3 alb = textureLod(uColorTexture, uv, 0.0).rgb * AU_ALBEDO_MULT;
+    return vec2(GetLuminance(alb), textureLod(uNormalTexture, uv, 0.0).b);
+}
 #endif
 
 float getSSAOValue(vec2 texCoords, float depth)
@@ -178,11 +186,15 @@ void main()
     if (!hasBloom) {
 #if AU_VOXELS
         float skyVis;
-        gi = AU_GetVoxelGI(uDepthTexture, playerPos, normal, giVisibility, skyVis);
+        gi = AU_GetVoxelGI(uDepthTexture, playerPos, normal, skyLight, giVisibility, skyVis);
         AU_PTAccumulate(playerPos, gi, giVisibility, skyVis);
         // Path-traced sky light: the ambient follows how much open sky the surface sees,
         // relative to an open field (a wall there sees half the sky, a floor all of it).
-        auPTSky = mix(1.0, clamp(skyVis / max(0.5 + 0.5 * normal.y, 0.15), 0.0, 1.0), AU_PT_SKY_LIGHT);
+        // Hytale's flood-fill sky light already darkens rooms and caves, so the traced sky
+        // light only adds what it misses where it counts as open (under steps, overhangs,
+        // trees); applying both inside a room left it black.
+        float ptSkyAmount = AU_PT_SKY_LIGHT * pow2(skyLight) * (subsurfaceMode != 0 ? 0.5 : 1.0);
+        auPTSky = mix(1.0, clamp(skyVis / max(0.5 + 0.5 * normal.y, 0.15), 0.0, 1.0), ptSkyAmount);
 #else
         gi = AU_GetSSGI(uDepthTexture, playerPos, normal, dither, giVisibility);
 #endif

@@ -170,7 +170,10 @@ vec3 AU_VoxHitLight(ivec3 hb, vec3 hn, uint hv, vec3 hitWorld, float rnd)
 // sky. Rays are stratified over the cosine hemisphere with blue noise. A hit on a surface
 // that is on screen takes that surface's light from the G-buffer (exact shadows, texture
 // colour); hits behind objects or off screen are lit from the grid.
-vec3 AU_GetVoxelGI(sampler2D depthTex, vec3 playerPos, vec3 normal, out float occlusion, out float skyVis)
+vec2 AU_GIHitAlbedoSky(vec2 uv);   // defined by the including program (G-buffer access)
+
+vec3 AU_GetVoxelGI(sampler2D depthTex, vec3 playerPos, vec3 normal, float skyLightHere,
+                   out float occlusion, out float skyVis)
 {
     const int rays = AU_PT_RAYS;
     const float reach = AU_PT_REACH;
@@ -190,9 +193,13 @@ vec3 AU_GetVoxelGI(sampler2D depthTex, vec3 playerPos, vec3 normal, out float oc
         vec2 uv = AU_ProjectToScreen(hitRel);
         float slin = all(greaterThan(uv, vec2(0.0))) && all(lessThan(uv, vec2(1.0))) ? AU_SceneLinAt(depthTex, uv) : -1.0;
         float lin = AU_LinOf(hitRel);
-        vec3 light = slin > AU_NEAR_IGNORE && abs(slin - lin) < 0.35 + lin * 0.01
-                   ? AU_GIHitLight(uv)
-                   : AU_VoxHitLight(hb, hn, hv, hitRel + CameraPosition, rnd);
+        bool onScreen = slin > AU_NEAR_IGNORE && abs(slin - lin) < 0.35 + lin * 0.01;
+        vec3 light = onScreen ? AU_GIHitLight(uv) : AU_VoxHitLight(hb, hn, hv, hitRel + CameraPosition, rnd);
+        // A hit surface passes on part of the sky light it gets itself (more bounces):
+        // its albedo x its sky light (off screen: this pixel's).
+        vec4 hitCol = onScreen ? vec4(0.0) : AU_VoxGetColor(hb);
+        vec2 hitAS = onScreen ? AU_GIHitAlbedoSky(uv) : vec2(hitCol.a > 0.5 ? GetLuminance(hitCol.rgb) : 0.3, skyLightHere);
+        escaped += hitAS.x * smoothstep1(clamp(hitAS.y, 0.0, 1.0));
         gi += min(light, vec3(1.5)) * (0.5 + 0.5 * (1.0 - ht / reach));
     }
     occlusion = 1.0 - occluded / float(rays);
