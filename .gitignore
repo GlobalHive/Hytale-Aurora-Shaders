@@ -1,0 +1,24 @@
+# Build output and local state
+build/
+bin/
+dist/
+tools/zig/
+install.config
+shaderpack/hook.log
+shaderpack/errors/
+shaderpack/dump/
+shaderpack/programs/_*
+
+# Generated from the player's own game by tools/prepare_shaders.ps1 (Hytale's code is not
+# ours to redistribute)
+shaderpack/original/
+shaderpack/index.txt
+shaderpack/programs/MapChunkFS.glsl
+
+# The unmodified original pack, kept locally for reference only
+reference/
+
+# Local testing helpers
+tools/focus_game.ps1
+tools/game_input.ps1
+tools/grab_game.ps1

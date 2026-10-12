@@ -1,0 +1,10 @@
+# <SourceProgram> <sourceSampler> <DestProgram> <destSampler> <unit>
+DeferredShadowFS uShadowMap DeferredFS uHookShadowMap 28
+DeferredShadowFS uShadowMap SkyFS uHookShadowMap 28
+DeferredShadowFS uShadowMap MapChunkFS uHookShadowMap 28
+MapChunkFS uRefractionTexture DeferredFS uHookPrevScene 27
+DeferredShadowFS uShadowMap DeferredShadowFS uHookShadowDepth 26 raw
+DeferredFS uDepthTexture BloomSelectFS uHookDepth 24 raw
+DeferredFS uDepthTexture TemporalAAFS uHookDepth 24 raw
+DeferredFS uDepthTexture PostEffectFS uHookDepth 24 raw
+DeferredFS uNormalTexture BloomSelectFS uHookGBuffer1 23 raw

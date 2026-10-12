@@ -1,0 +1,76 @@
+# Aurora Shaders - in-game options menu (Home key).
+# One option per line:   DEFINE | Label | kind | default
+#   kind = bool | enum value:Label ... (use _ for spaces) | range min max step
+# "@ Name" starts a section. Changes are written to include/AU_Settings.glsl and hot-reload.
+
+@ General
+!PACK | Shaders | bool
+AU_PRESET | Preset | enum 1:Standard 2:RTX | 2
+AU_SCREEN_BRIGHTNESS | Brightness | range 0.0 2.0 0.05 | 1.0
+AU_CAVE_LIGHTING | Cave lighting % | range 0.0 500.0 25.0 | 250.0
+
+@ Lighting
+AU_SSAO_STRENGTH | Ambient occlusion | range 0.0 3.0 0.05 | 1.25
+AU_BLOCKLIGHT_STRENGTH | Torch light | range 0.0 3.0 0.1 | 1.0
+AU_BLOCKLIGHT_HYTALE_HUE | Torch colour (warm to Hytale) | range 0.0 1.0 0.05 | 0.65
+AU_EMISSION_STRENGTH | Emissive glow | range 0.0 6.0 0.25 | 3.0
+AU_GENERATED_NORMALS | Block relief | bool | 1
+AU_GENERATED_NORMAL_MULT | Relief strength | range 25.0 400.0 25.0 | 100.0
+AU_SUBSURFACE | Foliage translucency | bool | 1
+AU_LIGHT_HIGHLIGHT | Sun highlights | bool | 1
+
+@ Shadows
+AU_SHADOW_SOFTNESS | Shadow softness | range 0.0 3.0 0.1 | 1.0
+AU_CONTACT_SHADOWS | Contact shadows | bool | 1
+AU_FAR_SHADOWS | Distant shadows | bool | 1
+
+@ RTX
+AU_RTX_GI_STRENGTH | Bounce light | range 0.0 3.0 0.1 | 1.0
+AU_RTX_GI_RAYS | Bounce rays | range 4 32 4 | 8
+AU_RTX_GI_RADIUS | Bounce reach | range 2.0 16.0 0.5 | 8.0
+AU_RTX_GI_AO | Ray-traced AO | range 0.0 1.0 0.05 | 0.55
+
+@ Sky
+AU_STARS | Stars | enum 0:Off 1:Procedural 2:Hytale | 2
+AU_STARS_BRIGHTNESS | Star brightness | range 0.0 3.0 0.1 | 1.0
+AU_STARS_SCALE | Star density | range 0.5 2.0 0.1 | 1.0
+AU_NIGHT_SKY_SATURATION | Night sky blue | range 1.0 3.0 0.1 | 1.8
+AU_RAINBOWS | Rainbows | bool | 1
+AU_ATMOSPHERIC_FOG | Atmospheric fog | bool | 1
+AU_ATM_FOG_MULT | Fog density | range 0.0 2.0 0.05 | 0.95
+
+@ Clouds
+AU_CLOUDS | Volumetric clouds | bool | 1
+AU_CLOUD_AMOUNT | Cloud amount | range 0.0 2.0 0.1 | 1.0
+AU_CLOUD_SPEED | Cloud speed | range 0.0 4.0 0.25 | 1.0
+AU_CLOUD_LAYERS | Cloud layers | range 1 2 1 | 2
+AU_CLOUD_SHADOWS | Cloud shadows | bool | 1
+
+@ Light shafts
+AU_LIGHTSHAFTS | Light shafts | bool | 1
+AU_LIGHTSHAFT_STRENGTH | Strength | range 0.0 3.0 0.1 | 1.0
+AU_LIGHTSHAFT_SCENE_AWARE | Forest / cave beams | range 0.0 1.0 0.05 | 1.0
+AU_LIGHTSHAFT_SCENE_BOOST | Beam boost | range 0.0 3.0 0.1 | 1.0
+AU_LIGHTSHAFT_NIGHT_I | Moonlight haze | range 0.0 1.0 0.05 | 0.35
+
+@ Water
+AU_WATER | Shader water | bool | 1
+AU_WATER_REFRACTION | Refraction | range 0.0 4.0 0.25 | 2.0
+AU_WATER_FOAM | Shore foam | range 0.0 2.0 0.1 | 0.5
+AU_WATER_CAUSTICS | Underwater caustics | bool | 1
+AU_RAIN_PUDDLES | Rain puddles | bool | 1
+AU_RAIN_PUDDLE_STRENGTH | Puddle strength | range 0.0 2.0 0.1 | 1.0
+
+@ Post-processing
+AU_TM_EXPOSURE | Exposure | range 0.5 2.0 0.05 | 1.00
+AU_TM_CONTRAST | Contrast | range 0.80 1.40 0.01 | 1.05
+AU_SATURATION | Saturation | range 0.0 2.0 0.05 | 1.00
+AU_VIBRANCE | Vibrance | range 0.0 2.0 0.05 | 1.00
+AU_BLOOM | Bloom | bool | 1
+AU_BLOOM_STRENGTH | Bloom strength | range 0.00 0.50 0.01 | 0.12
+AU_LENSFLARE | Lens flare | bool | 1
+AU_LENSFLARE_I | Lens flare strength | range 0.0 5.0 0.25 | 2.5
+AU_SUN_GLARE | Sun glare | range 0.0 2.0 0.1 | 1.0
+AU_VIGNETTE | Vignette | bool | 1
+AU_TAA | Temporal anti-aliasing | bool | 1
+AU_SHARPENING | Sharpening | range 0 10 1 | 2

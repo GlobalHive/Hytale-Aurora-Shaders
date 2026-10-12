@@ -1,0 +1,10 @@
+# <SourceProgram> <srcUniform> <DestProgram|*> <dstUniform>
+CloudsFS uColors * uHookCloudColors
+CloudsFS uCloudsTextureCount * uHookCloudCount
+SkyFS uMoonOpacity * uHookMoonOpacity
+SkyFS uStarsOpacity * uHookStarsOpacity
+SkyFS uSunScale * uHookSunScale
+SkyFS uSunGlowColor * uHookSunGlowColor
+SkyFS uMoonGlowColor * uHookMoonGlowColor
+SkyFS uTopGradientColor * uHookTopGradientColor
+SkyFS uSunsetColor * uHookSunsetColor

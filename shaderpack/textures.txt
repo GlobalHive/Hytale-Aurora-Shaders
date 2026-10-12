@@ -1,0 +1,3 @@
+noise.raw noisetex 30
+cloud-water.raw cloudWaterTex 29
+bluenoise.raw blueNoiseTex 25

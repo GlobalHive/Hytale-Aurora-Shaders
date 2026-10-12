@@ -1,0 +1,273 @@
+#version 410 core
+
+// Aurora Shaders for Hytale - deferred lighting.
+// Replaces Hytale's albedo * (light + ambient) * shadow with a full lighting model,
+// atmospheric/border fog and volumetric light shafts.
+
+#include "SceneData_inc.glsl"
+#include "Deferred_inc.glsl"
+#include "Reconstruction_inc.glsl"
+#include "Fog_inc.glsl"
+#include "AU_Lighting.glsl"
+#include "AU_VL.glsl"
+#include "AU_Clouds.glsl"
+#include "AU_Caustics.glsl"
+#include "AU_Rainbow.glsl"
+#if AU_PRESET >= 2 || AU_RAIN_PUDDLES
+#include "AU_RTX.glsl"
+#endif
+
+#ifndef INPUT_NORMALS_IN_WS
+#define INPUT_NORMALS_IN_WS 1
+#endif
+
+uniform sampler2D uColorTexture;
+uniform sampler2D uNormalTexture;
+uniform sampler2D uDepthTexture;
+uniform sampler2D uSSAOTexture;
+uniform sampler2D uLightTexture;
+uniform sampler2D uTopDownProjectionTexture;
+uniform sampler2D uShadowTexture;
+#if USE_FOG
+uniform sampler2D uFogNoiseTexture;
+#endif
+
+in vec3 fragFrustumRay;
+in vec2 fragTexCoords;
+
+out vec4 outColor;
+
+float getShadowFactor(vec2 texCoords)
+{
+#if USE_DEFERRED_SHADOW
+#if USE_DEFERRED_SHADOW_BLURRED && USE_SSAO
+    return texture(uSSAOTexture, texCoords).a;
+#else
+    return texture(uShadowTexture, texCoords).r;
+#endif
+#else
+    return 1.0;
+#endif
+}
+
+#if AU_PRESET >= 2
+// One-bounce source for the RTX GI: the sun light a surface receives this frame (albedo x
+// shadow-mapped sun x N.L), plus emissive blocks, read straight from the G-buffer.
+vec3 AU_GIHitLight(vec2 uv)
+{
+    vec4 g0 = textureLod(uColorTexture, uv, 0.0);
+    bool hitSSAO, hitBloom;
+    unpackGBufferMeta(g0.a, hitSSAO, hitBloom);
+    vec3 alb = g0.rgb * AU_ALBEDO_MULT;
+    if (hitBloom) return alb * AU_RTX_GI_EMISSIVE;
+    vec3 n = decodeNormal(textureLod(uNormalTexture, uv, 0.0).rg);
+    // Foliage is lit flat (no N.L) by Hytale's shading.
+    float NdotL = hitSSAO ? max(dot(n, lightVec), 0.0) : 0.6;
+    return alb * lightColor * (getShadowFactor(uv) * NdotL);
+}
+#endif
+
+float getSSAOValue(vec2 texCoords, float depth)
+{
+#if USE_SSAO
+#if USE_EDGE_AWARE_UPSAMPLING
+    float totalWeight = 0.0;
+    float resultValue = 0.0;
+    const float depth_epsilon = 0.0001;
+    for (int x = 0; x <= 1; x++) {
+        for (int y = 0; y <= 1; y++) {
+            vec4 value = textureOffset(uSSAOTexture, texCoords, ivec2(x, y));
+            float lowResDepth = unpackDepth(value.gb);
+            float weight = 1.0 / (depth_epsilon + abs(depth - lowResDepth));
+            resultValue += value.r * weight;
+            totalWeight += weight;
+        }
+    }
+    return resultValue / totalWeight;
+#else
+    return texture(uSSAOTexture, texCoords).r;
+#endif
+#else
+    return 1.0;
+#endif
+}
+
+void main()
+{
+    AU_InitCommon();
+
+    vec2 texCoords = fragTexCoords;
+    float depth = texture(uDepthTexture, texCoords).r;
+    if (depth >= 1.0) discard;
+
+    vec4 gbuffer0 = texture(uColorTexture, texCoords);   // RGBA8: albedo + render flags
+    vec3 albedo = gbuffer0.rgb;
+    albedo = mix(vec3(GetLuminance(albedo)), albedo, AU_ALBEDO_SATURATION) * AU_ALBEDO_MULT;
+    vec4 gbuffer1 = texture(uNormalTexture, texCoords);
+    vec3 blockLight = texture(uLightTexture, texCoords).rgb;
+    float skyLight = gbuffer1.b;
+    float ao = getSSAOValue(texCoords, depth);
+    float shadow = getShadowFactor(texCoords);
+
+#if USE_LINEAR_Z
+    vec3 playerPos = fragFrustumRay * depth;
+#else
+    vec3 playerPos = PositionFromDepth(depth, texCoords, InvViewProjectionMatrix);
+#endif
+
+    bool hasSSAO, hasBloom, useCleanShadowBackfaces;
+    unpackGBufferMeta(gbuffer0.a, hasSSAO, hasBloom);
+    useCleanShadowBackfaces = gbuffer1.a > 0.5;
+
+    vec3 normal = decodeNormal(gbuffer1.rg);
+#if !INPUT_NORMALS_IN_WS
+    normal = mat3(InvViewMatrix) * normal;
+#endif
+
+    float dither = GetDither(gl_FragCoord.xy);
+
+    // Material classes from Hytale's G-buffer flags:
+    //  bloom      -> emissive (no shadows, glows)
+    //  no SSAO    -> foliage / wind-animated blocks: subsurface scattering, no side shading
+    int subsurfaceMode = 0;
+    bool noDirectionalShading = false;
+    float emission = 0.0;
+#if AU_SUBSURFACE
+    if (!hasSSAO && !hasBloom) {
+        // Leaf blocks are cubes (axis-aligned normals): keep directional shading.
+        // Grass / cross plants have diagonal normals: soft, direction-less light.
+        vec3 an = abs(normal);
+        bool axisAligned = max(an.x, max(an.y, an.z)) > 0.96;
+        subsurfaceMode = axisAligned ? 2 : 1;
+        noDirectionalShading = !axisAligned;
+    }
+#endif
+    // Emissive (lava, flames, crystals): brighter texels glow more.
+    if (hasBloom) { emission = AU_EMISSION_STRENGTH * mix(0.5, 1.6, smoothstep(0.15, 0.9, GetLuminance(albedo))); shadow = 1.0; }
+
+    // Shadows of the volumetric clouds drifting over the land.
+    shadow *= hasBloom ? 1.0 : GetCloudShadow(playerPos);
+    if (IsCameraUnderwater > 0.5) {
+        // Under water: sun light reaching surfaces comes through the waves (Unbound caustics)
+        // and has lost its reds, like water-tinted translucent shadows.
+#if AU_WATER_CAUSTICS
+        if (!hasBloom) shadow *= mix(1.0, AU_CausticSunMult(playerPos + CameraPosition), 0.6);
+#endif
+        lightColor *= vec3(0.45, 0.75, 1.25);
+    }
+
+    vec3 rawStaticLight = blockLight;
+    // Foliage (wind-animated) and emissive blocks use Hytale's flat shading: exposition 1.
+    blockLight = AU_ExtractBlockLight(blockLight, skyLight, normal, hasBloom || !hasSSAO);
+
+    float aoUse = (hasSSAO || subsurfaceMode != 0) ? ao : 1.0;
+
+#if AU_PRESET >= 2
+    // RTX: the GI rays double as ray-traced ambient occlusion.
+    float giVisibility = 1.0;
+    vec3 gi = vec3(0.0);
+    if (!hasBloom) {
+        gi = AU_GetSSGI(uDepthTexture, playerPos, normal, dither, giVisibility);
+        // AO darkens indirect light; where the sun hits, direct light dominates.
+        aoUse *= mix(1.0, giVisibility, AU_RTX_GI_AO * (1.0 - 0.75 * shadow));
+    }
+#endif
+    float smoothnessG = 0.0, highlightMult = 1.0;
+    if (subsurfaceMode == 2) {
+        // Green leaves get a soft sheen.
+        // Keyed on green dominance (Hytale has bright yellow/autumn leaves that would max it out).
+        vec3 leafCol = albedo / max(AU_ALBEDO_MULT, 0.01);
+        float factor = min1(pow2(max0(leafCol.g - max(leafCol.r, leafCol.b) * 0.9)) * 5.0) * 0.6;
+        smoothnessG = factor * 0.4;
+        float fresnelL = clamp(1.0 + dot(normal, normalize(playerPos)), 0.0, 1.0);
+        highlightMult = (factor * 4.0 + 2.0) * (1.0 - pow2(pow2(fresnelL)));
+    }
+    vec3 color = AU_DoLighting(albedo, normal, playerPos, skyLight, blockLight, shadow, aoUse,
+                               subsurfaceMode, emission, smoothnessG, highlightMult, noDirectionalShading);
+
+#if AU_PRESET >= 2
+    // RTX preset: screen-space GI bounce + glossy reflections on solid surfaces.
+    if (!hasBloom) {
+        color += albedo * gi * AU_RTX_GI_STRENGTH;
+
+        vec3 nView = normalize(playerPos);
+        float fresnel = clamp(1.0 + dot(normal, nView), 0.0, 1.0);
+        // Faint grazing sheen on solids, plus wet surfaces facing up when it rains.
+        float wetness = rainFactor * smoothstep(0.7, 0.95, normal.y) * smoothstep(0.6, 0.9, skyLight);
+        float smoothness = subsurfaceMode != 0 ? 0.0 : mix(AU_RTX_SMOOTHNESS, 0.85, wetness);
+        float fresnelM = pow(fresnel, 5.0) * smoothness;
+        if (fresnelM > 0.004) {
+            vec3 rdir = reflect(nView, normal);
+            vec3 skyRef = GetSky(rdir.y, dot(rdir, sunVec), dither, true, true) * pow2(skyLight);
+            vec4 ssr = AU_GetSSR(uDepthTexture, playerPos, normal, 1.0 - smoothness, dither);
+            color = mix(color, mix(skyRef, ssr.rgb, ssr.a), fresnelM);
+        }
+    }
+#endif
+
+#if AU_RAIN_PUDDLES
+    // Rain puddles: blotchy puddles on open, upward faces while the world is
+    // wet (uHookWetness lingers after the rain), rippling while it rains, mirror reflections.
+    if (!hasBloom && subsurfaceMode == 0 && IsCameraUnderwater < 0.5) {
+        float wetM = max(uHookWetness, rainFactor);
+        float glow = max(blockLight.r, max(blockLight.g, blockLight.b)) * AU_BLOCKLIGHT_RANGE;
+        float puddleMixer = smoothstep(0.93, 0.99, skyLight) * clamp((1.0 - 1.15 * glow) * 10.0, 0.0, 1.0)
+                          * pow2(max0(normal.y - 0.5) * 2.0) * pow2(pow2(wetM));
+        if (puddleMixer > 0.00001) {
+            vec3 worldPos = playerPos + CameraPosition;
+            vec2 puddlePosNormal = worldPos.xz * 0.1;
+            vec2 puddlePosForm = puddlePosNormal * 0.05;
+            float pFormNoise = textureLod(noisetex, puddlePosForm, 0.0).b * 3.0
+                             + textureLod(noisetex, puddlePosForm * 0.5, 0.0).b * 5.0
+                             + textureLod(noisetex, puddlePosForm * 0.25, 0.0).b * 8.0;
+            pFormNoise *= sqrt1(wetM) * 0.5625 + 0.4375;
+            puddleMixer *= clamp(pFormNoise - 7.0, 0.0, 1.0) * AU_RAIN_PUDDLE_STRENGTH;
+            // Puddles are a close-up detail: far away at grazing angles they only read as pale
+            // sky-coloured patches on the grass (snow-like), so fade them out with distance.
+            puddleMixer *= 1.0 - smoothstep(40.0, 90.0, length(playerPos));
+
+            vec2 puddleWind = vec2(uHookTime) * 0.03;
+            vec3 pn1 = textureLod(noisetex, puddlePosNormal + puddleWind, 0.0).rgb;
+            vec3 pn2 = textureLod(noisetex, puddlePosNormal + vec2(puddleWind.x * -1.5, puddleWind.y * -1.0), 0.0).rgb;
+            vec2 pnXZ = (pn1.xy + pn2.xy - vec2(1.0)) * 0.03 * rainFactor;
+            vec3 puddleNormal = normalize(vec3(pnXZ.x, 1.0, pnXZ.y));
+
+            if (puddleMixer > 0.001) {
+                vec3 nViewP = normalize(playerPos);
+                float pFresnel = clamp(1.0 + dot(puddleNormal, nViewP), 0.0, 1.0);
+                float pFresnelM = (pow2(pow2(pFresnel)) * 0.6 + 0.04) * puddleMixer;
+                vec3 rdir = reflect(nViewP, puddleNormal);
+                // The overcast rain sky is near white; reflected at full strength it turns grazing
+                // puddles into a milky film, so the murky water dims it.
+                vec3 skyRef = GetSky(rdir.y, dot(rdir, sunVec), dither, true, true) * pow2(skyLight) * 0.6;
+                vec4 ssr = AU_GetSSR(uDepthTexture, playerPos, puddleNormal, 0.05, dither);
+                color *= 1.0 - 0.35 * puddleMixer;   // wet ground is darker
+                color = mix(color, mix(skyRef, ssr.rgb, ssr.a), pFresnelM);
+            }
+        }
+    }
+#endif
+
+    DoAUFog(color, playerPos, dither, skyLight);
+    color += AU_GetRainbow(playerPos / max(length(playerPos), 0.0001), length(playerPos), false, dither);
+
+    // Volumetric light shafts in front of this surface.
+    float lViewPos = length(playerPos);
+    color = AU_AddVL(color, GetVolumetricLight(playerPos / max(lViewPos, 0.0001), lViewPos, false, dither));
+
+#if AU_DEBUG_CLASS == 1
+    color = vec3(hasBloom ? 1.0 : 0.0, subsurfaceMode != 0 ? 1.0 : 0.0, hasSSAO ? 0.6 : 0.0) * 0.5 + shadow * 0.15;
+#elif AU_DEBUG_CLASS == 2
+    color = vec3(shadow);
+#elif AU_DEBUG_CLASS == 3
+    // red: sun visibility, green: sky light (gamma-encoded for reading)
+    color = sqrt(vec3(shadow, skyLight, 0.0)) * 0.6;
+#elif AU_DEBUG_CLASS == 6
+    color = vec3(GetEyeBrightness());
+#elif AU_DEBUG_CLASS == 7
+    color = sqrt(GetVolumetricLight(playerPos / max(lViewPos, 0.0001), lViewPos, false, dither) * 3.0);
+#elif AU_DEBUG_CLASS == 4
+    color = fragTexCoords.x < 0.5 ? rawStaticLight : blockLight;
+#endif
+    outColor = vec4(color, packGBufferMeta(hasSSAO, hasBloom));
+}
