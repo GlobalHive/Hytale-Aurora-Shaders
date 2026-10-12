@@ -344,6 +344,8 @@ void main()
     }
 #elif AU_VOXELS && AU_PT_LIGHTS && AU_VOXEL_DEBUG == 4
     color = sqrt(ptLight) * 0.7;   // traced torch light only
+#elif AU_VOXELS && AU_VOXEL_DEBUG == 6
+    color = sqrt(gi * AU_RTX_GI_STRENGTH) * 0.8;   // incoming bounce light only (before the surface colour)
 #elif AU_VOXELS && AU_PT_LIGHTS && AU_VOXEL_DEBUG == 5
     {
         // Distance to the nearest listed light: rings every 2 blocks, red beyond 32.

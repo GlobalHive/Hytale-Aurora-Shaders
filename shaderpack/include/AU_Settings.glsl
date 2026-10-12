@@ -59,9 +59,9 @@
 
 // ---- Sky / atmosphere ----------------------------------------------------------------
 #define AU_STARS 2                    // 0 off, 1 procedural, 2 Hytale's star texture (turning with the sky)
-#define AU_STARS_BRIGHTNESS 1.0
+#define AU_STARS_BRIGHTNESS 2.0
 #define AU_STARS_SCALE 1.0             // star texture size on the sky (lower = bigger stars)
-#define AU_NIGHT_SKY_SATURATION 1.8   // night horizon colour (1 = grey-blue, higher = deep blue)
+#define AU_NIGHT_SKY_SATURATION 3.0   // night horizon colour (1 = grey-blue, higher = deep blue)
 #define AU_ATMOSPHERIC_FOG 1
 #define AU_ATM_FOG_MULT 0.95
 #define AU_ATM_FOG_DISTANCE 1.0

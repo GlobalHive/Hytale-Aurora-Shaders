@@ -26,3 +26,6 @@ tools/focus_game.ps1
 tools/game_input.ps1
 tools/grab_game.ps1
 tools/shot.ps1
+
+# NVIDIA DLSS SDK (proprietary, not redistributable here) and Khronos Vulkan headers, fetched locally
+third_party/

@@ -63,6 +63,12 @@ vec3 GetHytaleStars(vec3 dir)
     vec2 dx = dFdx(uv), dy = dFdy(uv), dxA = dFdx(uvAlt), dyA = dFdy(uvAlt);
     if (dot(dxA, dxA) + dot(dyA, dyA) < dot(dx, dx) + dot(dy, dy)) { dx = dxA; dy = dyA; }
     vec4 starsTexel = textureGrad(uStarsTexture, uv, dx, dy);
+    // Around the celestial poles that longitude/latitude mapping squeezes the texture into
+    // streaks converging on the pole; blend to a planar (stereographic) projection there,
+    // scaled to the same star size (texels per radian) as the equator.
+    vec2 uvP = c.xy / (1.0 + abs(c.z)) * (2.546 * AU_STARS_SCALE) + (c.z < 0.0 ? vec2(0.37, 0.61) : vec2(0.0));
+    vec4 starsPolar = textureGrad(uStarsTexture, uvP, dFdx(uvP), dFdy(uvP));
+    starsTexel = mix(starsTexel, starsPolar, smoothstep(0.72, 0.9, abs(c.z)));
 
     // Hytale's visibility: night level, fade toward the horizon, the game's star opacity.
     float nightLevel = clamp(-sunVec.y * 1.5, 0.0, 1.0);
