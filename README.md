@@ -1,9 +1,7 @@
 
-
-
 https://github.com/user-attachments/assets/9c0842a6-0442-40e9-8760-67f695989e0c
 
-
+<img width="3840" height="2160" alt="HytaleClient_yiDS4pwOJz" src="https://github.com/user-attachments/assets/3d899ec1-089d-4af7-8fac-14bec9981215" />
 
 <img width="3840" height="2160" alt="HytaleClient_9uBVvnw0u2" src="https://github.com/user-attachments/assets/fa8cc289-cdb0-4e77-b53e-8d5332a578e1" />
 
