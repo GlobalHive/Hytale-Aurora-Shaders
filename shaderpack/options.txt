@@ -83,4 +83,5 @@ AU_LENSFLARE_I | Lens flare strength | range 0.0 5.0 0.25 | 2.5
 AU_SUN_GLARE | Sun glare | range 0.0 2.0 0.1 | 1.0
 AU_VIGNETTE | Vignette | bool | 1
 AU_TAA | Temporal anti-aliasing | bool | 1
+AU_DLSS | NVIDIA DLSS (RTX) | bool | 0
 AU_SHARPENING | Sharpening | range 0 10 1 | 2

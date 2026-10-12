@@ -157,6 +157,7 @@
 #define AU_LENSFLARE_I 2.50             // lens flare strength
 #define AU_SUN_GLARE 1.0              // soft lens glare around the visible sun
 #define AU_TAA 1                      // reprojected TAA (cleans up dithered shafts / shadows / GI)
+#define AU_DLSS 1                     // NVIDIA DLSS instead of the TAA (hook/aud_dlss.c; RTX GPUs)
 #define AU_TAA_BLEND 0.93             // history weight (higher = smoother, softer motion)
 #define AU_TAA_CLIP 1.25              // neighbourhood variance clip (lower = less ghosting)
 #define AU_SHARPENING 2               // image sharpening (0-10)

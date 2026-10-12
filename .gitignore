@@ -34,3 +34,4 @@ tools/dlss_test/*.pdb
 tools/dlss_test/*.dll
 tools/dlss_test/*.log
 tools/dlss_test/nvngx*
+shaderpack/dlss/

@@ -427,6 +427,7 @@ typedef struct {
     GLint locFrame, locTime, locWetness;
     GLint locVoxGeo, locVoxCol;
     int usesGI;
+    int usesDlss;
     int shareGen, shareSrc;  // cached: is this program the source of a texture share
 } ProgRec;
 
@@ -1032,11 +1033,14 @@ static PFN_glDrawElementsInstanced r_glDrawElementsInstanced;
 
 static GLuint g_giProg;   // program that wants the GI history bound at its draw (see gi_bind)
 static void gi_bind(void);
+static GLuint g_dlssProg; // TemporalAAFS in DLSS mode (see dlss_draw)
+static void dlss_draw(GLenum mode, GLint first, GLsizei count);
 
 __declspec(dllexport) void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsizei count)
 {
     share_draw_capture();
     if (g_giProg && g_giProg == g_curProg) gi_bind();
+    if (g_dlssProg && g_dlssProg == g_curProg) { dlss_draw(mode, first, count); return; }
     r_glDrawArrays(mode, first, count);
 }
 
@@ -1391,6 +1395,108 @@ static void vox_use(ProgRec *p)
 }
 
 // ----------------------------------------------------------------------------------------
+// DLSS (hook/aud_dlss.c). With AU_DLSS the pack's TemporalAAFS writes the frame's colour,
+// depth and motion into textures shared with a Vulkan device (image units 2-4) instead of
+// blending history; right after that draw the hook runs DLSS and blits its output over the
+// pass's target. The DLSS runtime (nvngx_dlss.dll) is loaded from shaderpack\dlss.
+
+#if AU_HAS_DLSS
+#include "aud_dlss.h"
+#define GL_WRITE_ONLY 0x88B9
+#define GL_R32F 0x822E
+#define GL_RG16F 0x822F
+#define GL_COLOR_BUFFER_BIT 0x4000
+#define GL_SCISSOR_TEST 0x0C11
+#define GL_READ_FRAMEBUFFER_BINDING_ 0x8CAA
+#define GL_READ_FRAMEBUFFER_ 0x8CA8
+#define GL_COLOR_ATTACHMENT0_ 0x8CE0
+#define DLSS_IMG_COLOR 2
+#define DLSS_IMG_DEPTH 3
+#define DLSS_IMG_MOTION 4
+typedef void (APIENTRY *PFN_dlBlitFramebuffer)(GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLuint, GLenum);
+typedef void (APIENTRY *PFN_dlGenFramebuffers)(GLsizei, GLuint *);
+typedef void (APIENTRY *PFN_dlBindFramebuffer)(GLenum, GLuint);
+typedef void (APIENTRY *PFN_dlFramebufferTexture2D)(GLenum, GLenum, GLenum, GLuint, GLint);
+typedef GLboolean (APIENTRY *PFN_dlIsEnabled)(GLenum);
+typedef void (APIENTRY *PFN_dlEnable)(GLenum);
+static int g_dlssState;          // 0 not tried, 1 ready, -1 unavailable
+static int g_dlssW, g_dlssH, g_dlssReset;
+static GLuint g_dlssReadFbo;
+static struct {
+    PFN_dlBlitFramebuffer Blit;
+    PFN_dlGenFramebuffers GenFb;
+    PFN_dlBindFramebuffer BindFb;
+    PFN_dlFramebufferTexture2D FbTex;
+    PFN_dlIsEnabled IsEnabled;
+    PFN_dlEnable Enable, Disable;
+} dl;
+
+static void *dlss_getproc(const char *name)
+{
+    void *p = (void *)real_wglGetProcAddress(name);
+    if (!p || (uintptr_t)p <= 3 || p == (void *)-1) p = (void *)GetProcAddress(g_real, name);
+    return p;
+}
+
+static void dlss_draw(GLenum mode, GLint first, GLsizei count)
+{
+    if (g_dlssState == 0) {
+        g_dlssState = -1;
+        wchar_t dir[MAX_PATH];
+        pack_path(dir, "dlss");
+        if (!r_glBindImageTexture) r_glBindImageTexture = (PFN_glBindImageTexture)real_wglGetProcAddress("glBindImageTexture");
+        if (!r_glMemoryBarrier) r_glMemoryBarrier = (PFN_glMemoryBarrier)real_wglGetProcAddress("glMemoryBarrier");
+        dl.Blit = (PFN_dlBlitFramebuffer)dlss_getproc("glBlitFramebuffer");
+        dl.GenFb = (PFN_dlGenFramebuffers)dlss_getproc("glGenFramebuffers");
+        dl.BindFb = (PFN_dlBindFramebuffer)dlss_getproc("glBindFramebuffer");
+        dl.FbTex = (PFN_dlFramebufferTexture2D)dlss_getproc("glFramebufferTexture2D");
+        dl.IsEnabled = (PFN_dlIsEnabled)dlss_getproc("glIsEnabled");
+        dl.Enable = (PFN_dlEnable)dlss_getproc("glEnable");
+        dl.Disable = (PFN_dlEnable)dlss_getproc("glDisable");
+        if (r_glBindImageTexture && r_glMemoryBarrier && dl.Blit && dl.GenFb && dl.BindFb && dl.FbTex &&
+            aud_init(logf_, dlss_getproc, dir, dir))
+            g_dlssState = 1;
+        logf_("dlss: %s", g_dlssState == 1 ? "ready" : "unavailable, TemporalAAFS output passes through");
+    }
+    if (g_dlssState != 1) { r_glDrawArrays(mode, first, count); return; }
+
+    GLint vp[4] = {0};
+    r_glGetIntegerv(GL_VIEWPORT, vp);
+    if (vp[2] != g_dlssW || vp[3] != g_dlssH) {
+        // DLAA for now: DLSS at the game's render size.
+        if (!aud_configure(vp[2], vp[3], vp[2], vp[3], 5 /* NVSDK_NGX_PerfQuality_Value_DLAA */, 0)) {
+            g_dlssState = -1;
+            r_glDrawArrays(mode, first, count);
+            return;
+        }
+        g_dlssW = vp[2];
+        g_dlssH = vp[3];
+        g_dlssReset = 2;
+    }
+    r_glBindImageTexture(DLSS_IMG_COLOR, aud_texture(AUD_TEX_COLOR), 0, 0, 0, GL_WRITE_ONLY, GL_RGBA16F);
+    r_glBindImageTexture(DLSS_IMG_DEPTH, aud_texture(AUD_TEX_DEPTH), 0, 0, 0, GL_WRITE_ONLY, GL_R32F);
+    r_glBindImageTexture(DLSS_IMG_MOTION, aud_texture(AUD_TEX_MOTION), 0, 0, 0, GL_WRITE_ONLY, GL_RG16F);
+    r_glDrawArrays(mode, first, count);
+    r_glMemoryBarrier(0xFFFFFFFFu);
+    aud_evaluate(0.0f, 0.0f, 1.0f, 1.0f, g_dlssReset > 0);
+    if (g_dlssReset > 0) g_dlssReset--;
+
+    GLint readFb = 0;
+    r_glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING_, &readFb);
+    if (!g_dlssReadFbo) dl.GenFb(1, &g_dlssReadFbo);
+    dl.BindFb(GL_READ_FRAMEBUFFER_, g_dlssReadFbo);
+    dl.FbTex(GL_READ_FRAMEBUFFER_, GL_COLOR_ATTACHMENT0_, GL_TEXTURE_2D, aud_texture(AUD_TEX_OUTPUT), 0);
+    GLboolean scissor = dl.IsEnabled(GL_SCISSOR_TEST);
+    if (scissor) dl.Disable(GL_SCISSOR_TEST);
+    dl.Blit(0, 0, g_dlssW, g_dlssH, vp[0], vp[1], vp[0] + vp[2], vp[1] + vp[3], GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    if (scissor) dl.Enable(GL_SCISSOR_TEST);
+    dl.BindFb(GL_READ_FRAMEBUFFER_, (GLuint)readFb);
+}
+#else
+static void dlss_draw(GLenum mode, GLint first, GLsizei count) { r_glDrawArrays(mode, first, count); }
+#endif
+
+// ----------------------------------------------------------------------------------------
 // Uniform forwarding (shaderpack/forward.txt):  <SourceProgram> <srcUniform> <DestProgram|*> <dstUniform>
 // The last value the game set on the source program is replayed into the destination
 // program whenever it is used (e.g. SkyFS.uSunPosition -> DeferredFS.uHookSunPos).
@@ -1484,6 +1590,14 @@ static void check_extras(GLuint prog, ProgRec *p)
         GLint loc = r_glGetUniformLocation(prog, giUni[i].name);
         if (loc >= 0) { r_glUniform1i(loc, giUni[i].unit); p->usesGI = 1; p->hasExtras = 1; }
     }
+    static const struct { const char *name; GLint unit; } dlssUni[3] = {
+        {"auDlssColor", 2}, {"auDlssDepth", 3}, {"auDlssMotion", 4}};
+    p->usesDlss = 0;
+    for (int i = 0; i < 3; i++) {
+        GLint loc = r_glGetUniformLocation(prog, dlssUni[i].name);
+        if (loc >= 0) { r_glUniform1i(loc, dlssUni[i].unit); p->usesDlss = 1; p->hasExtras = 1; }
+    }
+    if (!p->usesDlss && g_dlssProg == prog) g_dlssProg = 0;
 }
 
 // Minecraft-style "wetness": follows the rain signal with Optifine's default half-lives
@@ -1548,6 +1662,7 @@ static void apply_extras(ProgRec *p)
     }
     if (p->locVoxGeo >= 0 || p->locVoxCol >= 0) vox_use(p);
     if (p->usesGI) g_giProg = g_curProg;
+    if (p->usesDlss) g_dlssProg = g_curProg;
     if (p->locFrame >= 0) r_glUniform1i(p->locFrame, g_frame);
     if (p->locWetness >= 0) r_glUniform1f(p->locWetness, g_wetness);
     if (p->locTime >= 0) {
