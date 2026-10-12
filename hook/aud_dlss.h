@@ -1,0 +1,35 @@
+// Aurora Shaders - DLSS bridge (aud_dlss.c): NVIDIA DLSS on a private Vulkan device whose
+// images are shared with the game's OpenGL context. All functions run on the GL thread with
+// the game's context current.
+#ifndef AUD_DLSS_H
+#define AUD_DLSS_H
+
+typedef void (*AudLogFn)(const char *fmt, ...);
+typedef void *(*AudGetProcFn)(const char *name);   // GL entry points (core and extensions)
+
+// Shared images, as GL textures. Inputs at render size, AUD_TEX_OUTPUT at output size.
+enum {
+    AUD_TEX_COLOR,      // RGBA16F scene colour
+    AUD_TEX_DEPTH,      // R32F depth (hardware depth convention: 0 near, 1 far)
+    AUD_TEX_MOTION,     // RG16F motion vectors, pixels from this frame to the last (render size)
+    AUD_TEX_OUTPUT,     // RGBA16F upscaled result (output size)
+    AUD_TEX_COUNT
+};
+
+// Vulkan device + NGX core; dllDir holds nvngx_dlss.dll, dataDir gets NGX's log/cache.
+// Returns 1 when DLSS super resolution is available on this machine.
+int aud_init(AudLogFn log, AudGetProcFn glGetProc, const wchar_t *dllDir, const wchar_t *dataDir);
+
+// (Re)creates the DLSS feature and the shared images. quality: NVSDK_NGX_PerfQuality_Value.
+int aud_configure(int renderW, int renderH, int outW, int outH, int quality, int hdr);
+
+unsigned aud_texture(int which);
+
+// Hands this frame's inputs (already written into the shared textures) to DLSS and makes
+// the GL context wait, on the GPU, until the output is ready. jitter in pixels; mvScale
+// converts the motion texture into pixels; reset after camera cuts.
+int aud_evaluate(float jitterX, float jitterY, float mvScaleX, float mvScaleY, int reset);
+
+void aud_shutdown(void);
+
+#endif

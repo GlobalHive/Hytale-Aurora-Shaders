@@ -136,7 +136,7 @@
 #define AU_PT_HISTORY 24.0            // frames the path tracer averages over (more = smoother, slower to react)
 #define AU_PT_SKY_LIGHT 0.8           // how much the traced sky visibility shapes the ambient light
 #define AU_PT_LIGHTS 0                // experimental: path-traced light from FULLBRIGHT blocks (misses torches, they are models)
-#define AU_PT_LIGHT_STRENGTH 1.5
+#define AU_PT_LIGHT_STRENGTH 1.50
 #define AU_PT_LIGHT_RANGE 14.0        // blocks
 #define AU_PT_AMBIENT_BOUNCE 1.0      // how much sky light bounced surfaces pass on (multiple bounces)
 #define AU_VOXEL_DEBUG 0              // 1 = show the voxel grid (ray cast from the camera), 2 = blend over the scene

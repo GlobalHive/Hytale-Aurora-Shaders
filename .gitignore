@@ -29,3 +29,8 @@ tools/shot.ps1
 
 # NVIDIA DLSS SDK (proprietary, not redistributable here) and Khronos Vulkan headers, fetched locally
 third_party/
+tools/dlss_test/*.exe
+tools/dlss_test/*.pdb
+tools/dlss_test/*.dll
+tools/dlss_test/*.log
+tools/dlss_test/nvngx*
