@@ -20,7 +20,7 @@ A shader pack for Hytale: soft sun shadows, volumetric clouds, light shafts thro
 caves, reflective water, ray-traced bounce light and ambient occlusion, rain puddles, rainbows,
 a rotating star sky, lens flare and a filmic tonemap - with an in-game options menu.
 
-<!-- Screenshots -->
+> **Not tested online, use at your own discretion.**
 
 ## Install
 
