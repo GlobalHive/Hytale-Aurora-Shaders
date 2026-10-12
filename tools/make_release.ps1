@@ -22,5 +22,8 @@ Copy-Item (Join-Path $root 'build\opengl32.dll') (Join-Path $stage 'bin\opengl32
 
 $zip = Join-Path $dist "Aurora-Shaders-$Version.zip"
 if (Test-Path $zip) { Remove-Item $zip }
-Compress-Archive -Path $stage -DestinationPath $zip
+# Windows' tar.exe writes standard zips; Compress-Archive and .NET's ZipFile on Windows
+# PowerShell write backslash paths that other unzip tools mangle.
+& (Join-Path $env:SystemRoot 'System32\tar.exe') -a -cf $zip -C $dist "Aurora-Shaders-$Version"
+if ($LASTEXITCODE -ne 0) { throw "tar failed ($LASTEXITCODE)" }
 Write-Host "Release: $zip"
