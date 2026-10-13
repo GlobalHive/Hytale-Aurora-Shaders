@@ -14,8 +14,9 @@ AU_SSAO_STRENGTH | Ambient occlusion | range 0.0 3.0 0.05 | 1.25
 AU_BLOCKLIGHT_STRENGTH | Torch light | range 0.0 3.0 0.1 | 1.0
 AU_BLOCKLIGHT_HYTALE_HUE | Torch colour (warm to Hytale) | range 0.0 1.0 0.05 | 1.0
 AU_EMISSION_STRENGTH | Emissive glow | range 0.0 6.0 0.25 | 3.0
-AU_EMISSIVE_BLOOM | Emissive bloom | range 0.0 20.0 0.5 | 6.0
+AU_EMISSIVE_BLOOM | Emissive bloom | range 0.0 20.0 0.5 | 4.0
 AU_ORE_BLOOM | Ore glow halo | range 0.0 20.0 0.5 | 10.0
+AU_ORE_LIGHT | Ore light on surroundings | range 0.0 8.0 0.5 | 5.0
 AU_ORE_GLOW | Glowing ores | bool | 1
 AU_ORE_GLOW_STRENGTH | Ore glow strength | range 0.0 4.0 0.1 | 1.0
 AU_ORE_SHINE | Ore shine sweep | range 0.0 3.0 0.1 | 1.0
@@ -31,6 +32,7 @@ AU_LIGHT_HIGHLIGHT | Sun highlights | bool | 1
 AU_SHADOW_SOFTNESS | Shadow softness | range 0.0 3.0 0.1 | 1.0
 AU_CONTACT_SHADOWS | Contact shadows | bool | 1
 AU_FAR_SHADOWS | Distant shadows | bool | 1
+AU_CLOTH_TRANSMIT | Sun through curtains / cloth | range 0.0 2.0 0.1 | 0.5
 
 @ RTX
 AU_PATH_TRACING | Path tracing (experimental) | bool | 0

@@ -26,10 +26,11 @@
 #define AU_BLOCKLIGHT_HYTALE_HUE 1.0 // 0 = warm torch light, 1 = Hytale's per-light colours
 #define AU_EMISSION_STRENGTH 3.00
 #define AU_EMISSIVE_MAX 1.6           // brightest a glowing ore texel gets (keeps its colour; the glow is bloom)
-#define AU_EMISSIVE_BLOOM 6.0        // extra bloom for emissive blocks (flames, potions, lava)
+#define AU_EMISSIVE_BLOOM 4.0        // extra bloom for emissive blocks (flames, potions, lava)
 #define AU_ORE_GLOW 1                 // ore specks glow (1), 2 = debug: every REFLECTIVE block glows
 #define AU_ORE_GLOW_STRENGTH 1.0
 #define AU_ORE_BLOOM 10.0             // coloured glow halo around ore crystals
+#define AU_ORE_LIGHT 5.0              // light ore crystals cast on what is around them (RTX preset)
 #define AU_ORE_SHINE 1.0              // Hytale's sweeping glint over ores (near chunks)
 #define AU_MATERIALS 1                // block materials: polished stone/bricks/planks/ice gloss, metal reflections, rain soaking
 #define AU_MATERIAL_GLOSS 1.0
@@ -64,6 +65,7 @@
 #define AU_CONTACT_SHADOW_STEPS 18
 #define AU_CONTACT_SHADOW_DISTANCE 480.0
 #define AU_FAR_SHADOWS 1              // screen-space shadows past the shadow map
+#define AU_CLOTH_TRANSMIT 0.5         // sun through cloth and other two-sided models (a curtain shows the window behind it)
 #define AU_FAR_SHADOW_STEPS 32
 #define AU_NEAR_IGNORE 1.2             // depth (blocks) below which geometry is the first-person hand
 

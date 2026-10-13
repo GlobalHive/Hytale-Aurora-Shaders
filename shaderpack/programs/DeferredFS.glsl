@@ -65,6 +65,10 @@ vec3 AU_GIHitLight(vec2 uv)
     unpackGBufferMeta(g0.a, hitSSAO, hitBloom);
     vec3 alb = g0.rgb * AU_ALBEDO_MULT;
     if (hitBloom) return alb * AU_RTX_GI_EMISSIVE;
+    // Glowing ore crystals light up what is around them in their colour (the same evened-out
+    // tint as their glow).
+    float hitOre = AU_MaterialClass(g0.a) == 0u ? AU_OreGlowLevel(g0.a) : 0.0;
+    vec3 oreLight = hitOre > 0.0 ? alb * pow(max(GetLuminance(alb), 0.002), -0.5) * (hitOre * AU_ORE_LIGHT) : vec3(0.0);
     vec3 n = decodeNormal(textureLod(uNormalTexture, uv, 0.0).rg);
     // Foliage is lit flat (no N.L) by Hytale's shading.
     float NdotL = hitSSAO ? max(dot(n, lightVec), 0.0) : 0.6;
@@ -77,9 +81,9 @@ vec3 AU_GIHitLight(vec2 uv)
     // And the sky light it gets, for the further bounces (what fills a room with light):
     // Hytale's sky light there, through the same curve as the ambient term.
     float hitSky = smoothstep1(clamp(textureLod(uNormalTexture, uv, 0.0).b, 0.0, 1.0));
-    return alb * (lightColor * (getShadowFactor(uv) * NdotL) + hitGlow * 0.5 + ambientColor * (hitSky * AU_PT_AMBIENT_BOUNCE));
+    return alb * (lightColor * (getShadowFactor(uv) * NdotL) + hitGlow * 0.5 + ambientColor * (hitSky * AU_PT_AMBIENT_BOUNCE)) + oreLight;
 #else
-    return alb * lightColor * (getShadowFactor(uv) * NdotL);
+    return alb * lightColor * (getShadowFactor(uv) * NdotL) + oreLight;
 #endif
 }
 
@@ -272,13 +276,22 @@ void main()
 #endif
     vec3 color = AU_DoLighting(litAlbedo, normal, playerPos, skyLight, blockLight, shadow, aoUse,
                                subsurfaceMode, emission, smoothnessG, highlightMult, noDirectionalShading);
+    // Cloth and other models Hytale lights from both sides (no "clean backfaces"): the sun behind
+    // them comes through, in the pattern of whatever stands in between - at dawn a curtain shows
+    // the window's lattice behind it, like in Hytale. The shadow mask keeps the sun for these
+    // faces (DeferredShadowFS only darkens the back of solid blocks); a solid model's own body
+    // shadows its far side in the shadow map.
+    if (!useCleanShadowBackfaces && subsurfaceMode == 0 && !hasBloom && dot(normal, lightVec) < 0.0) {
+        float back = -dot(normal, lightVec);
+        color += litAlbedo * lightColor * (shadow * shadowTime * sunVisibility * mix(0.4, 1.0, back) * AU_CLOTH_TRANSMIT);
+    }
     // Emissive texels (flames, potions, lava) look like Hytale's: texture colour times the
     // light stored with them (models keep their glow tint there), unshadowed - mapped through
     // the inverse of the tonemap so they come out in that colour instead of washing to white.
     // Their glow is the bloom (BloomSelectFS boosts them).
     // (Capped below 1: right at the top of the curve the inverse explodes, and the tonemap's
     // path to white and the bloom would wash the texel out again.)
-    if (hasBloom) color = AU_InverseTonemap(pow(clamp(gbuffer0.rgb * rawStaticLight * (AU_EMISSION_STRENGTH / 2.5), 0.0, 0.96), vec3(2.2)));
+    if (hasBloom) color = AU_InverseTonemap(pow(clamp(gbuffer0.rgb * rawStaticLight * (AU_EMISSION_STRENGTH / 3.0), 0.0, 0.92), vec3(2.2)));
     // Glowing ores: the glow lights the crystal evenly - the texture's dark/light contrast is
     // compressed (its colour kept) so it doesn't turn grainy - strongest on the facets facing
     // the camera, so the crystal keeps its shape - and keeps its hue: the brightest channel is
