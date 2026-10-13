@@ -278,7 +278,7 @@ void main()
     // Their glow is the bloom (BloomSelectFS boosts them).
     // (Capped below 1: right at the top of the curve the inverse explodes, and the tonemap's
     // path to white and the bloom would wash the texel out again.)
-    if (hasBloom) color = AU_InverseTonemap(pow(clamp(gbuffer0.rgb * rawStaticLight * (AU_EMISSION_STRENGTH / 3.0), 0.0, 0.88), vec3(2.2)));
+    if (hasBloom) color = AU_InverseTonemap(pow(clamp(gbuffer0.rgb * rawStaticLight * (AU_EMISSION_STRENGTH / 2.5), 0.0, 0.96), vec3(2.2)));
     // Glowing ores: the glow lights the crystal evenly - the texture's dark/light contrast is
     // compressed (its colour kept) so it doesn't turn grainy - strongest on the facets facing
     // the camera, so the crystal keeps its shape - and keeps its hue: the brightest channel is

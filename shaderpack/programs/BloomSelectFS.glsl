@@ -44,7 +44,8 @@ void main(void)
     }
 #if EMISSIVE
     vec4 emissive = texture(uEmissiveTexture, fragTexCoords.xy);
-    linearColor += pow(max(emissive.rgb, vec3(0.0)), vec3(2.2)) * emissive.a;
+    // Glow from see-through and particle sources (flames, glowing glass) - as strong as the rest.
+    linearColor += pow(max(emissive.rgb, vec3(0.0)), vec3(2.2)) * emissive.a * AU_EMISSIVE_BLOOM;
 #endif
 #if AU_BLOOM_FOG
     AU_InitCommon();

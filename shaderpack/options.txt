@@ -12,9 +12,10 @@ AU_CAVE_LIGHTING | Cave lighting % | range 0.0 500.0 25.0 | 250.0
 @ Lighting
 AU_SSAO_STRENGTH | Ambient occlusion | range 0.0 3.0 0.05 | 1.25
 AU_BLOCKLIGHT_STRENGTH | Torch light | range 0.0 3.0 0.1 | 1.0
-AU_BLOCKLIGHT_HYTALE_HUE | Torch colour (warm to Hytale) | range 0.0 1.0 0.05 | 0.65
+AU_BLOCKLIGHT_HYTALE_HUE | Torch colour (warm to Hytale) | range 0.0 1.0 0.05 | 1.0
 AU_EMISSION_STRENGTH | Emissive glow | range 0.0 6.0 0.25 | 3.0
 AU_EMISSIVE_BLOOM | Emissive bloom | range 0.0 20.0 0.5 | 6.0
+AU_ORE_BLOOM | Ore glow halo | range 0.0 20.0 0.5 | 10.0
 AU_ORE_GLOW | Glowing ores | bool | 1
 AU_ORE_GLOW_STRENGTH | Ore glow strength | range 0.0 4.0 0.1 | 1.0
 AU_ORE_SHINE | Ore shine sweep | range 0.0 3.0 0.1 | 1.0

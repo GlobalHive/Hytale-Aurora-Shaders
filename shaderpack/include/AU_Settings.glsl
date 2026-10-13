@@ -23,13 +23,13 @@
 #define AU_DIRECTIONAL_SHADING 1
 #define AU_BLOCKLIGHT_STRENGTH 1.0
 #define AU_BLOCKLIGHT_RANGE 1.75       // Hytale glow -> Minecraft lightmap scale
-#define AU_BLOCKLIGHT_HYTALE_HUE 0.65 // 0 = warm torch light, 1 = Hytale's per-light colours
+#define AU_BLOCKLIGHT_HYTALE_HUE 1.0 // 0 = warm torch light, 1 = Hytale's per-light colours
 #define AU_EMISSION_STRENGTH 3.00
 #define AU_EMISSIVE_MAX 1.6           // brightest a glowing ore texel gets (keeps its colour; the glow is bloom)
 #define AU_EMISSIVE_BLOOM 6.0        // extra bloom for emissive blocks (flames, potions, lava)
 #define AU_ORE_GLOW 1                 // ore specks glow (1), 2 = debug: every REFLECTIVE block glows
 #define AU_ORE_GLOW_STRENGTH 1.0
-#define AU_ORE_BLOOM 3.0
+#define AU_ORE_BLOOM 10.0             // coloured glow halo around ore crystals
 #define AU_ORE_SHINE 1.0              // Hytale's sweeping glint over ores (near chunks)
 #define AU_MATERIALS 1                // block materials: polished stone/bricks/planks/ice gloss, metal reflections, rain soaking
 #define AU_MATERIAL_GLOSS 1.0
@@ -174,7 +174,7 @@
 #define AU_LENSFLARE_I 2.50             // lens flare strength
 #define AU_SUN_GLARE 1.0              // soft lens glare around the visible sun
 #define AU_TAA 1                      // reprojected TAA (cleans up dithered shafts / shadows / GI)
-#define AU_DLSS 1                     // NVIDIA DLSS instead of the TAA: 1 Super Resolution, 2 Ray Reconstruction (hook/aud_dlss.c; RTX GPUs)
+#define AU_DLSS 2                     // NVIDIA DLSS instead of the TAA: 1 Super Resolution, 2 Ray Reconstruction (hook/aud_dlss.c; RTX GPUs)
 #define AU_RENDER_SCALE 100            // hook: Hytale's Render Scale = DLSS render size, written for the next start (0 = Hytale's slider)
 #define AU_DLSS_PRESET 0              // hook: DLSS model, 0 NVIDIA's default, 1 sharpest (K / RR E), 2 less ghosting (J / RR D)
 #define AU_DLSS_JITTER 1              // hook: sub-pixel camera jitter while DLSS runs

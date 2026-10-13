@@ -241,6 +241,19 @@ public static class AuroraPrep
         File.WriteAllText(Path.Combine(pack, "programs", name + ".glsl"), s, Utf8);
     }
 
+    // The game's ParticleFS with glowing particles (flames, sparks) mapped through the inverse of
+    // the pack's tonemap, so they show Hytale's colour instead of a pale, darker one.
+    public static void MakeParticleFS(string pack)
+    {
+        string s = Read(Path.Combine(pack, "original", "ParticleFS.glsl"));
+        string call = "    processOIT(color, fragDepthVS, sceneLinearDepth, screenUV, blendMode, hasBloom, outColor0, outColor1);\n";
+        if (s.IndexOf(call, StringComparison.Ordinal) < 0) throw new Exception("ParticleFS: game shader changed, processOIT call not found");
+        s = s.Replace(call, "    if (hasBloom) color.rgb = AU_InverseTonemap(pow(clamp(color.rgb, 0.0, 0.88), vec3(2.2)));   // Aurora\n" + call);
+        int nl = s.IndexOf('\n');
+        s = s.Substring(0, nl + 1) + "#include \"AU_Tonemap.glsl\"\n" + s.Substring(nl + 1);
+        File.WriteAllText(Path.Combine(pack, "programs", "ParticleFS.glsl"), s, Utf8);
+    }
+
     // ---- Block materials --------------------------------------------------------------------
     // shaderpack/materials.txt: one line per 32x32 block texture of the game - a fingerprint of
     // its pixels (FNV-1a over RGBA, top row first, transparent texels as 0) and the material its
@@ -327,6 +340,8 @@ if (-not $MapChunkOnly) {
 Write-Host 'Generated shaderpack\programs\MapChunkFS.glsl'
 [AuroraPrep]::MakeMapChunkVS($pack, (Join-Path $PSScriptRoot 'mapchunk'))
 Write-Host 'Generated shaderpack\programs\MapChunkVS.glsl'
+[AuroraPrep]::MakeParticleFS($pack)
+Write-Host 'Generated shaderpack\programs\ParticleFS.glsl'
 foreach ($vs in 'BlockyModelVS', 'ParticleVS', 'SkyAndCloudsVS', 'BasicVS', 'BasicFogVS', 'BeamVS', 'TextVS') {
     [AuroraPrep]::MakeJitteredVS($pack, $vs)
 }
