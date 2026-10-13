@@ -44,3 +44,27 @@
         }
     }
 #endif
+
+    // Glowing ores: Hytale shades ore (and other shiny) blocks REFLECTIVE and sweeps a fake
+    // glint over them. Instead, the texels that stand out from their tile's average colour
+    // (ore specks: much more colourful or brighter than the rock) glow and bloom.
+    float auOreGlow = 0.0;
+#if AU_ORE_GLOW
+    if (shadingMode == SHADING_REFLECTIVE && !hasBloom)
+    {
+        vec2 auTile = 32.0 / vec2(textureSize(uTexture, 0).xy);
+        vec2 auTileMin = floor(fragTexCoords / auTile) * auTile;
+        vec3 auAvg = textureLod(uTexture, vec3(auTileMin + auTile * 0.5, fragAtlasPages.x), 5.0).rgb;
+        vec3 auC = texColor.rgb;
+        float auMxC = max(auC.r, max(auC.g, auC.b)), auMnC = min(auC.r, min(auC.g, auC.b));
+        float auMxA = max(auAvg.r, max(auAvg.g, auAvg.b)), auMnA = min(auAvg.r, min(auAvg.g, auAvg.b));
+        float auSatC = (auMxC - auMnC) / max(auMxC, 0.001), auSatA = (auMxA - auMnA) / max(auMxA, 0.001);
+        float auLumC = dot(auC, vec3(0.299, 0.587, 0.114)), auLumA = dot(auAvg, vec3(0.299, 0.587, 0.114));
+        bool auColourful = auSatC > 0.35 && auSatC - auSatA > 0.22;
+        bool auBright = auLumC > 0.35 && auLumC > auLumA * 1.7;
+        auOreGlow = auColourful || auBright ? 1.0 : 0.0;
+#if AU_ORE_GLOW == 2
+        auOreGlow = 1.0;   // debug: every REFLECTIVE block
+#endif
+    }
+#endif

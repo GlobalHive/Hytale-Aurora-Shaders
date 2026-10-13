@@ -31,8 +31,17 @@ out vec3 outColor;
 
 void main(void)
 {
-    vec3 color = max(texture(uSceneColorTexture, fragTexCoords.xy).rgb, vec3(0.0));
+    vec4 scene = texture(uSceneColorTexture, fragTexCoords.xy);
+    vec3 color = max(scene.rgb, vec3(0.0));
     vec3 linearColor = pow(color, vec3(2.2));
+    // Emissive blocks (flames, potions, lava) and glowing ores bloom much more than the rest,
+    // like Hytale's own glow. DeferredFS leaves 1 SSAO / 2 emissive / 4 ore in the alpha
+    // (larger values: sky and other passes).
+    uint meta = uint(round(scene.a * 255.0));
+    if (meta < 8u) {
+        if ((meta & 2u) != 0u) linearColor *= AU_EMISSIVE_BLOOM;
+        else if ((meta & 4u) != 0u) linearColor *= AU_ORE_BLOOM;
+    }
 #if EMISSIVE
     vec4 emissive = texture(uEmissiveTexture, fragTexCoords.xy);
     linearColor += pow(max(emissive.rgb, vec3(0.0)), vec3(2.2)) * emissive.a;

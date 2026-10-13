@@ -161,7 +161,7 @@ public static class AuroraPrep
                 "    // (Hytale fake shininess removed by Aurora Shaders)\n");
         s = Rep(s, "writeToGBuffer(albedo, normalWS, light, fragStaticLight.a, hasSSAO, hasBloom, useCleanShadowBackfaces, outColor0, outColor1, outColor2);\n",
                 "writeToGBuffer(albedo, normalWS, light, fragStaticLight.a, hasSSAO, hasBloom, useCleanShadowBackfaces, outColor0, outColor1, outColor2);\n"
-                + "    outColor0.a = (round(outColor0.a * 255.0) + 128.0) / 255.0;   // Aurora: the light target holds pure glow\n");
+                + "    outColor0.a = (round(outColor0.a * 255.0) + 128.0 + 4.0 * auOreGlow) / 255.0;   // Aurora: pure glow (128), ore glow (4)\n");
         s = Rep(s, "    bool useCleanShadowBackfaces = effectID > EFFECT_WIND;\n\n#if DEFERRED\n\n    writeToGBuffer(",
                 "    bool useCleanShadowBackfaces = effectID > EFFECT_WIND;\n\n#if DEFERRED\n"
                 + Read(Path.Combine(snip, "gennormals.glsl")) + "\n    writeToGBuffer(");

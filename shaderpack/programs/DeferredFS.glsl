@@ -10,6 +10,7 @@
 #include "Reconstruction_inc.glsl"
 #include "Fog_inc.glsl"
 #include "AU_Lighting.glsl"
+#include "AU_Tonemap.glsl"
 #include "AU_VL.glsl"
 #include "AU_Clouds.glsl"
 #include "AU_Caustics.glsl"
@@ -67,7 +68,8 @@ vec3 AU_GIHitLight(vec2 uv)
     vec3 n = decodeNormal(textureLod(uNormalTexture, uv, 0.0).rg);
     // Foliage is lit flat (no N.L) by Hytale's shading.
     float NdotL = hitSSAO ? max(dot(n, lightVec), 0.0) : 0.6;
-    // Plus the torch light it gets (Hytale's glow), so that bounces too.
+#if AU_VOXELS
+    // Path tracing: plus the torch light it gets (Hytale's glow), so that bounces too.
     vec3 hitStatic = textureLod(uLightTexture, uv, 0.0).rgb;
     vec3 hitGlow = (uint(round(g0.a * 255.0)) & AU_GBUFFER_PURE_GLOW) != 0u
                  ? AU_GlowToBlockLight(hitStatic, n, !hitSSAO)
@@ -76,6 +78,9 @@ vec3 AU_GIHitLight(vec2 uv)
     // Hytale's sky light there, through the same curve as the ambient term.
     float hitSky = smoothstep1(clamp(textureLod(uNormalTexture, uv, 0.0).b, 0.0, 1.0));
     return alb * (lightColor * (getShadowFactor(uv) * NdotL) + hitGlow * 0.5 + ambientColor * (hitSky * AU_PT_AMBIENT_BOUNCE));
+#else
+    return alb * lightColor * (getShadowFactor(uv) * NdotL);
+#endif
 }
 
 // For the path tracer's sky light: albedo luminance and Hytale sky light of an on-screen
@@ -173,6 +178,9 @@ void main()
 
     // Emissive (lava, flames, crystals): brighter texels glow more.
     if (hasBloom) { emission = AU_EMISSION_STRENGTH * mix(0.5, 1.6, smoothstep(0.15, 0.9, GetLuminance(albedo))); shadow = 1.0; }
+    // Glowing ore specks (flagged by the terrain pass, see tools/mapchunk/gennormals.glsl).
+    bool oreGlow = (uint(round(gbuffer0.a * 255.0)) & AU_GBUFFER_ORE_GLOW) != 0u;
+    if (oreGlow && !hasBloom) emission = AU_ORE_GLOW_STRENGTH * mix(0.6, 1.4, GetLuminance(albedo));
 
     // Shadows of the volumetric clouds drifting over the land.
     shadow *= hasBloom ? 1.0 : GetCloudShadow(playerPos);
@@ -232,11 +240,31 @@ void main()
     }
     vec3 color = AU_DoLighting(albedo, normal, playerPos, skyLight, blockLight, shadow, aoUse,
                                subsurfaceMode, emission, smoothnessG, highlightMult, noDirectionalShading);
+    // Emissive texels (flames, potions, lava) look like Hytale's: texture colour times the
+    // light stored with them (models keep their glow tint there), unshadowed - mapped through
+    // the inverse of the tonemap so they come out in that colour instead of washing to white.
+    // Their glow is the bloom (BloomSelectFS boosts them).
+    // (Capped below 1: right at the top of the curve the inverse explodes, and the tonemap's
+    // path to white and the bloom would wash the texel out again.)
+    if (hasBloom) color = AU_InverseTonemap(pow(clamp(gbuffer0.rgb * rawStaticLight * (AU_EMISSION_STRENGTH / 3.0), 0.0, 0.88), vec3(2.2)));
+    // Glowing ore texels keep their hue too: the brightest channel is eased off softly.
+    if (oreGlow) {
+        float mx = max(color.r, max(color.g, color.b));
+        const float knee = 1.0;
+        if (mx > knee) {
+            float room = AU_EMISSIVE_MAX - knee;
+            color *= (knee + room * (1.0 - exp(-(mx - knee) / room))) / mx;
+        }
+    }
 
 #if AU_PRESET >= 2
     // RTX preset: screen-space GI bounce + glossy reflections on solid surfaces.
     if (!hasBloom) {
+#if AU_VOXELS
+        color += albedo * gi * AU_PT_GI_STRENGTH;
+#else
         color += albedo * gi * AU_RTX_GI_STRENGTH;
+#endif
 #if AU_VOXELS && AU_PT_LIGHTS
         color += albedo * ptLight * AU_PT_LIGHT_STRENGTH;
 #endif
@@ -361,5 +389,6 @@ void main()
         color = md > 32.0 ? vec3(0.5, 0.0, 0.0) : vec3(fract(md * 0.5), 1.0 - md / 32.0, 0.2);
     }
 #endif
-    outColor = vec4(color, packGBufferMeta(hasSSAO, hasBloom));
+    // Meta for the bloom pass: 1 SSAO, 2 emissive, 4 ore glow.
+    outColor = vec4(color, float((hasSSAO ? 1u : 0u) | (hasBloom ? 2u : 0u) | (oreGlow ? 4u : 0u)) / 255.0);
 }
