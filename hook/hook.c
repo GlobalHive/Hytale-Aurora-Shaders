@@ -1041,6 +1041,10 @@ static void dlss_draw(GLenum mode, GLint first, GLsizei count);
 static int dlss_present(void);
 static int dlss_present_rect(int x, int y, int w, int h, const char *how);
 static float g_jitterNdc[2], g_jitterPx[2], g_jitterNextPx[2];   // see jitter_next_frame
+// Hook-side settings (AU_Settings.glsl, read at every reload): DLSS jitter on/off and the signs
+// of the jitter / motion handed to DLSS (axis conventions).
+static double g_setDlssJitter = 1, g_setJitterSX = 1, g_setJitterSY = 1, g_setMotionSX = 1, g_setMotionSY = 1;
+static double g_setDlssDebug = 0;   // 1 = show DLSS's colour input, 2 = reset every frame, 3 depth, 4 motion
 static int g_dlssPresentedFrame = -100;   // last frame DLSS's output reached the window
 static int g_postPresent;                 // the frame is on the window: UI follows, no jitter
 
@@ -1553,7 +1557,8 @@ static int dlss_present_rect(int x, int y, int w, int h, const char *how)
     if (g_dlssState != 1 || g_dlssOW != w || g_dlssOH != h) return 0;
     GLint vp[4] = {x, y, w, h};
     r_glMemoryBarrier(0xFFFFFFFFu);
-    if (!aud_evaluate(g_jitterPx[0], g_jitterPx[1], 1.0f, 1.0f, g_dlssReset > 0)) return 0;
+    if (!aud_evaluate(g_jitterPx[0] * (float)g_setJitterSX, g_jitterPx[1] * (float)g_setJitterSY,
+                      (float)g_setMotionSX, (float)g_setMotionSY, g_dlssReset > 0 || g_setDlssDebug == 2)) return 0;
     if (g_dlssReset > 0) g_dlssReset--;
     g_dlssPresentedFrame = g_frame;
 
@@ -1561,7 +1566,7 @@ static int dlss_present_rect(int x, int y, int w, int h, const char *how)
     r_glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING_, &readFb);
     if (!g_dlssReadFbo) dl.GenFb(1, &g_dlssReadFbo);
     dl.BindFb(GL_READ_FRAMEBUFFER_, g_dlssReadFbo);
-    dl.FbTex(GL_READ_FRAMEBUFFER_, GL_COLOR_ATTACHMENT0_, GL_TEXTURE_2D, aud_texture(AUD_TEX_OUTPUT), 0);
+    dl.FbTex(GL_READ_FRAMEBUFFER_, GL_COLOR_ATTACHMENT0_, GL_TEXTURE_2D, aud_texture(g_setDlssDebug == 1 ? AUD_TEX_COLOR : g_setDlssDebug == 3 ? AUD_TEX_DEPTH : g_setDlssDebug == 4 ? AUD_TEX_MOTION : AUD_TEX_OUTPUT), 0);
     GLboolean scissor = dl.IsEnabled(GL_SCISSOR_TEST);
     if (scissor) dl.Disable(GL_SCISSOR_TEST);
     dl.Blit(0, 0, g_dlssOW, g_dlssOH, vp[0], vp[1], vp[0] + vp[2], vp[1] + vp[3], GL_COLOR_BUFFER_BIT, GL_NEAREST);
@@ -1621,7 +1626,7 @@ static void jitter_next_frame(void)
     g_jitterPx[0] = g_jitterNextPx[0];
     g_jitterPx[1] = g_jitterNextPx[1];
 #if AU_HAS_DLSS
-    if (g_dlssState == 1 && g_dlssProg && g_dlssW > 0 && g_frame - g_dlssPresentedFrame <= 2) {
+    if (g_setDlssJitter != 0 && g_dlssState == 1 && g_dlssProg && g_dlssW > 0 && g_frame - g_dlssPresentedFrame <= 2) {
         int i = 1 + g_frame % 32;
         g_jitterNextPx[0] = halton(i, 2) - 0.5f;
         g_jitterNextPx[1] = halton(i, 3) - 0.5f;
@@ -1909,8 +1914,35 @@ static void profile_collect(void)
     g_profState = 0;
 }
 
+// Reads "#define NAME value" from include/AU_Settings.glsl (def when missing).
+static double settings_num(const char *txt, const char *name, double def)
+{
+    if (!txt) return def;
+    size_t n = strlen(name);
+    for (const char *c = strstr(txt, "#define "); c; c = strstr(c + 1, "#define ")) {
+        const char *q = c + 8;
+        while (*q == ' ' || *q == '\t') q++;
+        if (strncmp(q, name, n) || (q[n] != ' ' && q[n] != '\t')) continue;
+        return atof(q + n);
+    }
+    return def;
+}
+
+static void settings_load(void)
+{
+    char *txt = read_file("include\\AU_Settings.glsl", NULL);
+    g_setDlssJitter = settings_num(txt, "AU_DLSS_JITTER", 1);
+    g_setJitterSX = settings_num(txt, "AU_DLSS_JITTER_SX", 1);
+    g_setJitterSY = settings_num(txt, "AU_DLSS_JITTER_SY", 1);
+    g_setMotionSX = settings_num(txt, "AU_DLSS_MOTION_SX", 1);
+    g_setMotionSY = settings_num(txt, "AU_DLSS_MOTION_SY", 1);
+    g_setDlssDebug = settings_num(txt, "AU_DLSS_DEBUG", 0);
+    free(txt);
+}
+
 static void do_reload(void)
 {
+    settings_load();
     EnterCriticalSection(&g_lock);
     g_enabled = !g_toggleOff && !pack_flag("programs\\_disabled");
     load_index();

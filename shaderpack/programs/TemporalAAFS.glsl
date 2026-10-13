@@ -72,7 +72,10 @@ void main()
     float lin = min(texture(uHookDepth, uv).r, 1.0);
     vec3 posVS = PositionFromLinearDepth(uv, -lin * FarClip, ProjInfos);
     vec4 prevClip = ReprojectionMatrix * vec4(posVS, 1.0);
-    vec2 prevUV = prevClip.xy / prevClip.w * 0.5 + 0.5;
+    vec4 curClip = ProjectionMatrix * vec4(posVS, 1.0);
+    // Motion = previous minus current projection of the same point, so the depth
+    // reconstruction's mismatch with Hytale's projection cancels out.
+    vec2 prevUV = uv + (prevClip.xy / prevClip.w - curClip.xy / curClip.w) * 0.5;
     bool offscreen = any(lessThan(prevUV, vec2(0.0))) || any(greaterThan(prevUV, vec2(1.0)));
 
     // Neighbourhood statistics (3x3) for variance clipping.

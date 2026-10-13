@@ -470,10 +470,21 @@ void main()
         vec3 posVS = PositionFromLinearDepth(fragTexCoords, -lin * FarClip, ProjInfos);
         vec4 prevClip = ReprojectionMatrix * vec4(posVS, 1.0);
         vec2 prevUV = prevClip.xy / prevClip.w * 0.5 + 0.5;
-        vec2 motion = lin * FarClip < AU_NEAR_IGNORE ? vec2(0.0) : (prevUV - fragTexCoords) / uPixelSize;
+        // Against the same point projected with this frame's matrix (not the pixel position):
+        // the depth reconstruction doesn't match Hytale's projection exactly, and the
+        // difference showed up as motion in a still image that DLSS smeared its history with.
+        vec4 curClip = ProjectionMatrix * vec4(posVS, 1.0);
+        vec2 curUV = curClip.xy / curClip.w * 0.5 + 0.5;
+        vec2 motion = lin * FarClip < AU_NEAR_IGNORE ? vec2(0.0) : (prevUV - curUV) / uPixelSize;
         ivec2 pix = ivec2(gl_FragCoord.xy);
         imageStore(auDlssColor, pix, vec4(outColor.rgb, 1.0));
+#if AU_DLSS_DEPTH_HW
+        // Hardware-style depth (0 near .. 1 far, non-linear) from the linear depth.
+        float n = NearFarClip.x, z = max(lin * FarClip, n);
+        imageStore(auDlssDepth, pix, vec4(lin >= 1.0 ? 1.0 : (1.0 / n - 1.0 / z) / (1.0 / n - 1.0 / FarClip)));
+#else
         imageStore(auDlssDepth, pix, vec4(lin));
+#endif
         imageStore(auDlssMotion, pix, vec4(motion, 0.0, 0.0));
     }
 #endif

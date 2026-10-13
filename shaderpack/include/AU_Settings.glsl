@@ -164,6 +164,13 @@
 #define AU_SUN_GLARE 1.0              // soft lens glare around the visible sun
 #define AU_TAA 1                      // reprojected TAA (cleans up dithered shafts / shadows / GI)
 #define AU_DLSS 1                     // NVIDIA DLSS instead of the TAA (hook/aud_dlss.c; RTX GPUs)
+#define AU_DLSS_JITTER 1              // hook: sub-pixel camera jitter while DLSS runs
+#define AU_DLSS_JITTER_SX 1           // hook: sign of the jitter handed to DLSS (axis conventions)
+#define AU_DLSS_JITTER_SY 1
+#define AU_DLSS_MOTION_SX 1           // hook: sign of the motion vectors handed to DLSS
+#define AU_DLSS_MOTION_SY 1
+#define AU_DLSS_DEBUG 0               // hook: 1 = show DLSS's colour input, 2 = reset every frame, 3 = depth, 4 = motion
+#define AU_DLSS_DEPTH_HW 0            // hand DLSS hardware-style (non-linear) depth instead of linear
 #define AU_TAA_BLEND 0.93             // history weight (higher = smoother, softer motion)
 #define AU_TAA_CLIP 1.25              // neighbourhood variance clip (lower = less ghosting)
 #define AU_SHARPENING 2               // image sharpening (0-10)
