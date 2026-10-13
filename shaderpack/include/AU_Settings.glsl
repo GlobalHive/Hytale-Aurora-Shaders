@@ -115,6 +115,10 @@
 
 // ---- Water ---------------------------------------------------------------------------
 #define AU_WATER 1
+#define AU_GLASS 1                    // glass tints and reflects what is behind it
+#define AU_GLASS_TINT 0.7
+#define AU_GLASS_ABSORB 0.35            // how much light glass takes away from the view through it
+#define AU_GLASS_REFLECT 0.8
 #define AU_WATER_FOG_MULT 1.0
 #define AU_WATER_SSR_STEPS 48
 #define AU_WATER_REFRACTION 2.00       // refraction strength

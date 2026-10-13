@@ -88,7 +88,12 @@
         float auGem = max(smoothstep(0.4, 0.8, auSat) * smoothstep(0.05, 0.35, auLum), smoothstep(0.35, 0.75, auLum));
         auOreGlow = 0.3 + 0.7 * auGem;
 #if NEAR
-        auOreGlow = max(auOreGlow, computeFakeShininess(texColor.rgb, normalWS, CameraDirection.xyz).a * AU_ORE_SHINE);
+        // Hytale's sweeping glint: a band of light passing over the crystal faces one after
+        // another. Like Hytale, it brightens the colour (the glow then carries it); stronger,
+        // since our crystals already glow.
+        vec4 auShine = computeFakeShininess(texColor.rgb, normalWS, CameraDirection.xyz);
+        albedo.rgb += auShine.rgb * (2.5 * AU_ORE_SHINE);
+        auOreGlow = max(auOreGlow, auShine.a * AU_ORE_SHINE);
 #endif
 #if AU_ORE_GLOW == 2
         auOreGlow = 1.0;   // debug: every REFLECTIVE block

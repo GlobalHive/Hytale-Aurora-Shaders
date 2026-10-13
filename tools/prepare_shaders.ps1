@@ -166,6 +166,10 @@ public static class AuroraPrep
                 "    bool useCleanShadowBackfaces = effectID > EFFECT_WIND;\n\n#if DEFERRED\n"
                 + Read(Path.Combine(snip, "gennormals.glsl")) + "\n    writeToGBuffer(");
         string lit = "    outColor0.rgb = albedo * light * shadow;\n    outColor0.a = texColor.a;\n";
+        // Glass the pack composites itself (lighting.glsl) is written opaque into the OIT pass.
+        s = Rep(s, "    color.a = isWater(effectID) ? 1.0 : texColor.a;\n",
+                "#if AU_FORWARD\n    color.a = isWater(effectID) || auGlass ? 1.0 : texColor.a;\n#else\n"
+                + "    color.a = isWater(effectID) ? 1.0 : texColor.a;\n#endif\n");
         s = Rep(s, lit, lit + "\n" + Read(Path.Combine(snip, "lighting.glsl")));
 
         int start = s.IndexOf("    if (isWater(effectID) && uWaterQuality >= 1)\n    {\n        vec2 screenUV", StringComparison.Ordinal);

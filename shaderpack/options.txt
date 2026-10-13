@@ -17,6 +17,7 @@ AU_EMISSION_STRENGTH | Emissive glow | range 0.0 6.0 0.25 | 3.0
 AU_EMISSIVE_BLOOM | Emissive bloom | range 0.0 20.0 0.5 | 6.0
 AU_ORE_GLOW | Glowing ores | bool | 1
 AU_ORE_GLOW_STRENGTH | Ore glow strength | range 0.0 4.0 0.1 | 1.0
+AU_ORE_SHINE | Ore shine sweep | range 0.0 3.0 0.1 | 1.0
 AU_MATERIALS | Block materials (metal, polish, wet) | bool | 1
 AU_MATERIAL_GLOSS | Material gloss | range 0.0 2.0 0.1 | 1.0
 AU_RAIN_WETNESS | Rain wetness | range 0.0 2.0 0.1 | 1.0
@@ -74,6 +75,9 @@ AU_LIGHTSHAFT_NIGHT_I | Moonlight haze | range 0.0 1.0 0.05 | 0.35
 
 @ Water
 AU_WATER | Shader water | bool | 1
+AU_GLASS | Shader glass | bool | 1
+AU_GLASS_TINT | Glass tint | range 0.0 1.0 0.05 | 0.7
+AU_GLASS_ABSORB | Glass darkness | range 0.0 0.9 0.05 | 0.35
 AU_WATER_REFRACTION | Refraction | range 0.0 4.0 0.25 | 2.0
 AU_WATER_FOAM | Shore foam | range 0.0 2.0 0.1 | 0.5
 AU_WATER_CAUSTICS | Underwater caustics | bool | 1
