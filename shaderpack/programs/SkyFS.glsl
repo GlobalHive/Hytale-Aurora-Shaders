@@ -103,6 +103,14 @@ void main()
     if (1.0 == uDrawSkySunMoonStars.w) sky += GetStars(dir, VdotU, VdotS);
 #endif
 
+    // Hytale's moon glow: the halo around the moon, in the colour the game sets for it.
+    if (1.0 == uDrawSkySunMoonStars.z && AU_MOON_GLOW > 0.0) {
+        float dm = min(distance(fragSpherePosition, -uSunPosition) / (uMoonScale * 0.4), 0.99);
+        // (Not behind the disc itself: the moon is drawn over the sky and washed out.)
+        float glow = (1.0 - clamp(sin(dm * 1.5707963), 0.0, 1.0)) * smoothstep(0.15, 0.4, dm);
+        sky = mix(sky, uMoonGlowColor.rgb, clamp(uMoonGlowColor.a * glow * uMoonOpacity * AU_MOON_GLOW, 0.0, 1.0));
+    }
+
     sky += AU_GetRainbow(dir, 100000.0, true, dither);
     sky = AU_AddVL(sky, GetVolumetricLight(dir, 100000.0, true, dither));
     // Sky seen from inside a cave (openings, or chunks the game culled): cave fog.
