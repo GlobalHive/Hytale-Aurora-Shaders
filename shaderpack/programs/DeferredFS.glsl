@@ -178,9 +178,25 @@ void main()
 
     // Emissive (lava, flames, crystals): brighter texels glow more.
     if (hasBloom) { emission = AU_EMISSION_STRENGTH * mix(0.5, 1.6, smoothstep(0.15, 0.9, GetLuminance(albedo))); shadow = 1.0; }
-    // Glowing ore specks (flagged by the terrain pass, see tools/mapchunk/gennormals.glsl).
-    float oreGlowAmount = hasBloom ? 0.0 : AU_OreGlowLevel(gbuffer0.a);
+    // Block materials (the terrain pass looks them up per atlas tile) and glowing ores share
+    // the meta bits: a material class means the level bits are the material's.
+    uint matClass = hasBloom || subsurfaceMode != 0 ? 0u : AU_MaterialClass(gbuffer0.a);
+    float matLevel = AU_MaterialLevel(gbuffer0.a);
+    float oreGlowAmount = hasBloom || AU_MaterialClass(gbuffer0.a) != 0u ? 0.0 : AU_OreGlowLevel(gbuffer0.a);
     bool oreGlow = oreGlowAmount > 0.0;
+    // Gloss of the material: polished stone, bricks and planks a sheen, ice and glass a mirror;
+    // metals reflect in their own colour. Rain soaks everything open to the sky (tops most,
+    // walls less): it all turns glossy, and porous blocks (soil, sand, gravel, stone) darken.
+    float matSmooth = 0.0, metal = 0.0, wet = 0.0;
+#if AU_MATERIALS
+    if (matClass == 1u) matSmooth = mix(0.12, 0.92, matLevel);
+    if (matClass == 2u) { matSmooth = mix(0.35, 0.85, matLevel); metal = 1.0; }
+    matSmooth = min(matSmooth * AU_MATERIAL_GLOSS, 0.95);
+    if (!hasBloom && subsurfaceMode == 0)
+        wet = max(rainFactor, uHookWetness) * smoothstep(0.6, 0.9, skyLight) * mix(0.35, 1.0, max0(normal.y)) * AU_RAIN_WETNESS;
+    if (matClass == 3u) albedo *= 1.0 - 0.4 * wet * (0.4 + 0.6 * matLevel);
+    matSmooth = max(matSmooth, wet * (matClass == 3u ? 0.5 : 0.7));
+#endif
 
     // Shadows of the volumetric clouds drifting over the land.
     shadow *= hasBloom ? 1.0 : GetCloudShadow(playerPos);
@@ -241,11 +257,20 @@ void main()
     // Ore crystals (the glowing texels of Hytale's REFLECTIVE blocks) are glossy like gems:
     // sharp sun glints here, reflections below.
     float crystal = smoothstep(0.0, 0.4, oreGlowAmount) * AU_ORE_GLOSS;
+    // Glossy materials and wet surfaces: sun glints (metals' brighter).
+    if (matSmooth > 0.0) {
+        smoothnessG = max(smoothnessG, 0.85 * matSmooth);
+        highlightMult = max(highlightMult, 1.0 + (2.0 + 2.0 * metal) * matSmooth);
+    }
     if (crystal > 0.0) {
         smoothnessG = max(smoothnessG, 0.8 * crystal);
         highlightMult = max(highlightMult, 1.0 + 3.0 * crystal);
     }
-    vec3 color = AU_DoLighting(albedo, normal, playerPos, skyLight, blockLight, shadow, aoUse,
+    vec3 litAlbedo = albedo;
+#if AU_PRESET >= 2
+    litAlbedo *= 1.0 - 0.45 * metal;
+#endif
+    vec3 color = AU_DoLighting(litAlbedo, normal, playerPos, skyLight, blockLight, shadow, aoUse,
                                subsurfaceMode, emission, smoothnessG, highlightMult, noDirectionalShading);
     // Emissive texels (flames, potions, lava) look like Hytale's: texture colour times the
     // light stored with them (models keep their glow tint there), unshadowed - mapped through
@@ -287,14 +312,18 @@ void main()
         // Faint grazing sheen on solids, plus wet surfaces facing up when it rains.
         float wetness = rainFactor * smoothstep(0.7, 0.95, normal.y) * smoothstep(0.6, 0.9, skyLight);
         float smoothness = subsurfaceMode != 0 ? 0.0 : mix(AU_RTX_SMOOTHNESS, 0.85, wetness);
-        smoothness = max(smoothness, 0.85 * crystal);
-        float f0 = 0.06 * crystal;   // gems reflect a little even head-on
+        smoothness = max(smoothness, max(0.85 * crystal, matSmooth));
+        // Dielectrics reflect a little head-on (gems a bit more); metals mostly reflect, in
+        // their own colour.
+        float f0 = max(0.06 * crystal, matSmooth > 0.0 ? 0.04 : 0.0);
         float fresnelM = (f0 + (1.0 - f0) * pow(fresnel, 5.0)) * smoothness;
+        fresnelM = mix(fresnelM, smoothness * (0.6 + 0.4 * pow(fresnel, 5.0)), metal);
         if (fresnelM > 0.004) {
             vec3 rdir = reflect(nView, normal);
             vec3 skyRef = GetSky(rdir.y, dot(rdir, sunVec), dither, true, true) * pow2(skyLight);
             vec4 ssr = AU_GetSSR(uDepthTexture, playerPos, normal, 1.0 - smoothness, dither);
-            color = mix(color, mix(skyRef, ssr.rgb, ssr.a), fresnelM);
+            vec3 refl = mix(skyRef, ssr.rgb, ssr.a) * mix(vec3(1.0), albedo * 1.7, metal);
+            color = mix(color, refl, fresnelM);
         }
     }
 #endif
@@ -360,6 +389,10 @@ void main()
     color = vec3(GetEyeBrightness());
 #elif AU_DEBUG_CLASS == 7
     color = sqrt(GetVolumetricLight(playerPos / max(lViewPos, 0.0001), lViewPos, false, dither) * 3.0);
+#elif AU_DEBUG_CLASS == 8
+    // Materials: red polished, white metal, blue porous (brighter = higher level); green ore glow.
+    color = (matClass == 1u ? vec3(1.0, 0.1, 0.1) : matClass == 2u ? vec3(1.0) : matClass == 3u ? vec3(0.1, 0.3, 1.0) : vec3(0.0))
+          * (0.3 + 0.7 * matLevel) + vec3(0.0, oreGlowAmount, 0.0);
 #elif AU_DEBUG_CLASS == 4
     color = fragTexCoords.x < 0.5 ? rawStaticLight : blockLight;
 #endif

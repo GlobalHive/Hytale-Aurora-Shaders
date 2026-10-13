@@ -97,6 +97,10 @@ vec3 AU_ExtractBlockLight(vec3 staticLight, float skyLight, vec3 normal, bool fl
 #define AU_GBUFFER_PURE_GLOW 128u
 #define AU_GBUFFER_ORE_GLOW 28u   // 3-bit glow level (bits 2-4)
 float AU_OreGlowLevel(float meta) { return float((uint(round(meta * 255.0)) >> 2) & 7u) / 7.0; }
+// Block material of a terrain texel (tools/mapchunk/gennormals.glsl): class 0 plain,
+// 1 polished, 2 metal, 3 porous (bits 5-6); level 0-1 (bits 2-4, the ore glow bits otherwise).
+uint AU_MaterialClass(float meta) { return (uint(round(meta * 255.0)) >> 5) & 3u; }
+float AU_MaterialLevel(float meta) { return float((uint(round(meta * 255.0)) >> 2) & 7u) / 7.0; }
 vec3 AU_GlowToBlockLight(vec3 glowLight, vec3 normal, bool flatShading)
 {
     float exposition = flatShading ? 1.0 : 0.6 + max(0.4 * clamp(normal.y, 0.0, 1.0), 0.2 * abs(normal.z));

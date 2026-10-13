@@ -15,6 +15,7 @@ shaderpack/programs/_*
 # ours to redistribute)
 shaderpack/original/
 shaderpack/index.txt
+shaderpack/materials.txt
 shaderpack/programs/MapChunkFS.glsl
 shaderpack/programs/MapChunkVS.glsl
 shaderpack/programs/BlockyModelVS.glsl

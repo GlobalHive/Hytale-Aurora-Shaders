@@ -161,7 +161,7 @@ public static class AuroraPrep
                 "    // (Hytale fake shininess removed by Aurora Shaders)\n");
         s = Rep(s, "writeToGBuffer(albedo, normalWS, light, fragStaticLight.a, hasSSAO, hasBloom, useCleanShadowBackfaces, outColor0, outColor1, outColor2);\n",
                 "writeToGBuffer(albedo, normalWS, light, fragStaticLight.a, hasSSAO, hasBloom, useCleanShadowBackfaces, outColor0, outColor1, outColor2);\n"
-                + "    outColor0.a = (round(outColor0.a * 255.0) + 128.0 + 4.0 * round(clamp(auOreGlow, 0.0, 1.0) * 7.0)) / 255.0;   // Aurora: pure glow (128), ore glow level (bits 2-4)\n");
+                + "    outColor0.a = (round(outColor0.a * 255.0) + 128.0 + 4.0 * (auMatClass > 0.0 ? auMatLevel : round(clamp(auOreGlow, 0.0, 1.0) * 7.0)) + 32.0 * auMatClass) / 255.0;   // Aurora: pure glow (128), ore glow / material level (bits 2-4), material class (bits 5-6)\n");
         s = Rep(s, "    bool useCleanShadowBackfaces = effectID > EFFECT_WIND;\n\n#if DEFERRED\n\n    writeToGBuffer(",
                 "    bool useCleanShadowBackfaces = effectID > EFFECT_WIND;\n\n#if DEFERRED\n"
                 + Read(Path.Combine(snip, "gennormals.glsl")) + "\n    writeToGBuffer(");
@@ -236,8 +236,72 @@ public static class AuroraPrep
            + "    gl_Position.xy += uHookJitter * gl_Position.w;\n" + guardB + "}\n";
         File.WriteAllText(Path.Combine(pack, "programs", name + ".glsl"), s, Utf8);
     }
+
+    // ---- Block materials --------------------------------------------------------------------
+    // shaderpack/materials.txt: one line per 32x32 block texture of the game - a fingerprint of
+    // its pixels (FNV-1a over RGBA, top row first, transparent texels as 0) and the material its
+    // name says it is. The hook fingerprints the tiles of Hytale's block atlas the same way and
+    // builds the per-tile material map the terrain shader reads (hook.c, materials_build).
+    //   class 0 default, 1 polished (gloss = level), 2 metal (level = polish), 3 porous (soaks
+    //   up rain, darker when wet; level = how much); level 0-7.
+    static int[] Classify(string name)
+    {
+        string n = name.ToLowerInvariant();
+        Func<string, bool> has = k => n.Contains(k);
+        if (n.StartsWith("fluid") || n.StartsWith("dev") || n.StartsWith("editor") || n.StartsWith("t_")
+            || n.StartsWith("transition") || has("grass") || has("leaves") || has("moss")) return new[] { 0, 0 };
+        if (n.StartsWith("metal_") || n.StartsWith("rock_gold"))
+            return new[] { 2, has("smooth") ? 6 : (has("goblin") || has("rust") || has("scrap")) ? 2 : 4 };
+        if (has("ice") || n.StartsWith("glass")) return new[] { 1, 7 };
+        if (has("smooth") || has("marble") || has("polish") || has("whitetiles") || has("quartzite_brick")) return new[] { 1, 4 };
+        if (has("brick") || has("decorative") || has("ornate") || has("tile") || has("rune")) return new[] { 1, 1 };
+        if (has("planks")) return new[] { 1, 1 };
+        if (n.StartsWith("soil_snow")) return new[] { 0, 0 };
+        if (has("gravel") || has("cobble")) return new[] { 3, 4 };
+        if (n.StartsWith("soil_") || has("sand") || n.StartsWith("clay")) return new[] { 3, 6 };
+        if (n.StartsWith("rock_") || n.StartsWith("calcite") || n.StartsWith("peachstone") || n.StartsWith("chalk")) return new[] { 3, 3 };
+        return new[] { 0, 0 };
+    }
+
+    public static int BuildMaterials(string assetsZip, string outPath)
+    {
+        var lines = new List<string>();
+        using (var zip = System.IO.Compression.ZipFile.OpenRead(assetsZip))
+        {
+            foreach (var e in zip.Entries)
+            {
+                if (!e.FullName.StartsWith("Common/BlockTextures/") || !e.FullName.EndsWith(".png")) continue;
+                string name = Path.GetFileNameWithoutExtension(e.FullName);
+                int[] cl = Classify(name);
+                if (cl[0] == 0) continue;
+                byte[] png;
+                using (var s = e.Open()) using (var ms = new MemoryStream()) { s.CopyTo(ms); png = ms.ToArray(); }
+                using (var bmp = new System.Drawing.Bitmap(new MemoryStream(png)))
+                {
+                    if (bmp.Width != 32 || bmp.Height != 32) continue;
+                    var data = bmp.LockBits(new System.Drawing.Rectangle(0, 0, 32, 32),
+                        System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                    var bgra = new byte[32 * 32 * 4];
+                    for (int y = 0; y < 32; y++)
+                        System.Runtime.InteropServices.Marshal.Copy(data.Scan0 + y * data.Stride, bgra, y * 128, 128);
+                    bmp.UnlockBits(data);
+                    uint h = 2166136261u;
+                    for (int i = 0; i < 1024; i++)
+                    {
+                        byte b = bgra[i * 4], g = bgra[i * 4 + 1], r = bgra[i * 4 + 2], a = bgra[i * 4 + 3];
+                        if (a == 0) { r = g = b = 0; }
+                        foreach (byte v in new[] { r, g, b, a }) { h ^= v; h *= 16777619u; }
+                    }
+                    lines.Add(string.Format("{0:x8} {1} {2} {3}", h, cl[0], cl[1], name));
+                }
+            }
+        }
+        lines.Sort(StringComparer.Ordinal);
+        File.WriteAllLines(outPath, new[] { "# fingerprint class level texture  (tools/prepare_shaders.ps1 BuildMaterials)" }.Concat(lines), Utf8);
+        return lines.Count;
+    }
 }
-'@
+'@ -ReferencedAssemblies System.Drawing, System.IO.Compression, System.IO.Compression.FileSystem
 
 if (-not $MapChunkOnly) {
     if (-not $Exe) { throw 'Pass -Exe "<...>\Client\HytaleClient.exe".' }
@@ -246,6 +310,14 @@ if (-not $MapChunkOnly) {
     Write-Host "Extracted $n game shaders into shaderpack\original"
     $n = [AuroraPrep]::BuildIndex($orig, (Join-Path $pack 'index.txt'))
     Write-Host "Shader index: $n entries"
+    # Client\HytaleClient.exe -> Assets.zip next to the Client folder.
+    $assets = Join-Path (Split-Path (Split-Path $Exe -Parent) -Parent) 'Assets.zip'
+    if (Test-Path $assets) {
+        $n = [AuroraPrep]::BuildMaterials($assets, (Join-Path $pack 'materials.txt'))
+        Write-Host "Block materials: $n textures"
+    } else {
+        Write-Host 'Assets.zip not found next to the game: no block materials'
+    }
 }
 [AuroraPrep]::MakeMapChunk($pack, (Join-Path $PSScriptRoot 'mapchunk'))
 Write-Host 'Generated shaderpack\programs\MapChunkFS.glsl'

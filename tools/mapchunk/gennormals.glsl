@@ -47,6 +47,21 @@
     }
 #endif
 
+    // Block materials: the hook recognises every tile of the block atlas (its pixels against
+    // the game's own block textures, classified by name at install) and hands the result over
+    // per tile: class 1 polished, 2 metal, 3 porous; level 0-7. Written to G-buffer meta: class
+    // in bits 5-6, level in bits 2-4 (the ore glow level's bits: ores are REFLECTIVE, these never).
+    float auMatClass = 0.0, auMatLevel = 0.0;
+#if AU_MATERIALS
+    if (!hasBloom && shadingMode != SHADING_REFLECTIVE)
+    {
+        ivec3 auTile = ivec3(ivec2(fragTexCoords * vec2(textureSize(uTexture, 0).xy) / 32.0), int(fragAtlasPages.x + 0.5));
+        vec2 auMat = texelFetch(uHookMaterials, auTile, 0).rg * 255.0;
+        auMatClass = floor(auMat.x + 0.5);
+        auMatLevel = floor(auMat.y + 0.5);
+    }
+#endif
+
     // Glowing ores: Hytale shades the crystal models of ore blocks (and crystal blocks, gems)
     // REFLECTIVE - their 32px textures are all crystal - so those glow as a whole, more the more
     // gem-like a texel is (colourful, or bright like silver / mithril). Judged on the texel

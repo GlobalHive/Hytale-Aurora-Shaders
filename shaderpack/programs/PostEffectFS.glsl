@@ -518,12 +518,17 @@ void main()
                 vec4 g0 = texture(uHookGBuffer0, fragTexCoords);
                 vec3 normal = decodeNormal(texture(uHookGBuffer1, fragTexCoords).rg);
                 // Matte blocks; the glowing ore crystals are glossy (DeferredFS gives them gloss).
-                float crystal = float((uint(round(g0.a * 255.0)) >> 2) & 7u) / 7.0;
-                float roughness = 1.0 - 0.8 * smoothstep(0.0, 0.4, crystal);
+                uint meta = uint(round(g0.a * 255.0));
+                uint cls = (meta >> 5) & 3u;
+                float level = float((meta >> 2) & 7u) / 7.0;
+                float crystal = cls == 0u ? level : 0.0;
+                float gloss = cls == 1u ? mix(0.12, 0.92, level) : cls == 2u ? mix(0.35, 0.85, level) : 0.0;
+                float roughness = 1.0 - max(0.8 * smoothstep(0.0, 0.4, crystal), min(gloss * AU_MATERIAL_GLOSS, 0.95));
                 vec3 nVS = mat3(ViewMatrix) * normal;
                 float NdotV = clamp(dot(nVS, -normalize(posVS)), 0.0, 1.0);
                 diffuseAlbedo = mix(vec3(GetLuminance(g0.rgb)), g0.rgb, AU_ALBEDO_SATURATION) * AU_ALBEDO_MULT;
-                specularAlbedo = AU_EnvBRDF(vec3(0.04 + 0.02 * crystal), roughness, NdotV);
+                specularAlbedo = AU_EnvBRDF(cls == 2u ? diffuseAlbedo : vec3(0.04 + 0.02 * crystal), roughness, NdotV);
+                if (cls == 2u) diffuseAlbedo *= 0.55;
                 normalRough = vec4(normal, roughness);
             }
             imageStore(auDlssAlbedo, pix, vec4(diffuseAlbedo, 1.0));
