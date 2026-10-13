@@ -17,6 +17,13 @@ shaderpack/original/
 shaderpack/index.txt
 shaderpack/programs/MapChunkFS.glsl
 shaderpack/programs/MapChunkVS.glsl
+shaderpack/programs/BlockyModelVS.glsl
+shaderpack/programs/ParticleVS.glsl
+shaderpack/programs/SkyAndCloudsVS.glsl
+shaderpack/programs/BasicVS.glsl
+shaderpack/programs/BasicFogVS.glsl
+shaderpack/programs/BeamVS.glsl
+shaderpack/programs/TextVS.glsl
 
 # The unmodified original pack, kept locally for reference only
 reference/
@@ -26,6 +33,7 @@ tools/focus_game.ps1
 tools/game_input.ps1
 tools/grab_game.ps1
 tools/shot.ps1
+tools/restart_game.ps1
 
 # NVIDIA DLSS SDK (proprietary, not redistributable here) and Khronos Vulkan headers, fetched locally
 third_party/

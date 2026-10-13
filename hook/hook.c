@@ -1039,7 +1039,10 @@ static GLuint g_dlssProg; // the program writing the DLSS inputs (PostEffectFS, 
 static int g_dlssPending; // inputs written this frame, DLSS runs at the present (dlss_present)
 static void dlss_draw(GLenum mode, GLint first, GLsizei count);
 static int dlss_present(void);
+static int dlss_present_rect(int x, int y, int w, int h, const char *how);
 static float g_jitterNdc[2], g_jitterPx[2], g_jitterNextPx[2];   // see jitter_next_frame
+static int g_dlssPresentedFrame = -100;   // last frame DLSS's output reached the window
+static int g_postPresent;                 // the frame is on the window: UI follows, no jitter
 
 __declspec(dllexport) void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsizei count)
 {
@@ -1493,6 +1496,15 @@ static void dlss_draw(GLenum mode, GLint first, GLsizei count)
     }
     GLint vp[4] = {0};
     r_glGetIntegerv(GL_VIEWPORT, vp);
+    GLint drawFb = -1;
+    r_glGetIntegerv(0x8CA6 /*GL_DRAW_FRAMEBUFFER_BINDING*/, &drawFb);
+    // At Render Scale 100 PostEffectFS draws straight into the window: render and output size
+    // are the same (DLAA) and DLSS runs right after this draw.
+    int direct = drawFb == 0;
+    if (direct) {
+        g_presentW = vp[2];
+        g_presentH = vp[3];
+    }
     if (g_presentW > 0 && (vp[2] != g_dlssW || vp[3] != g_dlssH || g_presentW != g_dlssOW || g_presentH != g_dlssOH)) {
         int q = dlss_quality(vp[2], g_presentW);
         if (!aud_configure(vp[2], vp[3], g_presentW, g_presentH, q, 0)) {
@@ -1515,7 +1527,13 @@ static void dlss_draw(GLenum mode, GLint first, GLsizei count)
     ProgRec *pp = prog_rec(g_curProg, 0);
     if (pp && pp->locDlssActive >= 0) r_glUniform1i(pp->locDlssActive, active);
     r_glDrawArrays(mode, first, count);
-    g_dlssPending = 1;
+    if (direct) {
+        g_dlssPending = 1;
+        if (active) dlss_present_rect(vp[0], vp[1], vp[2], vp[3], "PostEffectFS (straight into the window)");
+        g_dlssPending = 0;
+    } else {
+        g_dlssPending = 1;
+    }
 }
 
 // Hytale puts the finished frame on the window either with a BasicFS draw (scaling it, Render
@@ -1524,6 +1542,7 @@ static void dlss_draw(GLenum mode, GLint first, GLsizei count)
 static int dlss_present_rect(int x, int y, int w, int h, const char *how)
 {
     g_dlssPending = 0;
+    g_postPresent = 1;
     g_presentW = w;
     g_presentH = h;
     static char loggedHow[64];
@@ -1536,6 +1555,7 @@ static int dlss_present_rect(int x, int y, int w, int h, const char *how)
     r_glMemoryBarrier(0xFFFFFFFFu);
     if (!aud_evaluate(g_jitterPx[0], g_jitterPx[1], 1.0f, 1.0f, g_dlssReset > 0)) return 0;
     if (g_dlssReset > 0) g_dlssReset--;
+    g_dlssPresentedFrame = g_frame;
 
     GLint readFb = 0;
     r_glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING_, &readFb);
@@ -1550,14 +1570,15 @@ static int dlss_present_rect(int x, int y, int w, int h, const char *how)
     return 1;
 }
 
-// The first draw into the window after PostEffectFS: BasicFS scaling the frame (Render Scale
-// below 100) or TemporalAAFS drawing straight into it (100).
+// Below Render Scale 100 PostEffectFS draws offscreen and Hytale then scales the frame into
+// the window with BasicFS (or TemporalAAFS draws it there): that draw is replaced.
 static int dlss_present(void)
 {
+    ProgRec *p = g_curProg ? prog_rec(g_curProg, 0) : NULL;
+    if (!p || (strcmp(p->pname, "BasicFS") && strcmp(p->pname, "TemporalAAFS"))) return 0;
     GLint fbo = -1;
     r_glGetIntegerv(0x8CA6 /*GL_DRAW_FRAMEBUFFER_BINDING*/, &fbo);
     if (fbo != 0) return 0;
-    ProgRec *p = g_curProg ? prog_rec(g_curProg, 0) : NULL;
     GLint vp[4] = {0};
     r_glGetIntegerv(GL_VIEWPORT, vp);
     return dlss_present_rect(vp[0], vp[1], vp[2], vp[3], p && p->pname[0] ? p->pname : "a draw");
@@ -1600,7 +1621,7 @@ static void jitter_next_frame(void)
     g_jitterPx[0] = g_jitterNextPx[0];
     g_jitterPx[1] = g_jitterNextPx[1];
 #if AU_HAS_DLSS
-    if (g_dlssState == 1 && g_dlssProg && g_dlssW > 0) {
+    if (g_dlssState == 1 && g_dlssProg && g_dlssW > 0 && g_frame - g_dlssPresentedFrame <= 2) {
         int i = 1 + g_frame % 32;
         g_jitterNextPx[0] = halton(i, 2) - 0.5f;
         g_jitterNextPx[1] = halton(i, 3) - 0.5f;
@@ -1783,7 +1804,10 @@ static void apply_extras(ProgRec *p)
         }
     }
     if (p->locVoxGeo >= 0 || p->locVoxCol >= 0) vox_use(p);
-    if (p->locJitter >= 0) r_glUniform2f(p->locJitter, g_jitterNdc[0], g_jitterNdc[1]);
+    if (p->locJitter >= 0) {
+        if (g_postPresent) r_glUniform2f(p->locJitter, 0.0f, 0.0f);
+        else r_glUniform2f(p->locJitter, g_jitterNdc[0], g_jitterNdc[1]);
+    }
     if (p->usesGI) g_giProg = g_curProg;
     if (p->usesDlss) g_dlssProg = g_curProg;
     if (p->locFrame >= 0) r_glUniform1i(p->locFrame, g_frame);
@@ -2836,6 +2860,7 @@ static PFN_wglSwapBuffers r_wglSwapBuffers;
 
 __declspec(dllexport) BOOL WINAPI wglSwapBuffers(HDC hdc)
 {
+    g_postPresent = 0;
     shot_frame(hdc);
     menu_frame(hdc);
     return r_wglSwapBuffers(hdc);

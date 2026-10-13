@@ -28,7 +28,7 @@
 #define AU_EMISSIVE_MAX 1.6           // brightest a glowing ore texel gets (keeps its colour; the glow is bloom)
 #define AU_EMISSIVE_BLOOM 6.0        // extra bloom for emissive blocks (flames, potions, lava)
 #define AU_ORE_GLOW 1                 // ore specks glow (1), 2 = debug: every REFLECTIVE block glows
-#define AU_ORE_GLOW_STRENGTH 0.8
+#define AU_ORE_GLOW_STRENGTH 1.0
 #define AU_ORE_BLOOM 3.0
 #define AU_SSAO_STRENGTH 1.25
 #define AU_CAVE_LIGHTING 250.0        // minimum light underground, %
@@ -163,7 +163,7 @@
 #define AU_LENSFLARE_I 2.50             // lens flare strength
 #define AU_SUN_GLARE 1.0              // soft lens glare around the visible sun
 #define AU_TAA 1                      // reprojected TAA (cleans up dithered shafts / shadows / GI)
-#define AU_DLSS 0                     // NVIDIA DLSS instead of the TAA (hook/aud_dlss.c; RTX GPUs)
+#define AU_DLSS 1                     // NVIDIA DLSS instead of the TAA (hook/aud_dlss.c; RTX GPUs)
 #define AU_TAA_BLEND 0.93             // history weight (higher = smoother, softer motion)
 #define AU_TAA_CLIP 1.25              // neighbourhood variance clip (lower = less ghosting)
 #define AU_SHARPENING 2               // image sharpening (0-10)

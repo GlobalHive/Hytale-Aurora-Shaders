@@ -60,8 +60,8 @@
         float auMxA = max(auAvg.r, max(auAvg.g, auAvg.b)), auMnA = min(auAvg.r, min(auAvg.g, auAvg.b));
         float auSatC = (auMxC - auMnC) / max(auMxC, 0.001), auSatA = (auMxA - auMnA) / max(auMxA, 0.001);
         float auLumC = dot(auC, vec3(0.299, 0.587, 0.114)), auLumA = dot(auAvg, vec3(0.299, 0.587, 0.114));
-        bool auColourful = auSatC > 0.35 && auSatC - auSatA > 0.22;
-        bool auBright = auLumC > 0.35 && auLumC > auLumA * 1.7;
+        bool auColourful = auSatC > 0.4 && (auSatC - auSatA > 0.2 || auLumC > auLumA * 1.15);
+        bool auBright = auLumC > 0.35 && auLumC > auLumA * 1.55;
         auOreGlow = auColourful || auBright ? 1.0 : 0.0;
 #if AU_ORE_GLOW == 2
         auOreGlow = 1.0;   // debug: every REFLECTIVE block
