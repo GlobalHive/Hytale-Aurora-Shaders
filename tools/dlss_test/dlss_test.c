@@ -72,7 +72,7 @@ int main(void)
 
     if (!aud_init(logf_, get_proc, dir, dir)) { logf_("FAIL: aud_init"); return 1; }
     const int rw = 960, rh = 540, ow = 1920, oh = 1080;
-    if (!aud_configure(rw, rh, ow, oh, 0 /* MaxPerf: 50% */, 1)) { logf_("FAIL: aud_configure"); return 1; }
+    if (!aud_configure(rw, rh, ow, oh, 0 /* MaxPerf: 50% */, 1, 0, 0)) { logf_("FAIL: aud_configure"); return 1; }
 
     PFN_glGenFramebuffers genFb = get_proc("glGenFramebuffers");
     GLuint fbo;

@@ -96,6 +96,7 @@ static NVSDK_NGX_Result ngx_get_ui(NVSDK_NGX_Parameter *p, const char *n, unsign
 static NVSDK_NGX_Parameter *g_params;
 static NVSDK_NGX_Handle *g_feature;
 static int g_ngxReady;
+static int g_rrAvailable, g_rr;   // Ray Reconstruction available / the configured feature is RR
 
 // ----------------------------------------------------------------------------------------
 // GL interop entry points
@@ -117,6 +118,7 @@ typedef unsigned long long GLuint64;
 #define GL_RGBA16F 0x881A
 #define GL_R32F 0x822E
 #define GL_RG16F 0x822F
+#define GL_RGBA8 0x8058
 #define GL_HANDLE_TYPE_OPAQUE_WIN32_EXT 0x9587
 #define GL_DEDICATED_MEMORY_OBJECT_EXT 0x9581
 #define GL_LAYOUT_GENERAL_EXT 0x958D
@@ -520,6 +522,7 @@ int aud_init(AudLogFn log, AudGetProcFn glGetProc, const wchar_t *dllDir, const 
     ngx_get_i(cap, NVSDK_NGX_Parameter_SuperSamplingDenoising_Available, &rr);
     LOG("dlss: super resolution available=%d (query 0x%x) needs newer driver=%d, ray reconstruction available=%d", ss, rs, needsDriver, rr);
     ngxDestroyParameters(cap);
+    g_rrAvailable = rr;
     if (!ss) return 0;
     ngxAllocateParameters(&g_params);
     return g_params != NULL;
@@ -538,6 +541,11 @@ static VkCommandBuffer begin_cmd(void)
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer_(cb, &bi);
     return cb;
+}
+
+int aud_rr_available(void)
+{
+    return g_rrAvailable;
 }
 
 static void barrier_all(VkCommandBuffer cb, int acquire)
@@ -571,10 +579,11 @@ static void release_feature(void)
     for (int i = 0; i < AUD_TEX_COUNT; i++) destroy_image(&g_img[i]);
 }
 
-int aud_configure(int renderW, int renderH, int outW, int outH, int quality, int hdr)
+int aud_configure(int renderW, int renderH, int outW, int outH, int quality, int hdr, int rr, int preset)
 {
     if (!g_ngxReady || !g_params) return 0;
     release_feature();
+    g_rr = rr && g_rrAvailable;
     g_renderW = renderW;
     g_renderH = renderH;
     g_outW = outW;
@@ -582,7 +591,10 @@ int aud_configure(int renderW, int renderH, int outW, int outH, int quality, int
     if (!create_image(&g_img[AUD_TEX_COLOR], renderW, renderH, VK_FORMAT_R16G16B16A16_SFLOAT, GL_RGBA16F) ||
         !create_image(&g_img[AUD_TEX_DEPTH], renderW, renderH, VK_FORMAT_R32_SFLOAT, GL_R32F) ||
         !create_image(&g_img[AUD_TEX_MOTION], renderW, renderH, VK_FORMAT_R16G16_SFLOAT, GL_RG16F) ||
-        !create_image(&g_img[AUD_TEX_OUTPUT], outW, outH, VK_FORMAT_R16G16B16A16_SFLOAT, GL_RGBA16F)) {
+        !create_image(&g_img[AUD_TEX_OUTPUT], outW, outH, VK_FORMAT_R16G16B16A16_SFLOAT, GL_RGBA16F) ||
+        (g_rr && (!create_image(&g_img[AUD_TEX_ALBEDO], renderW, renderH, VK_FORMAT_R8G8B8A8_UNORM, GL_RGBA8) ||
+                  !create_image(&g_img[AUD_TEX_SPECULAR], renderW, renderH, VK_FORMAT_R8G8B8A8_UNORM, GL_RGBA8) ||
+                  !create_image(&g_img[AUD_TEX_NORMALS], renderW, renderH, VK_FORMAT_R16G16B16A16_SFLOAT, GL_RGBA16F)))) {
         release_feature();
         return 0;
     }
@@ -590,20 +602,23 @@ int aud_configure(int renderW, int renderH, int outW, int outH, int quality, int
     // First use: the images go from UNDEFINED to GENERAL and stay there.
     VkCommandBuffer cb = begin_cmd();
     VkImageMemoryBarrier b[AUD_TEX_COUNT];
+    unsigned nb = 0;
     for (int i = 0; i < AUD_TEX_COUNT; i++) {
-        memset(&b[i], 0, sizeof(b[i]));
-        b[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        b[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-        b[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        b[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
-        b[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        b[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        b[i].image = g_img[i].image;
-        b[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        b[i].subresourceRange.levelCount = 1;
-        b[i].subresourceRange.layerCount = 1;
+        if (!g_img[i].image) continue;
+        VkImageMemoryBarrier *m = &b[nb++];
+        memset(m, 0, sizeof(*m));
+        m->sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        m->dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        m->oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        m->newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        m->srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        m->dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        m->image = g_img[i].image;
+        m->subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        m->subresourceRange.levelCount = 1;
+        m->subresourceRange.layerCount = 1;
     }
-    vkCmdPipelineBarrier_(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, AUD_TEX_COUNT, b);
+    vkCmdPipelineBarrier_(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, nb, b);
 
     NVSDK_NGX_Parameter *p = g_params;
     ngx_set_ui(p, NVSDK_NGX_Parameter_CreationNodeMask, 1);
@@ -616,14 +631,27 @@ int aud_configure(int renderW, int renderH, int outW, int outH, int quality, int
     ngx_set_i(p, NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags,
               NVSDK_NGX_DLSS_Feature_Flags_MVLowRes | (hdr ? NVSDK_NGX_DLSS_Feature_Flags_IsHDR : 0));
     ngx_set_i(p, NVSDK_NGX_Parameter_DLSS_Enable_Output_Subrects, 0);
-    // What the SDK library fills in when unset: the default render presets.
-    ngx_set_ui(p, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA, 0);
-    ngx_set_ui(p, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality, 0);
-    ngx_set_ui(p, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced, 0);
-    ngx_set_ui(p, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance, 0);
-    ngx_set_ui(p, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraPerformance, 0);
-    ngx_set_ui(p, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraQuality, 0);
-    NVSDK_NGX_Result r = ngxCreateFeature1(g_dev, cb, NVSDK_NGX_Feature_SuperSampling, p, &g_feature);
+    // The model for every quality mode (0 = NVIDIA's default, what the SDK library fills in
+    // when unset; an override in the NVIDIA app still wins).
+    unsigned sr = g_rr ? 0u : (unsigned)preset, rp = g_rr ? (unsigned)preset : 0u;
+    ngx_set_ui(p, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA, sr);
+    ngx_set_ui(p, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality, sr);
+    ngx_set_ui(p, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced, sr);
+    ngx_set_ui(p, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance, sr);
+    ngx_set_ui(p, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraPerformance, sr);
+    ngx_set_ui(p, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraQuality, sr);
+    // Ray Reconstruction (what NGX_VULKAN_CREATE_DLSSD_EXT1 sets): the DL denoiser-upscaler,
+    // roughness packed into the normals' alpha, linear depth.
+    ngx_set_i(p, NVSDK_NGX_Parameter_DLSS_Denoise_Mode, g_rr ? NVSDK_NGX_DLSS_Denoise_Mode_DLUnified : NVSDK_NGX_DLSS_Denoise_Mode_Off);
+    ngx_set_ui(p, NVSDK_NGX_Parameter_DLSS_Roughness_Mode, NVSDK_NGX_DLSS_Roughness_Mode_Packed);
+    ngx_set_ui(p, NVSDK_NGX_Parameter_Use_HW_Depth, NVSDK_NGX_DLSS_Depth_Type_Linear);
+    ngx_set_ui(p, NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_DLAA, rp);
+    ngx_set_ui(p, NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Quality, rp);
+    ngx_set_ui(p, NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Balanced, rp);
+    ngx_set_ui(p, NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Performance, rp);
+    ngx_set_ui(p, NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraPerformance, rp);
+    ngx_set_ui(p, NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraQuality, rp);
+    NVSDK_NGX_Result r = ngxCreateFeature1(g_dev, cb, g_rr ? NVSDK_NGX_Feature_RayReconstruction : NVSDK_NGX_Feature_SuperSampling, p, &g_feature);
     vkEndCommandBuffer_(cb);
     VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
     si.commandBufferCount = 1;
@@ -636,7 +664,8 @@ int aud_configure(int renderW, int renderH, int outW, int outH, int quality, int
         release_feature();
         return 0;
     }
-    LOG("dlss: feature created %dx%d -> %dx%d (quality %d%s)", renderW, renderH, outW, outH, quality, hdr ? ", HDR" : "");
+    LOG("dlss: %s created %dx%d -> %dx%d (quality %d, preset %d%s)", g_rr ? "ray reconstruction" : "super resolution",
+        renderW, renderH, outW, outH, quality, preset, hdr ? ", HDR" : "");
     return 1;
 }
 
@@ -650,8 +679,9 @@ int aud_evaluate(float jitterX, float jitterY, float mvScaleX, float mvScaleY, i
     if (!g_feature) return 0;
     GLuint texs[AUD_TEX_COUNT];
     GLenum layouts[AUD_TEX_COUNT];
-    for (int i = 0; i < AUD_TEX_COUNT; i++) { texs[i] = g_img[i].glTex; layouts[i] = GL_LAYOUT_GENERAL_EXT; }
-    gl.SignalSemaphore(g_glSemGLDone, 0, NULL, AUD_TEX_COUNT, texs, layouts);
+    GLuint ntex = 0;
+    for (int i = 0; i < AUD_TEX_COUNT; i++) if (g_img[i].glTex) { texs[ntex] = g_img[i].glTex; layouts[ntex++] = GL_LAYOUT_GENERAL_EXT; }
+    gl.SignalSemaphore(g_glSemGLDone, 0, NULL, ntex, texs, layouts);
     gl.Flush();
 
     VkCommandBuffer cb = begin_cmd();
@@ -671,6 +701,12 @@ int aud_evaluate(float jitterX, float jitterY, float mvScaleX, float mvScaleY, i
     ngx_set_ui(p, NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, (unsigned)g_renderH);
     ngx_set_f(p, NVSDK_NGX_Parameter_DLSS_Pre_Exposure, 1.0f);
     ngx_set_f(p, NVSDK_NGX_Parameter_DLSS_Exposure_Scale, 1.0f);
+    if (g_rr) {
+        ngx_set_ptr(p, NVSDK_NGX_Parameter_DiffuseAlbedo, &g_img[AUD_TEX_ALBEDO].res);
+        ngx_set_ptr(p, NVSDK_NGX_Parameter_SpecularAlbedo, &g_img[AUD_TEX_SPECULAR].res);
+        ngx_set_ptr(p, NVSDK_NGX_Parameter_GBuffer_Normals, &g_img[AUD_TEX_NORMALS].res);
+        ngx_set_ptr(p, NVSDK_NGX_Parameter_GBuffer_Roughness, NULL);   // packed into the normals
+    }
     NVSDK_NGX_Result r = ngxEvaluateFeature(cb, g_feature, p, NULL);
     barrier_all(cb, 0);
     vkEndCommandBuffer_(cb);
@@ -687,7 +723,7 @@ int aud_evaluate(float jitterX, float jitterY, float mvScaleX, float mvScaleY, i
     vkQueueSubmit_(g_queue, 1, &si, g_fence[g_frameIdx]);
     g_frameIdx = (g_frameIdx + 1) % AUD_FRAMES;
 
-    gl.WaitSemaphore(g_glSemVKDone, 0, NULL, AUD_TEX_COUNT, texs, layouts);
+    gl.WaitSemaphore(g_glSemVKDone, 0, NULL, ntex, texs, layouts);
     if (NVSDK_NGX_FAILED(r)) {
         static int logged;
         if (logged++ < 5) LOG("dlss: EvaluateFeature failed 0x%x", r);

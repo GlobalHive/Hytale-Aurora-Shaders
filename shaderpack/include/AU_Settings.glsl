@@ -166,7 +166,9 @@
 #define AU_LENSFLARE_I 2.50             // lens flare strength
 #define AU_SUN_GLARE 1.0              // soft lens glare around the visible sun
 #define AU_TAA 1                      // reprojected TAA (cleans up dithered shafts / shadows / GI)
-#define AU_DLSS 1                     // NVIDIA DLSS instead of the TAA (hook/aud_dlss.c; RTX GPUs)
+#define AU_DLSS 2                     // NVIDIA DLSS instead of the TAA: 1 Super Resolution, 2 Ray Reconstruction (hook/aud_dlss.c; RTX GPUs)
+#define AU_RENDER_SCALE 100            // hook: Hytale's Render Scale = DLSS render size, written for the next start (0 = Hytale's slider)
+#define AU_DLSS_PRESET 0              // hook: DLSS model, 0 NVIDIA's default, 1 sharpest (K / RR E), 2 less ghosting (J / RR D)
 #define AU_DLSS_JITTER 1              // hook: sub-pixel camera jitter while DLSS runs
 #define AU_DLSS_JITTER_SX 1           // hook: sign of the jitter handed to DLSS (axis conventions)
 #define AU_DLSS_JITTER_SY 1

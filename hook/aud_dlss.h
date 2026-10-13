@@ -13,6 +13,10 @@ enum {
     AUD_TEX_DEPTH,      // R32F depth (hardware depth convention: 0 near, 1 far)
     AUD_TEX_MOTION,     // RG16F motion vectors, pixels from this frame to the last (render size)
     AUD_TEX_OUTPUT,     // RGBA16F upscaled result (output size)
+    // Ray Reconstruction guides (render size, only with ray reconstruction):
+    AUD_TEX_ALBEDO,     // RGBA8 diffuse albedo
+    AUD_TEX_SPECULAR,   // RGBA8 specular albedo
+    AUD_TEX_NORMALS,    // RGBA16F world-space normal, linear roughness in alpha
     AUD_TEX_COUNT
 };
 
@@ -20,8 +24,13 @@ enum {
 // Returns 1 when DLSS super resolution is available on this machine.
 int aud_init(AudLogFn log, AudGetProcFn glGetProc, const wchar_t *dllDir, const wchar_t *dataDir);
 
+// 1 when DLSS Ray Reconstruction is available too (after aud_init).
+int aud_rr_available(void);
+
 // (Re)creates the DLSS feature and the shared images. quality: NVSDK_NGX_PerfQuality_Value.
-int aud_configure(int renderW, int renderH, int outW, int outH, int quality, int hdr);
+// rr: Ray Reconstruction (DLSS-D, reads the guide images too) instead of Super Resolution.
+// preset: the model (NVSDK_NGX_DLSS_Hint_Render_Preset / RayReconstruction one), 0 = default.
+int aud_configure(int renderW, int renderH, int outW, int outH, int quality, int hdr, int rr, int preset);
 
 unsigned aud_texture(int which);
 

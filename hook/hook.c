@@ -429,7 +429,7 @@ typedef struct {
     GLint locJitter;
     int usesGI;
     int usesDlss;
-    GLint locDlssActive;
+    GLint locDlssActive, locDlssRR;
     int shareGen, shareSrc;  // cached: is this program the source of a texture share
 } ProgRec;
 
@@ -1045,6 +1045,8 @@ static float g_jitterNdc[2], g_jitterPx[2], g_jitterNextPx[2];   // see jitter_n
 // of the jitter / motion handed to DLSS (axis conventions).
 static double g_setDlssJitter = 1, g_setJitterSX = 1, g_setJitterSY = 1, g_setMotionSX = 1, g_setMotionSY = 1;
 static double g_setDlssDebug = 0;   // 1 = show DLSS's colour input, 2 = reset every frame, 3 depth, 4 motion
+static double g_setDlssMode = 1;    // AU_DLSS: 1 = Super Resolution, 2 = Ray Reconstruction
+static double g_setDlssPreset = 0;  // AU_DLSS_PRESET: 0 NVIDIA's default model, 1 sharpest, 2 less ghosting
 static int g_dlssPresentedFrame = -100;   // last frame DLSS's output reached the window
 static int g_postPresent;                 // the frame is on the window: UI follows, no jitter
 
@@ -1427,6 +1429,11 @@ static void vox_use(ProgRec *p)
 #define DLSS_IMG_COLOR 2
 #define DLSS_IMG_DEPTH 3
 #define DLSS_IMG_MOTION 4
+// Ray Reconstruction guides (PostEffectFS from the G-buffer).
+#define DLSS_IMG_ALBEDO 5
+#define DLSS_IMG_SPECULAR 6
+#define DLSS_IMG_NORMALS 7
+#define GL_RGBA8_ 0x8058
 typedef void (APIENTRY *PFN_dlBlitFramebuffer)(GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLuint, GLenum);
 typedef void (APIENTRY *PFN_dlGenFramebuffers)(GLsizei, GLuint *);
 typedef void (APIENTRY *PFN_dlBindFramebuffer)(GLenum, GLuint);
@@ -1435,6 +1442,8 @@ typedef GLboolean (APIENTRY *PFN_dlIsEnabled)(GLenum);
 typedef void (APIENTRY *PFN_dlEnable)(GLenum);
 static int g_dlssState;          // 0 not tried, 1 ready, -1 unavailable
 static int g_dlssW, g_dlssH, g_dlssReset;
+static int g_dlssRR;              // the configured feature is Ray Reconstruction
+static int g_dlssPreset;          // the configured model preset (NGX value, 0 = default)
 static GLuint g_dlssReadFbo;
 static struct {
     PFN_dlBlitFramebuffer Blit;
@@ -1509,9 +1518,17 @@ static void dlss_draw(GLenum mode, GLint first, GLsizei count)
         g_presentW = vp[2];
         g_presentH = vp[3];
     }
-    if (g_presentW > 0 && (vp[2] != g_dlssW || vp[3] != g_dlssH || g_presentW != g_dlssOW || g_presentH != g_dlssOH)) {
+    int rr = g_setDlssMode == 2 && aud_rr_available();
+    // Model presets: sharpest = transformer K (Super Resolution) / E (Ray Reconstruction),
+    // less ghosting = J / D.
+    int pick = (int)g_setDlssPreset;
+    int preset = pick == 1 ? (rr ? 5 : 11) : pick == 2 ? (rr ? 4 : 10) : 0;
+    if (g_presentW > 0 && (vp[2] != g_dlssW || vp[3] != g_dlssH || g_presentW != g_dlssOW || g_presentH != g_dlssOH ||
+                           rr != g_dlssRR || preset != g_dlssPreset)) {
         int q = dlss_quality(vp[2], g_presentW);
-        if (!aud_configure(vp[2], vp[3], g_presentW, g_presentH, q, 0)) {
+        g_dlssRR = rr;
+        g_dlssPreset = preset;
+        if (!aud_configure(vp[2], vp[3], g_presentW, g_presentH, q, 0, rr, preset)) {
             g_dlssState = -1;
             r_glDrawArrays(mode, first, count);
             return;
@@ -1528,8 +1545,15 @@ static void dlss_draw(GLenum mode, GLint first, GLsizei count)
     r_glBindImageTexture(DLSS_IMG_COLOR, active ? aud_texture(AUD_TEX_COLOR) : 0, 0, 0, 0, GL_WRITE_ONLY, GL_RGBA16F);
     r_glBindImageTexture(DLSS_IMG_DEPTH, active ? aud_texture(AUD_TEX_DEPTH) : 0, 0, 0, 0, GL_WRITE_ONLY, GL_R32F);
     r_glBindImageTexture(DLSS_IMG_MOTION, active ? aud_texture(AUD_TEX_MOTION) : 0, 0, 0, 0, GL_WRITE_ONLY, GL_RG16F);
+    if (g_dlssRR) {
+        r_glBindImageTexture(DLSS_IMG_ALBEDO, active ? aud_texture(AUD_TEX_ALBEDO) : 0, 0, 0, 0, GL_WRITE_ONLY, GL_RGBA8_);
+        r_glBindImageTexture(DLSS_IMG_SPECULAR, active ? aud_texture(AUD_TEX_SPECULAR) : 0, 0, 0, 0, GL_WRITE_ONLY, GL_RGBA8_);
+        r_glBindImageTexture(DLSS_IMG_NORMALS, active ? aud_texture(AUD_TEX_NORMALS) : 0, 0, 0, 0, GL_WRITE_ONLY, GL_RGBA16F);
+    }
+
     ProgRec *pp = prog_rec(g_curProg, 0);
     if (pp && pp->locDlssActive >= 0) r_glUniform1i(pp->locDlssActive, active);
+    if (pp && pp->locDlssRR >= 0) r_glUniform1i(pp->locDlssRR, active && g_dlssRR);
     r_glDrawArrays(mode, first, count);
     if (direct) {
         g_dlssPending = 1;
@@ -1737,11 +1761,13 @@ static void check_extras(GLuint prog, ProgRec *p)
         GLint loc = r_glGetUniformLocation(prog, giUni[i].name);
         if (loc >= 0) { r_glUniform1i(loc, giUni[i].unit); p->usesGI = 1; p->hasExtras = 1; }
     }
-    static const struct { const char *name; GLint unit; } dlssUni[3] = {
-        {"auDlssColor", 2}, {"auDlssDepth", 3}, {"auDlssMotion", 4}};
+    static const struct { const char *name; GLint unit; } dlssUni[6] = {
+        {"auDlssColor", 2}, {"auDlssDepth", 3}, {"auDlssMotion", 4},
+        {"auDlssAlbedo", 5}, {"auDlssSpecular", 6}, {"auDlssNormals", 7}};
     p->usesDlss = 0;
     p->locDlssActive = r_glGetUniformLocation(prog, "uHookDlssActive");
-    for (int i = 0; i < 3; i++) {
+    p->locDlssRR = r_glGetUniformLocation(prog, "uHookDlssRR");
+    for (int i = 0; i < 6; i++) {
         GLint loc = r_glGetUniformLocation(prog, dlssUni[i].name);
         if (loc >= 0) { r_glUniform1i(loc, dlssUni[i].unit); p->usesDlss = 1; p->hasExtras = 1; }
     }
@@ -1937,6 +1963,8 @@ static void settings_load(void)
     g_setMotionSX = settings_num(txt, "AU_DLSS_MOTION_SX", 1);
     g_setMotionSY = settings_num(txt, "AU_DLSS_MOTION_SY", 1);
     g_setDlssDebug = settings_num(txt, "AU_DLSS_DEBUG", 0);
+    g_setDlssMode = settings_num(txt, "AU_DLSS", 1);
+    g_setDlssPreset = settings_num(txt, "AU_DLSS_PRESET", 0);
     free(txt);
 }
 
@@ -2058,7 +2086,8 @@ static DWORD WINAPI watcher_thread(LPVOID arg)
 
 #define MENU_MAX 160
 #define MENU_SETTINGS "include\\AU_Settings.glsl"
-enum { MO_HEADER, MO_BOOL, MO_ENUM, MO_RANGE, MO_PACK };
+enum { MO_HEADER, MO_BOOL, MO_ENUM, MO_RANGE, MO_PACK, MO_INFO };
+#define MENU_SELECTABLE(m) ((m)->kind != MO_HEADER && (m)->kind != MO_INFO)
 typedef struct {
     int kind;
     char define[48];
@@ -2158,6 +2187,12 @@ static void menu_load(void)
         snprintf(m->define, sizeof(m->define), "%s", f[0]);
         to_wide(m->label, 64, f[1]);
         char *kind = f[2];
+        if (!strcmp(m->define, "!DLSS_INFO")) {   // read-only: what DLSS is doing right now
+            m->kind = MO_INFO;
+            m->present = 1;
+            g_nMo++;
+            continue;
+        }
         if (!strcmp(m->define, "!PACK")) {
             m->kind = MO_PACK;
             m->present = 1;
@@ -2219,9 +2254,9 @@ static void menu_load(void)
     }
     free(opt);
     free(set);
-    if (g_moSel < 0 || g_moSel >= g_nMo || g_mo[g_moSel].kind == MO_HEADER) {
+    if (g_moSel < 0 || g_moSel >= g_nMo || !MENU_SELECTABLE(&g_mo[g_moSel])) {
         g_moSel = -1;
-        for (int i = 0; i < g_nMo; i++) if (g_mo[i].kind != MO_HEADER) { g_moSel = i; break; }
+        for (int i = 0; i < g_nMo; i++) if (MENU_SELECTABLE(&g_mo[i])) { g_moSel = i; break; }
     }
 }
 
@@ -2233,6 +2268,21 @@ static void format_value(const MenuOpt *m, double v, char *out, size_t cap)
 
 static void display_value(const MenuOpt *m, wchar_t *out, int cap)
 {
+    if (m->kind == MO_INFO) {
+#if AU_HAS_DLSS
+        static const wchar_t *modes[] = {L"Performance", L"Balanced", L"Quality", L"Ultra Perf", L"Ultra Quality", L"DLAA"};
+        int q = g_dlssOW > 0 ? dlss_quality(g_dlssW, g_dlssOW) : -1;
+        if (g_dlssState == 1 && g_dlssOW > 0 && g_frame - g_dlssPresentedFrame <= 30)
+            _snwprintf(out, cap, L"%dx%d  %d%%  %ls", g_dlssW, g_dlssH, (int)(100.0 * g_dlssW / g_dlssOW + 0.5),
+                       q >= 0 && q <= 5 ? modes[q] : L"");
+        else
+            _snwprintf(out, cap, L"%ls", g_dlssState == -1 ? L"unavailable" : L"not running");
+#else
+        _snwprintf(out, cap, L"n/a");
+#endif
+        out[cap - 1] = 0;
+        return;
+    }
     if (!m->present) { _snwprintf(out, cap, L"n/a"); out[cap - 1] = 0; return; }
     if (m->kind == MO_BOOL || m->kind == MO_PACK) { _snwprintf(out, cap, L"%ls", m->value > 0.5 ? L"On" : L"Off"); out[cap - 1] = 0; return; }
     if (m->kind == MO_ENUM)
@@ -2252,7 +2302,7 @@ static void menu_save(void)
     int changed = 0;
     for (int i = 0; i < g_nMo; i++) {
         MenuOpt *m = &g_mo[i];
-        if (m->kind == MO_HEADER || m->kind == MO_PACK || !m->present) continue;
+        if (m->kind == MO_HEADER || m->kind == MO_PACK || m->kind == MO_INFO || !m->present) continue;
         char *e = NULL;
         char *v = find_define_value(set, m->define, &e);
         if (!v) continue;
@@ -2284,7 +2334,7 @@ static void menu_save(void)
 static void menu_move(int dir)
 {
     for (int i = g_moSel + dir; i >= 0 && i < g_nMo; i += dir)
-        if (g_mo[i].kind != MO_HEADER) { g_moSel = i; g_menuDirty = 1; return; }
+        if (MENU_SELECTABLE(&g_mo[i])) { g_moSel = i; g_menuDirty = 1; return; }
 }
 
 static void menu_section(int dir)
@@ -2298,14 +2348,14 @@ static void menu_section(int dir)
         while (i > 0 && g_mo[i].kind != MO_HEADER) i--;    // previous section's header
     }
     for (int k = i < 0 ? 0 : i; k < g_nMo; k++)
-        if (g_mo[k].kind != MO_HEADER) { g_moSel = k; g_menuDirty = 1; return; }
+        if (MENU_SELECTABLE(&g_mo[k])) { g_moSel = k; g_menuDirty = 1; return; }
 }
 
 static void menu_change(int dir, int reset)
 {
     if (g_moSel < 0) return;
     MenuOpt *m = &g_mo[g_moSel];
-    if (!m->present) return;
+    if (!m->present || m->kind == MO_INFO) return;
     double v = m->value;
     if (reset) {
         v = m->def;
@@ -2506,7 +2556,7 @@ static void menu_render(int screenH)
         if (sel && m->present) _snwprintf(shown, 64, L"\x2039   %ls   \x203A", val);
         else _snwprintf(shown, 64, L"%ls", val);
         shown[63] = 0;
-        int modified = m->present && fabs(m->value - m->def) > 1e-9;
+        int modified = m->present && m->kind != MO_INFO && fabs(m->value - m->def) > 1e-9;
         menu_text(dc, shown, W * 6 / 10, y, W - pad, y + rowH, sel ? g_fBold : g_fText,
                   modified ? RGB(255, 196, 112) : RGB(238, 242, 250), DT_RIGHT);
     }
@@ -2921,9 +2971,57 @@ __declspec(dllexport) PROC WINAPI wglGetProcAddress(LPCSTR name)
     return p;
 }
 
+// AU_RENDER_SCALE (menu, 0 = leave it to Hytale's slider): Hytale's own Render Scale, which
+// is the DLSS render size. Hytale keeps it in memory and writes UserData\Settings.json when it
+// quits, so the menu's choice is written after that, at process exit, for the next start.
+static void render_scale_on_exit(void)
+{
+    char *set = read_file("include\\AU_Settings.glsl", NULL);
+    int scale = (int)settings_num(set, "AU_RENDER_SCALE", 0);
+    free(set);
+    if (scale < 10 || scale > 100) return;
+    // ...\Hytale\install\release\package\game\latest\Client\HytaleClient.exe -> ...\Hytale
+    wchar_t path[MAX_PATH];
+    if (!GetModuleFileNameW(NULL, path, MAX_PATH)) return;
+    for (int i = 0; i < 7; i++) {
+        wchar_t *slash = wcsrchr(path, L'\\');
+        if (!slash) return;
+        *slash = 0;
+    }
+    wcscat(path, L"\\UserData\\Settings.json");
+    FILE *f = _wfopen(path, L"rb");
+    if (!f) return;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *txt = n > 0 ? (char *)malloc((size_t)n + 1) : NULL;
+    size_t got = txt ? fread(txt, 1, (size_t)n, f) : 0;
+    fclose(f);
+    if (!txt || got != (size_t)n) { free(txt); return; }
+    txt[n] = 0;
+    char *k = strstr(txt, "\"RenderScale\":");
+    if (k) {
+        char *v = k + 14;
+        while (*v == ' ') v++;
+        char *e = v;
+        while (*e >= '0' && *e <= '9') e++;
+        if (e > v && atoi(v) != scale && (f = _wfopen(path, L"wb")) != NULL) {
+            fwrite(txt, 1, (size_t)(v - txt), f);
+            fprintf(f, "%d", scale);
+            fwrite(e, 1, strlen(e), f);
+            fclose(f);
+        }
+    }
+    free(txt);
+}
+
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
 {
     (void)reserved;
+    if (reason == DLL_PROCESS_DETACH) {
+        render_scale_on_exit();
+        return TRUE;
+    }
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(inst);
         InitializeCriticalSection(&g_lock);
@@ -2956,6 +3054,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
         g_enabled = !pack_flag("programs\\_disabled");
         QueryPerformanceFrequency(&g_freq);
         QueryPerformanceCounter(&g_t0);
+        settings_load();
         load_index();
         load_shares();
         load_textures_cfg();

@@ -32,6 +32,28 @@ layout(rgba16f) uniform writeonly image2D auDlssColor;
 layout(r32f) uniform writeonly image2D auDlssDepth;
 layout(rg16f) uniform writeonly image2D auDlssMotion;
 uniform int uHookDlssActive;    // 1 only while the hook has the DLSS textures bound to units 2-4
+#if AU_DLSS == 2
+// DLSS Ray Reconstruction also reads what each pixel's surface is made of (guide images,
+// units 5-7), worked out here from Hytale's G-buffer (shared by the hook).
+#include "Deferred_inc.glsl"
+uniform sampler2D uHookGBuffer0;   // albedo + render flags
+uniform sampler2D uHookGBuffer1;   // world-space normal (encoded)
+layout(rgba8) uniform writeonly image2D auDlssAlbedo;
+layout(rgba8) uniform writeonly image2D auDlssSpecular;
+layout(rgba16f) uniform writeonly image2D auDlssNormals;
+uniform int uHookDlssRR;           // 1 while the hook runs Ray Reconstruction (guides bound)
+
+// Average specular reflectance for a view angle (Karis' fit of the split-sum GGX lookup).
+vec3 AU_EnvBRDF(vec3 f0, float roughness, float NdotV)
+{
+    const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+    const vec4 c1 = vec4(1.0, 0.0425, 1.04, -0.04);
+    vec4 r = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
+    vec2 ab = vec2(-1.04, 1.04) * a004 + r.zw;
+    return f0 * ab.x + ab.y;
+}
+#endif
 #endif
 #if AU_LENSFLARE
 
@@ -487,6 +509,28 @@ void main()
         imageStore(auDlssDepth, pix, vec4(lin));
 #endif
         imageStore(auDlssMotion, pix, vec4(motion, 0.0, 0.0));
+#if AU_DLSS == 2
+        if (uHookDlssRR == 1) {
+            // Sky: the defaults NVIDIA recommends (grey albedo, no specular, no normal).
+            vec3 diffuseAlbedo = vec3(0.5), specularAlbedo = vec3(0.0);
+            vec4 normalRough = vec4(0.0);
+            if (lin < 1.0) {
+                vec4 g0 = texture(uHookGBuffer0, fragTexCoords);
+                vec3 normal = decodeNormal(texture(uHookGBuffer1, fragTexCoords).rg);
+                // Matte blocks; the glowing ore crystals are glossy (DeferredFS gives them gloss).
+                float crystal = float((uint(round(g0.a * 255.0)) >> 2) & 7u) / 7.0;
+                float roughness = 1.0 - 0.8 * smoothstep(0.0, 0.4, crystal);
+                vec3 nVS = mat3(ViewMatrix) * normal;
+                float NdotV = clamp(dot(nVS, -normalize(posVS)), 0.0, 1.0);
+                diffuseAlbedo = mix(vec3(GetLuminance(g0.rgb)), g0.rgb, AU_ALBEDO_SATURATION) * AU_ALBEDO_MULT;
+                specularAlbedo = AU_EnvBRDF(vec3(0.04 + 0.02 * crystal), roughness, NdotV);
+                normalRough = vec4(normal, roughness);
+            }
+            imageStore(auDlssAlbedo, pix, vec4(diffuseAlbedo, 1.0));
+            imageStore(auDlssSpecular, pix, vec4(specularAlbedo, 1.0));
+            imageStore(auDlssNormals, pix, normalRough);
+        }
+#endif
     }
 #endif
 }
