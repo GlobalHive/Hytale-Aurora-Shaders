@@ -80,9 +80,10 @@ void DoLensFlare(inout vec3 color, vec2 texCoord, float dither, sampler2D sceneT
     auTexCoord = texCoord;
     auAspect = ViewportSize.x / ViewportSize.y;
     auFovMult = ProjectionMatrix[1][1] / 1.37373871;
-    vec3 sunVecVS = normalize(mat3(ViewMatrix) * sunVec);
+    // The sun by day, the moon by night (never the moon in daylight when the sun is behind).
+    vec3 sunVecVS = normalize(mat3(ViewMatrix) * (sunVisibility > 0.5 ? sunVec : -sunVec));
     vec4 clipPosSun = ProjectionMatrix * vec4(sunVecVS + 0.001, 1.0);
-    if (clipPosSun.w <= 0.0) clipPosSun = ProjectionMatrix * vec4(-sunVecVS + 0.001, 1.0);   // moon side
+    if (clipPosSun.w <= 0.0) return;   // behind the camera
     vec3 lightPos3 = clipPosSun.xyz / clipPosSun.w * 0.5;
     vec2 lightPos = lightPos3.xy;
     vec2 screenPosSun = lightPos3.xy + 0.5;

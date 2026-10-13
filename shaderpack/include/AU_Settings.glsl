@@ -18,7 +18,7 @@
 
 // ---- Lighting ------------------------------------------------------------------------
 #define AU_ALBEDO_MULT 0.78          // Hytale textures are painted brighter than Minecraft's
-#define AU_ALBEDO_SATURATION 0.86
+#define AU_ALBEDO_SATURATION 0.92
 #define AU_SIDE_SHADOWING 1
 #define AU_DIRECTIONAL_SHADING 1
 #define AU_BLOCKLIGHT_STRENGTH 1.0
@@ -102,10 +102,11 @@
 #define AU_LIGHTSHAFT_SAMPLES 12
 #endif
 #define AU_LIGHTSHAFT_STRENGTH 1.0
+#define AU_LIGHTSHAFT_HAZE 0.4         // open-air haze (beams through trees / windows are separate)
 #define AU_LIGHTSHAFT_DISTANCE 192.0
 #define AU_LIGHTSHAFT_SCENE_AWARE 1.00  // stronger shafts in caves / forests (0 = off)
 #define AU_LIGHTSHAFT_NOON_I 1.0
-#define AU_LIGHTSHAFT_SUNSET_I 1.0
+#define AU_LIGHTSHAFT_SUNSET_I 0.5    // low-sun haze (the low sun's light colour is strong; 1.0 drowned the land)
 #define AU_LIGHTSHAFT_NIGHT_I 0.35     // moonlight haze (1.0 washes Hytale nights out)
 #define AU_LIGHTSHAFT_SCENE_BOOST 1.0  // extra shaft strength under canopies / in caves (0 = off)
 
@@ -151,7 +152,7 @@
 
 // ---- Post ----------------------------------------------------------------------------
 #define AU_TM_EXPOSURE 1.00
-#define AU_TM_CONTRAST 1.05
+#define AU_TM_CONTRAST 1.10
 #define AU_TM_WHITE_PATH 1.00
 #define AU_TM_DARK_DESATURATION 0.25
 #define AU_SATURATION 1.00
