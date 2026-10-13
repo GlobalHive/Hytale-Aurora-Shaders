@@ -239,7 +239,7 @@ void main()
 #if AU_PT_LIGHTS
             ptLight = AU_PTDirectLight(playerPos, normal, noDirectionalShading, GetDither2(gl_FragCoord.xy).y);
 #endif
-            AU_PTAccumulate(playerPos, gi, giVisibility, skyVis, ptLight);
+            AU_PTAccumulate(playerPos, normal, gi, giVisibility, skyVis, ptLight);
         } else {
             imageStore(auGIOutPos, ivec2(gl_FragCoord.xy), vec4(1e9));   // no history here
         }

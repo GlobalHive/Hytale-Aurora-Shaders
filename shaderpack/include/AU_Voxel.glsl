@@ -274,7 +274,7 @@ layout(rgba16f) uniform image2D auGIOut;
 layout(rgba32f) uniform image2D auGIOutPos;
 layout(rgba16f) uniform image2D auGIOutLight;
 
-void AU_PTAccumulate(vec3 playerPos, inout vec3 gi, inout float occlusion, inout float skyVis, inout vec3 directLight)
+void AU_PTAccumulate(vec3 playerPos, vec3 normal, inout vec3 gi, inout float occlusion, inout float skyVis, inout vec3 directLight)
 {
     vec3 wp = playerPos + CameraPosition;
     vec4 prev = ReprojectionMatrix * vec4((ViewMatrix * vec4(playerPos, 1.0)).xyz, 1.0);
@@ -283,13 +283,33 @@ void AU_PTAccumulate(vec3 playerPos, inout vec3 gi, inout float occlusion, inout
     vec4 hist = vec4(0.0);
     vec3 histLight = vec3(0.0);
     if (all(greaterThan(puv, vec2(0.0))) && all(lessThan(puv, vec2(1.0)))) {
-        ivec2 pp = ivec2(puv * vec2(textureSize(auGIHistPos, 0)));
-        vec4 hp = texelFetch(auGIHistPos, pp, 0);
-        if (distance(hp.xyz, wp) < 0.06 + length(playerPos) * 0.006) {
-            len = floor(hp.w);
-            histAO = fract(hp.w) / 0.999;
-            hist = texelFetch(auGIHist, pp, 0);
-            histLight = texelFetch(auGIHistLight, pp, 0).rgb;
+        // Bilinear over the 4 nearest history pixels that lie on this surface's plane: the
+        // nearest pixel alone snaps by up to half a pixel each frame, and over the history
+        // that walks the shading across the surface (crawling shadows, worst far away).
+        vec2 size = vec2(textureSize(auGIHistPos, 0));
+        vec2 tp = puv * size - 0.5;
+        ivec2 p0 = ivec2(floor(tp));
+        vec2 f = tp - vec2(p0);
+        float lin = length(playerPos);
+        float wSum = 0.0, lenSum = 0.0, aoSum = 0.0;
+        for (int i = 0; i < 4; i++) {
+            ivec2 o = ivec2(i & 1, i >> 1);
+            ivec2 pp = clamp(p0 + o, ivec2(0), ivec2(size) - 1);
+            vec4 hp = texelFetch(auGIHistPos, pp, 0);
+            vec3 dp = hp.xyz - wp;
+            if (abs(dot(dp, normal)) > 0.03 + lin * 0.002 || dot(dp, dp) > pow2(0.3 + lin * 0.02)) continue;
+            float w = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y) + 1e-4;
+            wSum += w;
+            lenSum += floor(hp.w) * w;
+            aoSum += fract(hp.w) / 0.999 * w;
+            hist += texelFetch(auGIHist, pp, 0) * w;
+            histLight += texelFetch(auGIHistLight, pp, 0).rgb * w;
+        }
+        if (wSum > 0.0) {
+            len = floor(lenSum / wSum + 0.5);
+            histAO = aoSum / wSum;
+            hist /= wSum;
+            histLight /= wSum;
         }
     }
     len = min(len + 1.0, AU_PT_HISTORY);
