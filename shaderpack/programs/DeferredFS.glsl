@@ -193,7 +193,9 @@ void main()
     // walls less): it all turns glossy, and porous blocks (soil, sand, gravel, stone) darken.
     float matSmooth = 0.0, metal = 0.0, wet = 0.0;
 #if AU_MATERIALS
-    if (matClass == 1u) matSmooth = mix(0.12, 0.92, matLevel);
+    // Only what really shines: smooth stone, marble, ice, glass (level 4+). Planks and bricks
+    // (level 1) stay matte.
+    if (matClass == 1u) matSmooth = matLevel < 0.5 ? 0.0 : mix(0.12, 0.92, matLevel);
     if (matClass == 2u) { matSmooth = mix(0.35, 0.85, matLevel); metal = 1.0; }
     matSmooth = min(matSmooth * AU_MATERIAL_GLOSS, 0.95);
     if (!hasBloom && subsurfaceMode == 0)
@@ -270,6 +272,8 @@ void main()
         smoothnessG = max(smoothnessG, 0.8 * crystal);
         highlightMult = max(highlightMult, 1.0 + 3.0 * crystal);
     }
+    // Plain surfaces (grass, dirt, wood, stone): only a faint sun sheen - more read as plastic.
+    if (matSmooth <= 0.0 && crystal <= 0.0 && subsurfaceMode == 0) highlightMult *= 0.25;
     vec3 litAlbedo = albedo;
 #if AU_PRESET >= 2
     litAlbedo *= 1.0 - 0.45 * metal;

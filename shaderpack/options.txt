@@ -16,9 +16,9 @@ AU_BLOCKLIGHT_HYTALE_HUE | Torch colour (warm to Hytale) | range 0.0 1.0 0.05 | 
 AU_EMISSION_STRENGTH | Emissive glow | range 0.0 6.0 0.25 | 3.0
 AU_EMISSIVE_BLOOM | Emissive bloom | range 0.0 20.0 0.5 | 4.0
 AU_ORE_BLOOM | Ore glow halo | range 0.0 20.0 0.5 | 10.0
-AU_ORE_LIGHT | Ore light on surroundings | range 0.0 8.0 0.5 | 5.0
+AU_ORE_LIGHT | Ore light on surroundings | range 0.0 12.0 0.5 | 8.0
 AU_ORE_GLOW | Glowing ores | bool | 1
-AU_ORE_GLOW_STRENGTH | Ore glow strength | range 0.0 4.0 0.1 | 1.0
+AU_ORE_GLOW_STRENGTH | Ore glow strength | range 0.0 4.0 0.1 | 2.0
 AU_ORE_SHINE | Ore shine sweep | range 0.0 3.0 0.1 | 1.0
 AU_MATERIALS | Block materials (metal, polish, wet) | bool | 1
 AU_MATERIAL_GLOSS | Material gloss | range 0.0 2.0 0.1 | 1.0
@@ -100,7 +100,8 @@ AU_LENSFLARE_I | Lens flare strength | range 0.0 5.0 0.25 | 2.5
 AU_SUN_GLARE | Sun glare | range 0.0 2.0 0.1 | 1.0
 AU_VIGNETTE | Vignette | bool | 1
 AU_TAA | Temporal anti-aliasing | bool | 1
-AU_DLSS | NVIDIA DLSS (RTX) | enum 0:Off 1:Super_Resolution 2:Ray_Reconstruction | 0
+AU_DLSS | NVIDIA DLSS (RTX) | bool | 0
+AU_DLSS_RR | DLSS Ray Reconstruction | bool | 0
 AU_DLSS_PRESET | DLSS model | enum 0:Default 1:Sharpest 2:Less_ghosting | 0
 !DLSS_INFO | DLSS render size now | info
 AU_RENDER_SCALE | Render scale (from next start) | enum 0:Hytale_slider 100:100%_DLAA 67:67%_Quality 58:58%_Balanced 50:50%_Performance 33:33%_Ultra_Perf | 0

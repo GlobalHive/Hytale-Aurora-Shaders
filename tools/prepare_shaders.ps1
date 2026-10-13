@@ -271,8 +271,7 @@ public static class AuroraPrep
             return new[] { 2, has("smooth") ? 6 : (has("goblin") || has("rust") || has("scrap")) ? 2 : 4 };
         if (has("ice") || n.StartsWith("glass")) return new[] { 1, 7 };
         if (has("smooth") || has("marble") || has("polish") || has("whitetiles") || has("quartzite_brick")) return new[] { 1, 4 };
-        if (has("brick") || has("decorative") || has("ornate") || has("tile") || has("rune")) return new[] { 1, 1 };
-        if (has("planks")) return new[] { 1, 1 };
+        if (has("brick") || has("decorative") || has("ornate") || has("tile") || has("rune") || has("planks")) return new[] { 0, 0 };
         if (n.StartsWith("soil_snow")) return new[] { 0, 0 };
         if (has("gravel") || has("cobble")) return new[] { 3, 4 };
         if (n.StartsWith("soil_") || has("sand") || n.StartsWith("clay")) return new[] { 3, 6 };

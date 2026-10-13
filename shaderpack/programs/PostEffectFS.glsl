@@ -32,7 +32,7 @@ layout(rgba16f) uniform writeonly image2D auDlssColor;
 layout(r32f) uniform writeonly image2D auDlssDepth;
 layout(rg16f) uniform writeonly image2D auDlssMotion;
 uniform int uHookDlssActive;    // 1 only while the hook has the DLSS textures bound to units 2-4
-#if AU_DLSS == 2
+#if AU_DLSS && AU_DLSS_RR
 // DLSS Ray Reconstruction also reads what each pixel's surface is made of (guide images,
 // units 5-7), worked out here from Hytale's G-buffer (shared by the hook).
 #include "Deferred_inc.glsl"
@@ -509,7 +509,7 @@ void main()
         imageStore(auDlssDepth, pix, vec4(lin));
 #endif
         imageStore(auDlssMotion, pix, vec4(motion, 0.0, 0.0));
-#if AU_DLSS == 2
+#if AU_DLSS && AU_DLSS_RR
         if (uHookDlssRR == 1) {
             // Sky: the defaults NVIDIA recommends (grey albedo, no specular, no normal).
             vec3 diffuseAlbedo = vec3(0.5), specularAlbedo = vec3(0.0);
@@ -522,7 +522,7 @@ void main()
                 uint cls = (meta >> 5) & 3u;
                 float level = float((meta >> 2) & 7u) / 7.0;
                 float crystal = cls == 0u ? level : 0.0;
-                float gloss = cls == 1u ? mix(0.12, 0.92, level) : cls == 2u ? mix(0.35, 0.85, level) : 0.0;
+                float gloss = cls == 1u ? (level < 0.5 ? 0.0 : mix(0.12, 0.92, level)) : cls == 2u ? mix(0.35, 0.85, level) : 0.0;
                 float roughness = 1.0 - max(0.8 * smoothstep(0.0, 0.4, crystal), min(gloss * AU_MATERIAL_GLOSS, 0.95));
                 vec3 nVS = mat3(ViewMatrix) * normal;
                 float NdotV = clamp(dot(nVS, -normalize(posVS)), 0.0, 1.0);

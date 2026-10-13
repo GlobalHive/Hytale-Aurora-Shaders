@@ -2210,7 +2210,7 @@ static void settings_load(void)
     g_setMotionSX = settings_num(txt, "AU_DLSS_MOTION_SX", 1);
     g_setMotionSY = settings_num(txt, "AU_DLSS_MOTION_SY", 1);
     g_setDlssDebug = settings_num(txt, "AU_DLSS_DEBUG", 0);
-    g_setDlssMode = settings_num(txt, "AU_DLSS", 1);
+    g_setDlssMode = settings_num(txt, "AU_DLSS_RR", 0) > 0.5 ? 2 : 1;
     g_setDlssPreset = settings_num(txt, "AU_DLSS_PRESET", 0);
     free(txt);
 }

@@ -28,9 +28,9 @@
 #define AU_EMISSIVE_MAX 1.6           // brightest a glowing ore texel gets (keeps its colour; the glow is bloom)
 #define AU_EMISSIVE_BLOOM 4.0        // extra bloom for emissive blocks (flames, potions, lava)
 #define AU_ORE_GLOW 1                 // ore specks glow (1), 2 = debug: every REFLECTIVE block glows
-#define AU_ORE_GLOW_STRENGTH 1.0
+#define AU_ORE_GLOW_STRENGTH 2.0
 #define AU_ORE_BLOOM 10.0             // coloured glow halo around ore crystals
-#define AU_ORE_LIGHT 5.0              // light ore crystals cast on what is around them (RTX preset)
+#define AU_ORE_LIGHT 8.0              // light ore crystals cast on what is around them (RTX preset)
 #define AU_ORE_SHINE 1.0              // Hytale's sweeping glint over ores (near chunks)
 #define AU_MATERIALS 1                // block materials: polished stone/bricks/planks/ice gloss, metal reflections, rain soaking
 #define AU_MATERIAL_GLOSS 1.0
@@ -147,7 +147,7 @@
 // ---- Path tracing (RTX preset) -------------------------------------------------------
 // Voxel path tracing: the hook keeps a 256x128x256 block grid of the world around the
 // player (include/AU_Voxel.glsl) and the bounce light traces rays through it.
-#define AU_PATH_TRACING 0             // experimental: heavy, and the look is close to the screen-space GI
+#define AU_PATH_TRACING 1             // experimental: heavy, and the look is close to the screen-space GI
 #define AU_PT_GI_STRENGTH 1.5         // bounce light strength with path tracing
 #define AU_VOXELS (AU_PRESET >= 2 && AU_PATH_TRACING)
 #define AU_PT_RAYS 3                  // rays per pixel per frame
@@ -176,8 +176,9 @@
 #define AU_LENSFLARE_I 2.50             // lens flare strength
 #define AU_SUN_GLARE 1.0              // soft lens glare around the visible sun
 #define AU_TAA 1                      // reprojected TAA (cleans up dithered shafts / shadows / GI)
-#define AU_DLSS 2                     // NVIDIA DLSS instead of the TAA: 1 Super Resolution, 2 Ray Reconstruction (hook/aud_dlss.c; RTX GPUs)
-#define AU_RENDER_SCALE 100            // hook: Hytale's Render Scale = DLSS render size, written for the next start (0 = Hytale's slider)
+#define AU_DLSS 0                     // NVIDIA DLSS instead of the TAA (hook/aud_dlss.c; RTX GPUs)
+#define AU_DLSS_RR 0                  // DLSS Ray Reconstruction (denoiser + upscaler in one) instead of Super Resolution
+#define AU_RENDER_SCALE 0            // hook: Hytale's Render Scale = DLSS render size, written for the next start (0 = Hytale's slider)
 #define AU_DLSS_PRESET 0              // hook: DLSS model, 0 NVIDIA's default, 1 sharpest (K / RR E), 2 less ghosting (J / RR D)
 #define AU_DLSS_JITTER 1              // hook: sub-pixel camera jitter while DLSS runs
 #define AU_DLSS_JITTER_SX 1           // hook: sign of the jitter handed to DLSS (axis conventions)
