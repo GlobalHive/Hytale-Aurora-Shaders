@@ -205,6 +205,8 @@ parts of them.
 ## Known Issue
 
 - **When Sunrise hits for few seconds there is flicker on the opposite side from where the sun is.**
+- **Path Tracing causes some shaky geometry**
+
 
 ## Credits and license
 
