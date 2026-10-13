@@ -1,6 +1,5 @@
 
-
-<img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" width="160">
+<a href="https://buymeacoffee.com/kristijan1001" target="_blank"> <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" width="160" alt="Buy Me a Coffee"> </a>
 
 
 https://github.com/user-attachments/assets/9c0842a6-0442-40e9-8760-67f695989e0c
