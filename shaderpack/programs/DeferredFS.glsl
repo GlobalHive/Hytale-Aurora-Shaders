@@ -230,18 +230,32 @@ void main()
     vec3 ptLight = vec3(0.0);
     if (!hasBloom) {
 #if AU_VOXELS
-        float skyVis;
-        gi = AU_GetVoxelGI(uDepthTexture, playerPos, normal, skyLight, giVisibility, skyVis);
+        // Far away the traced light shimmers (a block is a few pixels, the history keeps
+        // getting rejected, the grid edge is near): hand over to the screen-space GI.
+        float ptFade = 1.0 - smoothstep(48.0, 80.0, length(playerPos));
+        float skyVis = 1.0;
+        if (ptFade > 0.0) {
+            gi = AU_GetVoxelGI(uDepthTexture, playerPos, normal, skyLight, giVisibility, skyVis);
 #if AU_PT_LIGHTS
-        ptLight = AU_PTDirectLight(playerPos, normal, noDirectionalShading, GetDither2(gl_FragCoord.xy).y);
+            ptLight = AU_PTDirectLight(playerPos, normal, noDirectionalShading, GetDither2(gl_FragCoord.xy).y);
 #endif
-        AU_PTAccumulate(playerPos, gi, giVisibility, skyVis, ptLight);
+            AU_PTAccumulate(playerPos, gi, giVisibility, skyVis, ptLight);
+        } else {
+            imageStore(auGIOutPos, ivec2(gl_FragCoord.xy), vec4(1e9));   // no history here
+        }
+        if (ptFade < 1.0) {
+            float ssVis;
+            vec3 ssgi = AU_GetSSGI(uDepthTexture, playerPos, normal, dither, ssVis) * (AU_RTX_GI_STRENGTH / AU_PT_GI_STRENGTH);
+            gi = mix(ssgi, gi, ptFade);
+            giVisibility = mix(ssVis, giVisibility, ptFade);
+            ptLight *= ptFade;
+        }
         // Path-traced sky light: the ambient follows how much open sky the surface sees,
         // relative to an open field (a wall there sees half the sky, a floor all of it).
         // Hytale's flood-fill sky light already darkens rooms and caves, so the traced sky
         // light only adds what it misses where it counts as open (under steps, overhangs,
         // trees); applying both inside a room left it black.
-        float ptSkyAmount = AU_PT_SKY_LIGHT * pow2(skyLight) * (subsurfaceMode != 0 ? 0.5 : 1.0);
+        float ptSkyAmount = AU_PT_SKY_LIGHT * pow2(skyLight) * (subsurfaceMode != 0 ? 0.5 : 1.0) * ptFade;
         auPTSky = mix(1.0, clamp(skyVis / max(0.5 + 0.5 * normal.y, 0.15), 0.0, 1.0), ptSkyAmount);
 #else
         gi = AU_GetSSGI(uDepthTexture, playerPos, normal, dither, giVisibility);

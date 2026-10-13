@@ -149,7 +149,10 @@ void AU_VoxFeed(vec3 playerPos, vec3 normal, vec3 albedo, bool foliage, bool emi
 
     // Only from the face of a full block the grid knows: a grass blade standing against a
     // hill step would otherwise erase the step every frame (and the chunk pass re-add it).
-    if (!plant && !foliage && (insideCell & 7u) == AU_VOX_SOLID && max(an.x, max(an.y, an.z)) > 0.99) {
+    // Near the player only (where blocks get broken): far off, a face seen past a slab or
+    // stair would clear it every frame and the chunk pass re-add it, flickering the rays.
+    if (!plant && !foliage && (insideCell & 7u) == AU_VOX_SOLID && max(an.x, max(an.y, an.z)) > 0.99
+        && dot(playerPos, playerPos) < 32.0 * 32.0) {
         float offBoundary = dot(edge, axis);
         if (offBoundary < 0.04) {
             ivec3 front = ivec3(floor(wp + normal * 0.5));
