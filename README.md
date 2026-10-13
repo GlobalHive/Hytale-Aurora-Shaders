@@ -1,7 +1,6 @@
 
 
-
-![Buy Me a Coffee](https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png) <img width="327" height="319" alt="image" src="https://github.com/user-attachments/assets/e34fdc37-17e3-42cc-a3a4-6631ffb823d6" />
+<img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" width="160">
 
 
 https://github.com/user-attachments/assets/9c0842a6-0442-40e9-8760-67f695989e0c
