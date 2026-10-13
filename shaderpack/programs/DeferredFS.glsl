@@ -179,8 +179,8 @@ void main()
     // Emissive (lava, flames, crystals): brighter texels glow more.
     if (hasBloom) { emission = AU_EMISSION_STRENGTH * mix(0.5, 1.6, smoothstep(0.15, 0.9, GetLuminance(albedo))); shadow = 1.0; }
     // Glowing ore specks (flagged by the terrain pass, see tools/mapchunk/gennormals.glsl).
-    bool oreGlow = (uint(round(gbuffer0.a * 255.0)) & AU_GBUFFER_ORE_GLOW) != 0u;
-    if (oreGlow && !hasBloom) emission = AU_ORE_GLOW_STRENGTH * mix(0.6, 1.4, GetLuminance(albedo));
+    float oreGlowAmount = hasBloom ? 0.0 : AU_OreGlowLevel(gbuffer0.a);
+    bool oreGlow = oreGlowAmount > 0.0;
 
     // Shadows of the volumetric clouds drifting over the land.
     shadow *= hasBloom ? 1.0 : GetCloudShadow(playerPos);
@@ -238,6 +238,13 @@ void main()
         float fresnelL = clamp(1.0 + dot(normal, normalize(playerPos)), 0.0, 1.0);
         highlightMult = (factor * 4.0 + 2.0) * (1.0 - pow2(pow2(fresnelL)));
     }
+    // Ore crystals (the glowing texels of Hytale's REFLECTIVE blocks) are glossy like gems:
+    // sharp sun glints here, reflections below.
+    float crystal = smoothstep(0.0, 0.4, oreGlowAmount) * AU_ORE_GLOSS;
+    if (crystal > 0.0) {
+        smoothnessG = max(smoothnessG, 0.8 * crystal);
+        highlightMult = max(highlightMult, 1.0 + 3.0 * crystal);
+    }
     vec3 color = AU_DoLighting(albedo, normal, playerPos, skyLight, blockLight, shadow, aoUse,
                                subsurfaceMode, emission, smoothnessG, highlightMult, noDirectionalShading);
     // Emissive texels (flames, potions, lava) look like Hytale's: texture colour times the
@@ -247,8 +254,14 @@ void main()
     // (Capped below 1: right at the top of the curve the inverse explodes, and the tonemap's
     // path to white and the bloom would wash the texel out again.)
     if (hasBloom) color = AU_InverseTonemap(pow(clamp(gbuffer0.rgb * rawStaticLight * (AU_EMISSION_STRENGTH / 3.0), 0.0, 0.88), vec3(2.2)));
-    // Glowing ore texels keep their hue too: the brightest channel is eased off softly.
+    // Glowing ores: the glow lights the crystal evenly - the texture's dark/light contrast is
+    // compressed (its colour kept) so it doesn't turn grainy - strongest on the facets facing
+    // the camera, so the crystal keeps its shape - and keeps its hue: the brightest channel is
+    // eased off softly.
     if (oreGlow) {
+        float oreLum = max(GetLuminance(albedo), 0.002);
+        float facing = clamp(-dot(normal, normalize(playerPos)), 0.0, 1.0);
+        color += albedo * pow(oreLum, -0.5) * (AU_ORE_GLOW_STRENGTH * 0.5 * oreGlowAmount * mix(0.35, 1.0, facing * facing));
         float mx = max(color.r, max(color.g, color.b));
         const float knee = 1.0;
         if (mx > knee) {
@@ -274,7 +287,9 @@ void main()
         // Faint grazing sheen on solids, plus wet surfaces facing up when it rains.
         float wetness = rainFactor * smoothstep(0.7, 0.95, normal.y) * smoothstep(0.6, 0.9, skyLight);
         float smoothness = subsurfaceMode != 0 ? 0.0 : mix(AU_RTX_SMOOTHNESS, 0.85, wetness);
-        float fresnelM = pow(fresnel, 5.0) * smoothness;
+        smoothness = max(smoothness, 0.85 * crystal);
+        float f0 = 0.06 * crystal;   // gems reflect a little even head-on
+        float fresnelM = (f0 + (1.0 - f0) * pow(fresnel, 5.0)) * smoothness;
         if (fresnelM > 0.004) {
             vec3 rdir = reflect(nView, normal);
             vec3 skyRef = GetSky(rdir.y, dot(rdir, sunVec), dither, true, true) * pow2(skyLight);
@@ -389,6 +404,7 @@ void main()
         color = md > 32.0 ? vec3(0.5, 0.0, 0.0) : vec3(fract(md * 0.5), 1.0 - md / 32.0, 0.2);
     }
 #endif
-    // Meta for the bloom pass: 1 SSAO, 2 emissive, 4 ore glow.
-    outColor = vec4(color, float((hasSSAO ? 1u : 0u) | (hasBloom ? 2u : 0u) | (oreGlow ? 4u : 0u)) / 255.0);
+    // Meta for the bloom pass: 1 SSAO, 2 emissive, bits 2-4 ore glow level.
+    uint oreLevel = uint(round(oreGlowAmount * 7.0));
+    outColor = vec4(color, float((hasSSAO ? 1u : 0u) | (hasBloom ? 2u : 0u) | (oreLevel << 2)) / 255.0);
 }

@@ -30,6 +30,8 @@
 #define AU_ORE_GLOW 1                 // ore specks glow (1), 2 = debug: every REFLECTIVE block glows
 #define AU_ORE_GLOW_STRENGTH 1.0
 #define AU_ORE_BLOOM 3.0
+#define AU_ORE_SHINE 1.0              // Hytale's sweeping glint over ores (near chunks)
+#define AU_ORE_GLOSS 1.0              // ore crystals glossy like gems (sun glints, reflections)
 #define AU_SSAO_STRENGTH 1.25
 #define AU_CAVE_LIGHTING 250.0        // minimum light underground, %
 #define AU_SUBSURFACE 1              // foliage translucency

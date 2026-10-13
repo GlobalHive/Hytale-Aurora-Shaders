@@ -38,9 +38,9 @@ void main(void)
     // like Hytale's own glow. DeferredFS leaves 1 SSAO / 2 emissive / 4 ore in the alpha
     // (larger values: sky and other passes).
     uint meta = uint(round(scene.a * 255.0));
-    if (meta < 8u) {
+    if (meta < 32u) {
         if ((meta & 2u) != 0u) linearColor *= AU_EMISSIVE_BLOOM;
-        else if ((meta & 4u) != 0u) linearColor *= AU_ORE_BLOOM;
+        else linearColor *= mix(1.0, AU_ORE_BLOOM, float((meta >> 2) & 7u) / 7.0);
     }
 #if EMISSIVE
     vec4 emissive = texture(uEmissiveTexture, fragTexCoords.xy);
