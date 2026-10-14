@@ -1,5 +1,6 @@
-// Native SDL3 interposition. Hytale resolves SDL exports from a dlopen handle, so
-// LD_PRELOAD alone is insufficient: intercept those two explicit dlsym lookups too.
+// Native SDL3 interposition. The installed proxy forwards other exports through its
+// DT_NEEDED dependency on the unchanged original SDL3. The optional preload build
+// intercepts explicit dlsym lookups used by Hytale's NativeAOT client instead.
 // SDL handles GLX/EGL and X11/Wayland; no display-server-specific input polling.
 typedef PROC (*SDL_GetProc)(const char *);
 static SDL_GetProc linux_sdl_getproc;
@@ -15,6 +16,11 @@ static double linux_reload_at;
 __declspec(dllexport) PROC SDL_GL_GetProcAddress(const char *name);
 __declspec(dllexport) bool SDL_GL_SwapWindow(void *window);
 
+#if AU_SDL_PROXY
+// Identifies our library to the installer without relying on a filename or file size.
+__attribute__((used)) static const char linux_proxy_marker[] = "AURORA_SDL_PROXY_V1";
+#endif
+
 static void *linux_real_dlsym(void *handle, const char *name)
 {
     // x86_64 glibc's original symbol version predates Ubuntu's supported releases.
@@ -23,6 +29,7 @@ static void *linux_real_dlsym(void *handle, const char *name)
     return lookup ? lookup(handle, name) : NULL;
 }
 
+#if !AU_SDL_PROXY
 __declspec(dllexport) void *dlsym(void *handle, const char *name)
 {
     void *p = linux_real_dlsym(handle, name);
@@ -39,6 +46,7 @@ __declspec(dllexport) void *dlsym(void *handle, const char *name)
     }
     return p;
 }
+#endif
 
 static PROC linux_gl_proc(const char *name)
 {
@@ -47,6 +55,20 @@ static PROC linux_gl_proc(const char *name)
 
 static void linux_init(void)
 {
+#if AU_SDL_PROXY
+    Dl_info library;
+    char original[MAX_PATH];
+    if (dladdr((void *)linux_init, &library) && realpath(library.dli_fname, original)) {
+        char *slash = strrchr(original, '/');
+        if (slash) {
+            *slash = 0;
+            if (strlen(original) + sizeof("/libSDL3.aurora-original.so") < sizeof original) {
+                strcat(original, "/libSDL3.aurora-original.so");
+                linux_sdl_handle = dlopen(original, RTLD_NOW | RTLD_LOCAL);
+            }
+        }
+    }
+#endif
     // Also supports programs linked directly against SDL3.
     if (!linux_sdl_handle) linux_sdl_handle = RTLD_NEXT;
     if (!linux_sdl_getproc) linux_sdl_getproc = (SDL_GetProc)linux_real_dlsym(linux_sdl_handle, "SDL_GL_GetProcAddress");
@@ -64,7 +86,12 @@ static void linux_init(void)
         if (dladdr((void *)linux_init, &info) && realpath(info.dli_fname, path)) {
             char *slash = strrchr(path, '/');
             if (slash) *slash = 0;
-            if (strlen(path) + 12 < sizeof path) strcat(path, "/shaderpack");
+#if AU_SDL_PROXY
+            const char *suffix = "/.aurora/shaderpack";
+#else
+            const char *suffix = "/shaderpack";
+#endif
+            if (strlen(path) + strlen(suffix) < sizeof path) strcat(path, suffix);
             pack = path;
         } else pack = "shaderpack";
     }
@@ -93,7 +120,13 @@ static void linux_init(void)
                 logf_("cannot watch %s for shader edits", path);
         }
     }
-    logf_("Aurora native Linux SDL3 hook loaded; DLSS unavailable; dump=%d", g_dump);
+    logf_("Aurora native Linux SDL3 hook loaded (%s); DLSS unavailable; dump=%d",
+#if AU_SDL_PROXY
+          "automatic proxy",
+#else
+          "preload",
+#endif
+          g_dump);
 }
 
 static void linux_input(void *window)
