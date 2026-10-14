@@ -5,8 +5,6 @@ dist/
 tools/zig/
 install.config
 shaderpack/hook.log
-shaderpack/shot.bmp
-shaderpack/_shot
 shaderpack/errors/
 shaderpack/dump/
 shaderpack/programs/_*
@@ -45,3 +43,7 @@ tools/dlss_test/*.dll
 tools/dlss_test/*.log
 tools/dlss_test/nvngx*
 shaderpack/dlss/
+
+# Python tooling
+__pycache__/
+*.pyc

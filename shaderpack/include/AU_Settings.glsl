@@ -8,7 +8,7 @@
 // 1 = Standard
 // 2 = RTX: + screen-space global illumination, glossy reflections on all solid surfaces,
 //          more shadow / light shaft / cloud samples
-#define AU_PRESET 2
+#define AU_PRESET 1
 
 // ---- General -------------------------------------------------------------------------
 #define AU_SUN_MAX_ELEVATION 0.92   // sin(max sun elevation) of Hytale's sun path, maps time-of-day factors
