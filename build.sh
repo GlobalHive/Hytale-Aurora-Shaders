@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Native Ubuntu/Linux build. Dependencies: build-essential pkg-config libcairo2-dev
+set -euo pipefail
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+if [[ $(uname -s) != Linux || $(uname -m) != x86_64 ]]; then
+    echo 'The native build currently targets x86_64 Linux (glibc).' >&2
+    exit 1
+fi
+if ! command -v "${CC:-cc}" >/dev/null || ! command -v pkg-config >/dev/null || ! pkg-config --exists cairo; then
+    echo 'Install build dependencies: sudo apt install build-essential pkg-config libcairo2-dev fonts-dejavu-core python3 python3-pil' >&2
+    exit 1
+fi
+mkdir -p "$root/build"
+stage=$(mktemp -d "$root/build/.aurora-build.XXXXXX")
+trap 'rm -rf -- "$stage"' EXIT
+read -r -a cairo_cflags <<< "$(pkg-config --cflags cairo)"
+read -r -a cairo_libs <<< "$(pkg-config --libs cairo)"
+common=(-std=gnu11 -O2 -fPIC -shared -Wl,-z,defs -Wl,-Bsymbolic-functions
+    -Wall -Wextra -Wno-unused-function -Wno-unused-parameter -DAU_HAS_DLSS=0)
+"${CC:-cc}" "${common[@]}" "${cairo_cflags[@]}" "$root/hook/hook.c" \
+    -o "$stage/libaurora.so" "${cairo_libs[@]}" -ldl -lpthread -lm
+# A link-time placeholder supplies the dependency name without bundling game code.
+# At runtime this dependency is the player's unchanged original SDL3 library.
+"${CC:-cc}" -shared -fPIC -x c /dev/null \
+    -Wl,-soname,libSDL3.aurora-original.so -o "$stage/sdl-link.so"
+"${CC:-cc}" "${common[@]}" -DAU_SDL_PROXY=1 "${cairo_cflags[@]}" "$root/hook/hook.c" \
+    -o "$stage/libaurora-sdl.so" -Wl,-soname,libSDL3.so '-Wl,-rpath,$ORIGIN' \
+    "-Wl,--version-script=$root/hook/sdl_proxy.map" \
+    -Wl,--no-as-needed "$stage/sdl-link.so" -Wl,--as-needed \
+    "${cairo_libs[@]}" -ldl -lpthread -lm
+# Replace outputs atomically, including if an older library is still mapped by a process.
+mv -f -- "$stage/libaurora.so" "$stage/libaurora-sdl.so" "$root/build/"
+echo "Built $root/build/libaurora.so and libaurora-sdl.so"

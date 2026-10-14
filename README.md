@@ -31,6 +31,48 @@ a rotating star sky, lens flare and a filmic tonemap - with an in-game options m
 
 ## Install
 
+### Ubuntu-based Linux
+
+The native Linux build targets **x86_64 Ubuntu 22.04 or newer**, including Ubuntu-based
+distributions such as Linux Mint and Pop!_OS. It uses the Linux Hytale client and its SDL3
+OpenGL renderer. Both native launcher installations and the official Flatpak are detected.
+
+Close Hytale, then install the build dependencies and automatic hook from this folder:
+
+```bash
+sudo apt update
+sudo apt install build-essential pkg-config libcairo2-dev fonts-dejavu-core python3 python3-pil
+./install.sh
+```
+
+**Start Hytale through your normal launcher or desktop shortcut.** Aurora loads automatically;
+`launch.sh` is now just an optional shortcut to the normal launcher.
+
+The installer builds `build/libaurora-sdl.so` and installs it as the game's `Client/libSDL3.so`.
+The original SDL library is preserved unchanged as `Client/libSDL3.aurora-original.so`.
+The proxy forwards SDL calls and intercepts shader loading and presentation. Hytale's client
+executable is unchanged, and no Flatpak overrides or environment variables are required.
+
+Shaders and settings are copied into `Client/.aurora/shaderpack`, inside the game's own folder,
+so the normal Flatpak launcher can read them. Changes made through the menu are saved there.
+Reinstalling preserves the installed settings while refreshing the pack. Keep this source
+folder for reinstalling after game updates; it is no longer needed to launch the game.
+
+- **After a game update:** close Hytale and run `./install.sh` again. If an update replaces
+  the whole Client folder, restore any custom settings from your own backup.
+- **Custom game location:** `./install.sh --client-dir "/path/to/Client"`.
+- **Custom native launcher:** add `--launcher "/path/to/hytale-launcher"`.
+- **Both versions installed:** select `--backend flatpak` or `--backend native`.
+- **Rebuild:** `./install.sh --build`.
+- **Uninstall:** `./install.sh --uninstall` restores the original SDL library. Installed
+  settings are kept in `Client/.aurora/shaderpack`. If the game already replaced SDL during
+  an update, uninstall keeps that newer library.
+
+**DLSS and its render-scale integration are Windows-only** and are hidden in the Linux menu.
+Linux uses the pack's temporal anti-aliasing.
+
+### Windows
+
 1. Download the latest release zip from the [Releases](../../releases) page and extract it
    somewhere permanent (the game loads the pack from this folder, so don't delete it).
 2. Close Hytale and double-click **`Install.bat`**.
@@ -59,7 +101,8 @@ especially the RTX preset; see [Performance](#performance).
 
 Changes apply instantly; values you changed from the default show in orange. They are saved in
 `shaderpack/include/AU_Settings.glsl`, which you can also edit by hand while the game runs (saving
-the file reloads the shaders).
+the file reloads the shaders). On Linux, edit the installed copy at
+`Client/.aurora/shaderpack/include/AU_Settings.glsl`.
 
 ## Menu options
 
@@ -172,6 +215,14 @@ runs much lighter than RTX.
 
 ## Build it yourself
 
+On Linux, `./build.sh` builds `build/libaurora-sdl.so` (automatic loading) and
+`build/libaurora.so` (optional manual preloading) with the system C compiler. It requires
+`build-essential`, `pkg-config` and `libcairo2-dev`; shader preparation additionally uses
+`python3` and `python3-pil`. Build on the target distribution rather than copying a shared
+library built against a newer glibc onto an older Ubuntu release.
+
+On Windows:
+
 The release includes a prebuilt `opengl32.dll`. If you would rather not run a DLL you did not
 build, double-click **`Build From Source.bat`** instead of `Install.bat`: it compiles the DLL
 from the C source in `hook/` and installs that. The compiler (Zig) is downloaded once from
@@ -182,23 +233,40 @@ installs.
 
 ## How it works
 
-Hytale compiles its OpenGL shaders from source embedded in `HytaleClient.exe` and has no shader
-loader. `opengl32.dll` in the game folder is loaded instead of the Windows one; it forwards every
+Hytale compiles its OpenGL shaders from source embedded in its client executable and has no
+shader loader. On Windows, `opengl32.dll` in the game folder is loaded instead of the Windows one; it forwards every
 call to the real `opengl32.dll`, and when the game compiles a shader it recognises (by
 `shaderpack/index.txt`) and the pack has a replacement for in `shaderpack/programs/`, it compiles
 that instead. Edited shader files are recompiled live. The in-game menu is drawn by the same DLL.
 
-Hytale's own shader sources are not redistributed: `tools/prepare_shaders.ps1` extracts them from
+On Linux, Hytale loads the installed SDL3 proxy from its own Client folder. The proxy depends
+on the original SDL library beside it, so ordinary SDL exports continue to resolve, while
+Aurora handles OpenGL function lookup and buffer presentation. The shader engine and menu model
+are shared with Windows; POSIX timing,
+inotify and Cairo provide Linux file watching and panel drawing. SDL3 provides the
+[OpenGL function lookup](https://wiki.libsdl.org/SDL3/SDL_GL_GetProcAddress) and
+[window presentation](https://wiki.libsdl.org/SDL3/SDL_GL_SwapWindow) interfaces.
+
+Hytale's own shader sources are not redistributed: `tools/prepare_shaders.ps1` (Windows) or
+`tools/prepare_shaders.py` (Linux) extracts them from
 the installed game into `shaderpack/original/` during install, because the pack's shaders include
 parts of them.
 
 ## Troubleshooting
 
+- **Linux looks like vanilla:** close Hytale and run `./install.sh`, then start it normally.
+  Check `Client/.aurora/shaderpack/hook.log` for `automatic proxy`. Run `./install.sh` again
+  after game updates. `./launch.sh --print-command` shows the optional launcher command.
+- **Linux build dependencies missing:** install the Ubuntu packages listed above. The installer
+  does not install system packages or download a compiler for you.
+- **Flatpak reports a missing library or glibc version:** rebuild with `./install.sh --build` on
+  the machine where you play and ensure the Hytale Flatpak runtime is up to date.
 - **Looks like vanilla:** press Pause once (the shaders may be toggled off), and check that
   `opengl32.dll` sits next to `HytaleClient.exe`. After a game update, run `Install.bat` again.
 - **Something renders wrong after a game update:** a shader that fails to compile falls back to
   the game's own; the compiler log is in `shaderpack/errors/`, and `shaderpack/hook.log` records
-  what the DLL did. Please open an issue with those files.
+  what the hook did. On Linux these files are under `Client/.aurora/shaderpack`.
+  Please open an issue with those files.
 - **Antivirus warning:** some antivirus tools flag DLLs that load next to a game. Use
   `Build From Source.bat` to build the DLL from the source yourself.
 

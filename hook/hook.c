@@ -1,15 +1,28 @@
-// opengl32.dll proxy for Hytale: forwards everything to the system opengl32.dll and
+// OpenGL shader hook for Hytale: Windows opengl32.dll proxy / Linux SDL3 interposer.
+// The Windows proxy forwards everything to the system opengl32.dll and
 // intercepts shader compilation so the "shaderpack" folder next to this DLL can replace
 // the game's embedded GLSL. Programs are relinked live whenever a file in
 // shaderpack/programs or shaderpack/include changes; uniform locations are virtualised
 // so the game's cached locations stay valid across relinks.
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "platform_linux.h"
+#endif
+#include <wctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <stdarg.h>
 #include <math.h>
+
+#ifdef _WIN32
+#define AU_GL_EXPORT __declspec(dllexport)
+#else
+// Linux uses SDL's proc lookup; don't interpose GL calls internal to the driver.
+#define AU_GL_EXPORT static
+#endif
 
 typedef unsigned int GLuint;
 typedef int GLint;
@@ -32,7 +45,9 @@ typedef char GLchar;
 
 int stubs_resolve(HMODULE real);
 
+#ifdef _WIN32
 static HMODULE g_real;
+#endif
 static wchar_t g_packDir[MAX_PATH];
 static CRITICAL_SECTION g_lock;
 static FILE *g_log;
@@ -59,7 +74,14 @@ static void logf_(const char *fmt, ...)
 
 static void pack_path(wchar_t *out, const char *rel)
 {
+#ifdef _WIN32
     _snwprintf(out, MAX_PATH, L"%s\\%hs", g_packDir, rel);
+#else
+    wchar_t wide[MAX_PATH];
+    au_to_wide(wide, MAX_PATH, rel);
+    for (wchar_t *p = wide; *p; p++) if (*p == L'\\') *p = L'/';
+    swprintf(out, MAX_PATH, L"%ls/%ls", g_packDir, wide);
+#endif
     out[MAX_PATH - 1] = 0;
 }
 
@@ -305,6 +327,10 @@ static void expand(Str *out, const char *text, int depth)
                     str_cstr(out, name);
                     str_cstr(out, "\n");
                     expand(out, body, depth + 1);
+#if !AU_HAS_DLSS
+                    if (!strcmp(name, "AU_Settings.glsl"))
+                        str_cstr(out, "\n#undef AU_DLSS\n#define AU_DLSS 0\n#undef AU_DLSS_RR\n#define AU_DLSS_RR 0\n");
+#endif
                     str_cstr(out, "\n// END ");
                     str_cstr(out, name);
                     str_cstr(out, "\n");
@@ -729,7 +755,7 @@ static void APIENTRY hook_glUniformBlockBinding(GLuint prog, GLuint index, GLuin
     found = 0;
     for (int i = 0; i < g_nKnownBlocks; i++) if (!strcmp(g_knownBlocks[i].name, name)) found = 1;
     if (!found && g_nKnownBlocks < 16 && name[0]) {
-        snprintf(g_knownBlocks[g_nKnownBlocks].name, 64, "%s", name);
+        snprintf(g_knownBlocks[g_nKnownBlocks].name, 64, "%.63s", name);
         g_knownBlocks[g_nKnownBlocks].binding = binding;
         g_nKnownBlocks++;
         logf_("uniform block %s -> binding %u", name, binding);
@@ -970,7 +996,7 @@ static void APIENTRY hook_glActiveTexture(GLenum t)
     r_glActiveTexture(t);
 }
 
-__declspec(dllexport) void APIENTRY glBindTexture(GLenum target, GLuint tex)
+AU_GL_EXPORT void APIENTRY glBindTexture(GLenum target, GLuint tex)
 {
     if (g_activeUnit < MAX_UNITS) { g_units[g_activeUnit].target = target; g_units[g_activeUnit].tex = tex; }
     r_glBindTexture(target, tex);
@@ -1048,14 +1074,16 @@ static double g_setDlssJitter = 1, g_setJitterSX = 1, g_setJitterSY = 1, g_setMo
 static double g_setDlssDebug = 0;   // 1 = show DLSS's colour input, 2 = reset every frame, 3 depth, 4 motion
 static double g_setDlssMode = 1;    // AU_DLSS: 1 = Super Resolution, 2 = Ray Reconstruction
 static double g_setDlssPreset = 0;  // AU_DLSS_PRESET: 0 NVIDIA's default model, 1 sharpest, 2 less ghosting
+#if AU_HAS_DLSS
 static int g_dlssPresentedFrame = -100;   // last frame DLSS's output reached the window
+#endif
 static int g_postPresent;                 // the frame is on the window: UI follows, no jitter
 
 // Terrain program in use (materials): the atlas is bound by draw time, not at glUseProgram.
 static ProgRec *g_matProgRec;
 static void materials_draw_check(void);
 
-__declspec(dllexport) void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsizei count)
+AU_GL_EXPORT void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsizei count)
 {
     share_draw_capture();
     if (g_matProgRec) materials_draw_check();
@@ -1065,7 +1093,7 @@ __declspec(dllexport) void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsiz
     r_glDrawArrays(mode, first, count);
 }
 
-__declspec(dllexport) void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices)
+AU_GL_EXPORT void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices)
 {
     share_draw_capture();
     if (g_matProgRec) materials_draw_check();
@@ -1650,7 +1678,7 @@ static void vox_use(ProgRec *p)
     r_glBindImageTexture(VOX_UNIT_LIGHTS, g_voxLights, 0, 0, 0, GL_READ_WRITE, GL_R32UI);
     if (strcmp(g_voxLastUser, p->pname)) {
         r_glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
-        strncpy(g_voxLastUser, p->pname, sizeof(g_voxLastUser) - 1);
+        snprintf(g_voxLastUser, sizeof(g_voxLastUser), "%s", p->pname);
     }
 }
 
@@ -2149,7 +2177,7 @@ static void profile_use(const char *name)
     if (!qc) qc = (PFN_glQueryCounter)real_wglGetProcAddress("glQueryCounter");
     if (g_profState == 2 && g_profN < PROF_MAX && qc) {
         qc(g_profQ[g_profN], GL_TIMESTAMP);
-        snprintf(g_profName[g_profN], 48, "%s", name && name[0] ? name : "(other)");
+        snprintf(g_profName[g_profN], 48, "%.47s", name && name[0] ? name : "(other)");
         g_profN++;
     }
 }
@@ -2173,7 +2201,7 @@ static void profile_collect(void)
         total += d;
         int k = 0;
         while (k < nn && strcmp(names[k], g_profName[i])) k++;
-        if (k == nn && nn < 128) { snprintf(names[nn], 48, "%s", g_profName[i]); ms[nn] = 0; counts[nn] = 0; nn++; }
+        if (k == nn && nn < 128) { snprintf(names[nn], 48, "%.47s", g_profName[i]); ms[nn] = 0; counts[nn] = 0; nn++; }
         if (k < 128) { ms[k] += d; counts[k]++; }
     }
     logf_("PROFILE frame GPU %.2f ms over %d passes:", total, g_profN - 1);
@@ -2286,6 +2314,7 @@ static void APIENTRY hook_glUseProgram(GLuint prog)
     LeaveCriticalSection(&g_lock);
 }
 
+#ifdef _WIN32
 static int is_game_foreground(void)
 {
     DWORD pid = 0;
@@ -2331,6 +2360,8 @@ static DWORD WINAPI watcher_thread(LPVOID arg)
 }
 
 // ----------------------------------------------------------------------------------------
+#endif // _WIN32 watcher
+
 // In-game options menu (Home key). Lists the #defines named in shaderpack/options.txt and
 // edits their values in include/AU_Settings.glsl, which the file watcher then hot-reloads.
 // Drawn as an overlay at SwapBuffers, after the game's own UI.
@@ -2357,8 +2388,10 @@ static int g_menuDirty = 1;
 static double g_menuWriteAt;
 static wchar_t g_menuStatus[96];
 static CRITICAL_SECTION g_menuLock;
+#ifdef _WIN32
 static HWND g_gameHwnd;
 static WNDPROC g_prevWndProc;
+#endif
 
 static double now_sec(void)
 {
@@ -2377,7 +2410,11 @@ static char *menu_trim(char *s)
 
 static void to_wide(wchar_t *out, int cap, const char *s)
 {
+#ifdef _WIN32
     if (!MultiByteToWideChar(CP_UTF8, 0, s, -1, out, cap)) out[0] = 0;
+#else
+    au_to_wide(out, (size_t)cap, s);
+#endif
     out[cap - 1] = 0;
 }
 
@@ -2436,6 +2473,9 @@ static void menu_load(void)
         for (char *t = strtok_s(line, "|", &s2); t && nf < 4; t = strtok_s(NULL, "|", &s2)) f[nf++] = menu_trim(t);
         if (nf < 3) continue;
         snprintf(m->define, sizeof(m->define), "%s", f[0]);
+#ifndef _WIN32
+        if (!strncmp(m->define, "AU_DLSS", 7) || !strcmp(m->define, "!DLSS_INFO") || !strcmp(m->define, "AU_RENDER_SCALE")) continue;
+#endif
         to_wide(m->label, 64, f[1]);
         char *kind = f[2];
         if (!strcmp(m->define, "!DLSS_INFO")) {   // read-only: what DLSS is doing right now
@@ -2637,6 +2677,7 @@ static void menu_change(int dir, int reset)
     g_menuDirty = 1;
 }
 
+#ifdef _WIN32
 static int menu_key_is_ours(WPARAM vk)
 {
     return vk == VK_UP || vk == VK_DOWN || vk == VK_LEFT || vk == VK_RIGHT || vk == VK_BACK || vk == VK_PRIOR || vk == VK_NEXT;
@@ -2702,7 +2743,11 @@ static DWORD WINAPI menu_input_thread(LPVOID arg)
     return 0;
 }
 
-// ---- Panel (GDI into a top-down 32-bit DIB) ----
+#endif // _WIN32 input
+
+// ---- Panel (GDI on Windows, Cairo on Linux, top-down BGRA pixels) ----
+
+#ifdef _WIN32
 
 static HDC g_ovDC;
 static HBITMAP g_ovBmp;
@@ -2733,6 +2778,10 @@ static void menu_text(HDC dc, const wchar_t *s, int x0, int y0, int x1, int y1, 
     DrawTextW(dc, s, -1, &r, align | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 }
 
+#else
+#include "linux_panel.h"
+#endif
+
 static void menu_render(int screenH)
 {
     double s = screenH / 1080.0;
@@ -2750,6 +2799,7 @@ static void menu_render(int screenH)
     int titleH = (int)(44 * s + 0.5), footH = rowH * 2 + pad;
     int H = titleH + rows * rowH + footH;
 
+#ifdef _WIN32
     if (!g_ovDC) g_ovDC = CreateCompatibleDC(NULL);
     if (W != g_ovW || H != g_ovH || !g_ovBmp) {
         if (g_ovBmp) DeleteObject(g_ovBmp);
@@ -2778,6 +2828,14 @@ static void menu_render(int screenH)
 
     HDC dc = g_ovDC;
     SetBkMode(dc, TRANSPARENT);
+#else
+    if (!linux_panel_resize(W, H)) return;
+    int fpx = (int)(17 * s + 0.5);
+    g_fText = (LinuxFont){fpx, 0};
+    g_fBold = (LinuxFont){fpx, 1};
+    g_fSmall = (LinuxFont){(int)(13.5 * s + 0.5), 1};
+    cairo_t *dc = g_ovDC;
+#endif
     menu_fill(dc, 0, 0, W, H, RGB(15, 19, 28));
     menu_fill(dc, 0, 0, W, titleH, RGB(22, 29, 44));
     menu_text(dc, L"AURORA SHADERS", pad, 0, W - pad, titleH, g_fBold, RGB(150, 190, 255), DT_LEFT);
@@ -2821,7 +2879,11 @@ static void menu_render(int screenH)
               g_fSmall, RGB(128, 138, 158), DT_LEFT);
     menu_text(dc, L"Backspace  default      Home  close", pad, y + rowH, W - pad, y + rowH * 2, g_fSmall, RGB(128, 138, 158), DT_LEFT);
     if (g_menuStatus[0]) menu_text(dc, g_menuStatus, pad, y + rowH, W - pad, y + rowH * 2, g_fSmall, RGB(140, 214, 160), DT_RIGHT);
+#ifdef _WIN32
     GdiFlush();
+#else
+    cairo_surface_flush(g_ovBmp);
+#endif
 
     // Alpha: translucent panel with rounded corners.
     int rad = (int)(12 * s + 0.5);
@@ -3076,6 +3138,7 @@ static void menu_draw(int sw, int sh)
     for (int i = 0; i < 7; i++) { if (capOn[i]) ov.Enable(caps[i]); else ov.Disable(caps[i]); }
 }
 
+#ifdef _WIN32
 static void menu_frame(HDC hdc)
 {
     if (!g_gameHwnd) {
@@ -3103,105 +3166,20 @@ static void menu_frame(HDC hdc)
     LeaveCriticalSection(&g_menuLock);
 }
 
-// Screenshot for testing: creating shaderpack/_shot makes the next frame (before the menu
-// overlay) be saved as shaderpack/shot.bmp, box-filtered down to at most 1600 pixels wide.
-// Reads the back buffer, so it works where desktop capture of the game window does not.
-#define GL_READ_FRAMEBUFFER 0x8CA8
-#define GL_READ_FRAMEBUFFER_BINDING 0x8CAA
-#define GL_PIXEL_PACK_BUFFER 0x88EB
-#define GL_PIXEL_PACK_BUFFER_BINDING 0x88ED
-#define GL_READ_BUFFER 0x0C02
-#define GL_PACK_ALIGNMENT 0x0D05
-#define GL_BACK 0x0405
-typedef void (APIENTRY *PFN_glReadPixels)(GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void *);
-typedef void (APIENTRY *PFN_glReadBuffer)(GLenum);
-typedef void (APIENTRY *PFN_glBindFramebuffer)(GLenum, GLuint);
-
-static void shot_frame(HDC hdc)
-{
-    static int counter;
-    if (++counter % 10 || !pack_flag("_shot")) return;
-    wchar_t flag[MAX_PATH];
-    pack_path(flag, "_shot");
-    DeleteFileW(flag);
-    PFN_glReadPixels readPx = (PFN_glReadPixels)GetProcAddress(g_real, "glReadPixels");
-    PFN_glReadBuffer readBuf = (PFN_glReadBuffer)GetProcAddress(g_real, "glReadBuffer");
-    PFN_glPixelStorei pst = (PFN_glPixelStorei)GetProcAddress(g_real, "glPixelStorei");
-    PFN_glBindFramebuffer bindFb = (PFN_glBindFramebuffer)real_wglGetProcAddress("glBindFramebuffer");
-    PFN_glBindBuffer bindBuf = (PFN_glBindBuffer)real_wglGetProcAddress("glBindBuffer");
-    RECT rc;
-    if (!readPx || !readBuf || !pst || !bindFb || !bindBuf || !GetClientRect(WindowFromDC(hdc), &rc)) return;
-    int w = rc.right - rc.left, h = rc.bottom - rc.top;
-    if (w <= 0 || h <= 0) return;
-    unsigned char *px = (unsigned char *)malloc((size_t)w * h * 4);
-    if (!px) return;
-    GLint prevFb = 0, prevPbo = 0, prevBuf = 0, prevAlign = 4;
-    r_glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevFb);
-    r_glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &prevPbo);
-    r_glGetIntegerv(GL_READ_BUFFER, &prevBuf);
-    r_glGetIntegerv(GL_PACK_ALIGNMENT, &prevAlign);
-    bindFb(GL_READ_FRAMEBUFFER, 0);
-    bindBuf(GL_PIXEL_PACK_BUFFER, 0);
-    readBuf(GL_BACK);
-    pst(GL_PACK_ALIGNMENT, 1);
-    readPx(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
-    pst(GL_PACK_ALIGNMENT, prevAlign);
-    readBuf((GLenum)prevBuf);
-    bindBuf(GL_PIXEL_PACK_BUFFER, (GLuint)prevPbo);
-    bindFb(GL_READ_FRAMEBUFFER, (GLuint)prevFb);
-
-    int f = (w + 1599) / 1600;
-    int ow = w / f, oh = h / f, stride = (ow * 3 + 3) & ~3;
-    unsigned char *out = (unsigned char *)calloc((size_t)stride * oh, 1);
-    if (out) {
-        for (int y = 0; y < oh; y++)
-            for (int x = 0; x < ow; x++) {
-                unsigned sum[3] = {0, 0, 0};
-                for (int j = 0; j < f; j++)
-                    for (int i = 0; i < f; i++) {
-                        const unsigned char *s = px + (((size_t)(y * f + j) * w) + x * f + i) * 4;
-                        sum[0] += s[2]; sum[1] += s[1]; sum[2] += s[0];
-                    }
-                unsigned char *d = out + (size_t)y * stride + x * 3;
-                for (int c = 0; c < 3; c++) d[c] = (unsigned char)(sum[c] / (unsigned)(f * f));
-            }
-        // GL rows run bottom-up like a BMP's.
-        BITMAPFILEHEADER fh = {0};
-        BITMAPINFOHEADER ih = {0};
-        fh.bfType = 0x4D42;
-        fh.bfOffBits = sizeof(fh) + sizeof(ih);
-        fh.bfSize = fh.bfOffBits + (DWORD)(stride * oh);
-        ih.biSize = sizeof(ih);
-        ih.biWidth = ow;
-        ih.biHeight = oh;
-        ih.biPlanes = 1;
-        ih.biBitCount = 24;
-        Str bmp = {0};
-        str_add(&bmp, (const char *)&fh, sizeof(fh));
-        str_add(&bmp, (const char *)&ih, sizeof(ih));
-        str_add(&bmp, (const char *)out, (size_t)stride * oh);
-        write_file("shot.bmp", bmp.p, bmp.n);
-        free(bmp.p);
-        free(out);
-        logf_("screenshot %dx%d -> shot.bmp (%dx%d)", w, h, ow, oh);
-    }
-    free(px);
-}
-
 typedef BOOL (WINAPI *PFN_wglSwapBuffers)(HDC);
 static PFN_wglSwapBuffers r_wglSwapBuffers;
 
 __declspec(dllexport) BOOL WINAPI wglSwapBuffers(HDC hdc)
 {
     g_postPresent = 0;
-    shot_frame(hdc);
     menu_frame(hdc);
     return r_wglSwapBuffers(hdc);
 }
 
-// ----------------------------------------------------------------------------------------
+#endif // _WIN32 presentation
 
-__declspec(dllexport) PROC WINAPI wglGetProcAddress(LPCSTR name)
+// Shared dispatch for WGL and SDL3.
+static PROC hook_get_proc(const char *name)
 {
     PROC p = real_wglGetProcAddress(name);
     if (!p || !name) return p;
@@ -3214,12 +3192,18 @@ __declspec(dllexport) PROC WINAPI wglGetProcAddress(LPCSTR name)
     HOOK(glUniformMatrix4fv) HOOK(glActiveTexture) HOOK(glBindSampler)
     HOOK(glDrawArraysInstanced) HOOK(glDrawElementsInstanced) HOOK(glBlitFramebuffer)
 #undef HOOK
-    if (!strcmp(name, "glBindTexture")) return (PROC)glBindTexture;
-    if (!strcmp(name, "glDrawArrays")) return (PROC)glDrawArrays;
-    if (!strcmp(name, "glDrawElements")) return (PROC)glDrawElements;
+    if (!strcmp(name, "glBindTexture")) { r_glBindTexture = (PFN_glBindTexture)p; return (PROC)glBindTexture; }
+    if (!strcmp(name, "glDrawArrays")) { r_glDrawArrays = (PFN_glDrawArrays)p; return (PROC)glDrawArrays; }
+    if (!strcmp(name, "glDrawElements")) { r_glDrawElements = (PFN_glDrawElements)p; return (PROC)glDrawElements; }
     if (!strcmp(name, "glGetFramebufferAttachmentParameteriv"))
         r_glGetFramebufferAttachmentParameteriv = (PFN_glGetFramebufferAttachmentParameteriv)p;
     return p;
+}
+
+#ifdef _WIN32
+__declspec(dllexport) PROC WINAPI wglGetProcAddress(LPCSTR name)
+{
+    return hook_get_proc(name);
 }
 
 // AU_RENDER_SCALE (menu, 0 = leave it to Hytale's slider): Hytale's own Render Scale, which
@@ -3316,3 +3300,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
     }
     return TRUE;
 }
+
+#else
+#include "linux_runtime.h"
+#endif
