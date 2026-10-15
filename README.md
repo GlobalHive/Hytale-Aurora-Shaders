@@ -7,6 +7,12 @@ https://github.com/user-attachments/assets/9c0842a6-0442-40e9-8760-67f695989e0c
 
 https://github.com/user-attachments/assets/55316aae-4729-4537-8840-b3e5d5a30a6e
 
+<img width="3840" height="2160" alt="HytaleClient_mA5cWvFjpR" src="https://github.com/user-attachments/assets/a9f44805-9e51-40f8-b493-9174b37dedc8" />
+
+<img width="3840" height="2160" alt="HytaleClient_jA8qtVqNoz" src="https://github.com/user-attachments/assets/3a8d26e4-41b2-4e28-87d4-f94f4158ffc4" />
+
+<img width="2956" height="1663" alt="HytaleClient_xQDaUhgztt" src="https://github.com/user-attachments/assets/098cc4b4-380c-488e-90d5-f2a9a69fa49f" />
+
 <img width="3840" height="2160" alt="HytaleClient_ARPBNL3it1" src="https://github.com/user-attachments/assets/b79537e3-1a60-4631-a084-619f9bd18946" />
 
 <img width="3840" height="2160" alt="HytaleClient_XLE7vjtrBp" src="https://github.com/user-attachments/assets/1cf4d1f9-71e0-4597-a119-d9321ea4f554" />
