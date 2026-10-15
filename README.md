@@ -326,7 +326,6 @@ made through the menu or shader files reload while you play.
 
 ## Known Issues
 
-- **When Sunrise hits for few seconds there is flicker on the opposite side from where the sun is.**
 - **Disable native TAA in Hytale's Graphics settings to avoid shaking and double temporal filtering.**
 
 
