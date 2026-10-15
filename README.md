@@ -1,4 +1,4 @@
-
+<img width="3840" height="2160" alt="image" src="https://github.com/user-attachments/assets/bba36eb8-ee54-4599-a0a7-34b65995309c" />
 <a href="https://buymeacoffee.com/kristijan1001" target="_blank"> <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" width="160" alt="Buy Me a Coffee"> </a>
 
 https://www.youtube.com/watch?v=AnV2Ek9_pGk
@@ -6,6 +6,8 @@ https://www.youtube.com/watch?v=AnV2Ek9_pGk
 https://github.com/user-attachments/assets/9c0842a6-0442-40e9-8760-67f695989e0c
 
 <img width="3840" height="2160" alt="HytaleClient_ARPBNL3it1" src="https://github.com/user-attachments/assets/b79537e3-1a60-4631-a084-619f9bd18946" />
+
+<img width="3840" height="2160" alt="HytaleClient_1Ct0iumhDG" src="https://github.com/user-attachments/assets/605dfb67-8cc8-475a-9dc9-0d5d6c546140" />
 
 <img width="3840" height="2160" alt="HytaleClient_XLE7vjtrBp" src="https://github.com/user-attachments/assets/1cf4d1f9-71e0-4597-a119-d9321ea4f554" />
 
