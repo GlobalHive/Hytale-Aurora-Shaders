@@ -5,6 +5,8 @@ https://www.youtube.com/watch?v=AnV2Ek9_pGk
 
 https://github.com/user-attachments/assets/9c0842a6-0442-40e9-8760-67f695989e0c
 
+https://github.com/user-attachments/assets/55316aae-4729-4537-8840-b3e5d5a30a6e
+
 <img width="3840" height="2160" alt="HytaleClient_ARPBNL3it1" src="https://github.com/user-attachments/assets/b79537e3-1a60-4631-a084-619f9bd18946" />
 
 <img width="3840" height="2160" alt="HytaleClient_XLE7vjtrBp" src="https://github.com/user-attachments/assets/1cf4d1f9-71e0-4597-a119-d9321ea4f554" />
