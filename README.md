@@ -1,4 +1,4 @@
-<img width="3840" height="2160" alt="image" src="https://github.com/user-attachments/assets/bba36eb8-ee54-4599-a0a7-34b65995309c" />
+
 <a href="https://buymeacoffee.com/kristijan1001" target="_blank"> <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" width="160" alt="Buy Me a Coffee"> </a>
 
 https://www.youtube.com/watch?v=AnV2Ek9_pGk
@@ -6,6 +6,14 @@ https://www.youtube.com/watch?v=AnV2Ek9_pGk
 https://github.com/user-attachments/assets/9c0842a6-0442-40e9-8760-67f695989e0c
 
 <img width="3840" height="2160" alt="HytaleClient_ARPBNL3it1" src="https://github.com/user-attachments/assets/b79537e3-1a60-4631-a084-619f9bd18946" />
+
+<img width="3840" height="2160" alt="image" src="https://github.com/user-attachments/assets/bba36eb8-ee54-4599-a0a7-34b65995309c" />
+
+<img width="3840" height="2160" alt="HytaleClient_iXEQJUArUL" src="https://github.com/user-attachments/assets/ae779dc9-944d-4ca4-a88d-f1c164e0393e" />
+
+<img width="3840" height="2160" alt="HytaleClient_jK6PYPZ5mO" src="https://github.com/user-attachments/assets/b16a91c7-6f33-4242-9e1a-ab10f8d40eb3" />
+
+<img width="3840" height="2160" alt="HytaleClient_iPaT8SGzRg" src="https://github.com/user-attachments/assets/b8ce33f3-78bc-4877-977a-638c4319377b" />
 
 <img width="3840" height="2160" alt="HytaleClient_1Ct0iumhDG" src="https://github.com/user-attachments/assets/605dfb67-8cc8-475a-9dc9-0d5d6c546140" />
 
@@ -22,6 +30,8 @@ https://github.com/user-attachments/assets/9c0842a6-0442-40e9-8760-67f695989e0c
 <img width="3840" height="2160" alt="image" src="https://github.com/user-attachments/assets/6c50f4f3-098d-4eac-86d0-67ac4d0e60f9" />
 
 <img width="3840" height="2160" alt="image" src="https://github.com/user-attachments/assets/e63f95ea-0f36-4845-ae8d-54bf9d7eab6c" />
+
+<img width="3840" height="2160" alt="HytaleClient_6pkC82u4UM" src="https://github.com/user-attachments/assets/d9393e42-6a7d-472e-a9d8-2f95b171dfb6" />
 
 
 # Aurora Shaders for Hytale
