@@ -1,5 +1,6 @@
 // Aurora Shaders for Hytale: forward pass (water + translucent blocks)
 #include "AU_Settings.glsl"
+#include "AU_Surface.glsl"
 #include "AU_Emission.glsl"
 uniform sampler2DArray uHookMaterials;   // per-tile block materials (hook.c materials_build)
 #if AU_SSS

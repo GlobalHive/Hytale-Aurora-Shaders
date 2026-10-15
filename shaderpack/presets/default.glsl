@@ -16,6 +16,8 @@
 #define AU_SCREEN_BRIGHTNESS 1.0    // Minecraft "brightness" slider equivalent (0 = moody, 1 = bright)
 #define AU_TWILIGHT_SHIFT 0.10      // keeps daylight up longer to fit Hytale's long dusk
 #define AU_SUNSET_SHIFT 0.0         // sun height (sin) offset for the sunset colour palette
+#define AU_POLISH_ENABLE 1
+#define AU_BIOME_ATMOSPHERE 0
 
 // ---- Lighting ------------------------------------------------------------------------
 #define AU_ALBEDO_MULT 0.78          // Hytale textures are painted brighter than Minecraft's

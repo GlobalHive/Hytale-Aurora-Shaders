@@ -1,6 +1,12 @@
+#include <errno.h>
+
 #define AU_USER_PROFILES 16
 #define AU_BUILTIN_PROFILES 12
 #define AU_DEFAULT_PROFILE (-2)
+
+static int g_menuProfileDelete = -1;
+static double g_menuProfileDeleteArmedAt, g_menuProfileDeleteUntil;
+static uint64_t g_menuProfileDeleteHash;
 
 static MenuOpt *menu_profile_find(int selected)
 {
@@ -92,6 +98,7 @@ static void menu_profile_builtin(int selected)
     menu_profile_set("AU_RENDER_SCALE", rtx && AU_HAS_DLSS ? 77 : 100);
     menu_profile_set("AU_DLSS_FRAMEGEN", 0);
     menu_profile_set("AU_PATH_TRACING", 0);
+    menu_profile_set("AU_POLISH_SUNLIGHT", tier >= 2);
     menu_profile_set("AU_SHADOW_SAMPLES", quality[tier].shadowSamples);
     menu_profile_set("AU_PCSS", rtx && tier >= 2);
     menu_profile_set("AU_CONTACT_SHADOWS", tier >= 1);
@@ -124,6 +131,7 @@ static void menu_profile_builtin(int selected)
 
 static void menu_profile_apply(void)
 {
+    g_menuProfileDelete = -1;
     int selected = g_menuProfileChoice;
     MenuOpt *profile = menu_profile_find(selected);
     if (!profile) return;
@@ -144,7 +152,10 @@ static void menu_profile_apply(void)
         if (!option->present || strncmp(option->define, "AU_", 3)) continue;
         char *end = NULL;
         char *token = find_define_value(saved, option->define, &end);
-        if (!token) continue;
+        if (!token) {
+            if (!strncmp(option->define, "AU_POLISH_", 10)) option->value = option->def;
+            continue;
+        }
         char *parsed = NULL;
         double value = strtod(token, &parsed);
         if (parsed != end || !isfinite(value)) continue;
@@ -175,6 +186,7 @@ static void menu_profile_apply(void)
 
 static void menu_profile_finish(void)
 {
+    g_menuProfileDelete = -1;
     wchar_t name[64];
     wcsncpy(name, g_menuSearch, 63);
     name[63] = 0;
@@ -248,10 +260,144 @@ static void menu_profile_finish(void)
     g_menuDirty = 1;
 }
 
+static MenuOpt *menu_profile_custom(void)
+{
+    if (g_menuProfileChoice < AU_BUILTIN_PROFILES || g_menuProfileChoice >= AU_BUILTIN_PROFILES + AU_USER_PROFILES) return NULL;
+    return menu_profile_find(g_menuProfileChoice);
+}
+
+static int menu_profile_delete_armed(void)
+{
+    return menu_profile_custom() && g_menuProfileDelete == g_menuProfileChoice && now_sec() < g_menuProfileDeleteUntil;
+}
+
+static void menu_profile_disarm_delete(void)
+{
+    g_menuProfileDelete = -1;
+}
+
+static void menu_profile_action_display(const char *name, wchar_t *out, int cap)
+{
+    MenuOpt *profile = menu_profile_custom();
+    if (!profile) _snwprintf(out, cap, L"%ls saved profile", !strcmp(name, "!PROFILE_EXPORT") ? L"Export" : L"Delete");
+    else _snwprintf(out, cap, L"%ls: %ls", !strcmp(name, "!PROFILE_EXPORT") ? L"Export"
+                   : menu_profile_delete_armed() ? L"Confirm delete" : L"Delete", profile->label);
+    out[cap - 1] = 0;
+}
+
+static int menu_profile_export_file(const MenuOpt *profile, const char *saved, size_t length, char *relative, size_t capacity)
+{
+    char slug[33];
+    size_t used = 0;
+    for (int index = 0; profile->label[index] && used < sizeof(slug) - 1; index++) {
+        wchar_t character = profile->label[index];
+        if ((character >= L'a' && character <= L'z') || (character >= L'A' && character <= L'Z') || (character >= L'0' && character <= L'9'))
+            slug[used++] = (char)character;
+        else if (used && slug[used - 1] != '-') slug[used++] = '-';
+    }
+    while (used && slug[used - 1] == '-') used--;
+    slug[used] = 0;
+    if (!used) strcpy(slug, "profile");
+    wchar_t directory[MAX_PATH];
+    pack_path(directory, "presets/exports");
+    CreateDirectoryW(directory, NULL);
+    for (int copy = 1; copy <= 999; copy++) {
+        int count = snprintf(relative, capacity, "presets/exports/Aurora-%s-%02d-%03d.glsl", slug, (int)profile->value - AU_BUILTIN_PROFILES, copy);
+        if (count < 0 || (size_t)count >= capacity || wcslen(g_packDir) + strlen(relative) + 2 > MAX_PATH) return 0;
+        wchar_t destination[MAX_PATH];
+        pack_path(destination, relative);
+        FILE *output = _wfopen(destination, L"wbx");
+        if (!output) {
+            if (errno == EEXIST) continue;
+            return 0;
+        }
+        size_t wrote = fwrite(saved, 1, length, output);
+        int closed = fclose(output);
+        if (wrote == length && closed == 0) return 1;
+        DeleteFileW(destination);
+        return 0;
+    }
+    return 0;
+}
+
+static void menu_profile_export(void)
+{
+    g_menuProfileDelete = -1;
+    MenuOpt *profile = menu_profile_custom();
+    if (!profile) {
+        _snwprintf(g_menuStatus, 96, L"Apply a saved custom profile to export it");
+        g_menuDirty = 1;
+        return;
+    }
+    char relative[128];
+    snprintf(relative, sizeof relative, "presets/preset-%02d.glsl", (int)profile->value - AU_BUILTIN_PROFILES);
+    size_t length = 0;
+    char *saved = read_file(relative, &length);
+    if (!saved || !menu_profile_export_file(profile, saved, length, relative, sizeof relative)) {
+        _snwprintf(g_menuStatus, 96, L"Export failed; check profile and folder permissions");
+    } else {
+        _snwprintf(g_menuStatus, 96, L"Exported to shaderpack/presets/exports");
+        logf_("menu: exported profile to %s", relative);
+    }
+    free(saved);
+    g_menuDirty = 1;
+}
+
+static void menu_profile_delete(void)
+{
+    MenuOpt *profile = menu_profile_custom();
+    if (!profile) {
+        g_menuProfileDelete = -1;
+        _snwprintf(g_menuStatus, 96, L"Only saved custom profiles can be deleted");
+        g_menuDirty = 1;
+        return;
+    }
+    char relative[64];
+    snprintf(relative, sizeof relative, "presets/preset-%02d.glsl", (int)profile->value - AU_BUILTIN_PROFILES);
+    size_t length = 0;
+    char *saved = read_file(relative, &length);
+    if (!saved) {
+        g_menuProfileDelete = -1;
+        _snwprintf(g_menuStatus, 96, L"The selected profile is missing");
+        g_menuDirty = 1;
+        return;
+    }
+    uint64_t hash = fnv1a(saved, length);
+    free(saved);
+    double time = now_sec();
+    if (!menu_profile_delete_armed() || hash != g_menuProfileDeleteHash) {
+        g_menuProfileDelete = g_menuProfileChoice;
+        g_menuProfileDeleteHash = hash;
+        g_menuProfileDeleteArmedAt = time;
+        g_menuProfileDeleteUntil = time + 5.0;
+        _snwprintf(g_menuStatus, 96, L"Confirm deletion: %ls", profile->label);
+        g_menuStatus[95] = 0;
+        g_menuDirty = 1;
+        return;
+    }
+    if (time - g_menuProfileDeleteArmedAt < 0.5) return;
+    wchar_t path[MAX_PATH];
+    pack_path(path, relative);
+    DeleteFileW(path);
+    g_menuProfileDelete = -1;
+    if (GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES) {
+        _snwprintf(g_menuStatus, 96, L"Could not delete profile; check folder permissions");
+    } else {
+        g_menuProfileChoice = -1;
+        menu_load();
+        _snwprintf(g_menuStatus, 96, L"Profile deleted; current shader settings kept");
+        logf_("menu: deleted custom profile %s", relative);
+    }
+    g_menuDirty = 1;
+}
+
 static void menu_profile_action(const char *name)
 {
     if (!strcmp(name, "!PROFILE_APPLY")) menu_profile_apply();
+    else if (!strcmp(name, "!PROFILE_EXPORT")) menu_profile_export();
+    else if (!strcmp(name, "!PROFILE_DELETE")) menu_profile_delete();
     else if (!strcmp(name, "!PROFILE_SAVE")) {
+        g_menuProfileDelete = -1;
         if (g_menuPresetNaming) menu_profile_finish();
         else {
             g_menuPresetNaming = 1;
@@ -265,6 +411,7 @@ static void menu_profile_action(const char *name)
 
 static void menu_profile_cancel(void)
 {
+    g_menuProfileDelete = -1;
     if (!g_menuPresetNaming) return;
     g_menuPresetNaming = 0;
     g_menuSearchFocus = 0;

@@ -36,6 +36,394 @@ static void set_texture(GLuint program, const char *name, GLuint unit, GLuint te
     r_glBindSampler(unit, 0); r_glUniform1i(r_glGetUniformLocation(program, name), unit);
 }
 
+static void surface_polish_test(void)
+{
+    GLuint framebuffer, output;
+    generateFramebuffer(1, &framebuffer); bindFramebuffer(0x8d40, framebuffer);
+    ov.GenTextures(1, &output); r_glBindTexture(GL_TEXTURE_2D, output);
+    ov.TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, 8, 8, 0, GL_RGBA, GL_FLOAT, NULL);
+    attachTexture(0x8d40, 0x8ce0, GL_TEXTURE_2D, output, 0);
+    float results[2][2][23][4];
+    for (int enabled = 0; enabled < 2; enabled++)
+    for (int antialiasing = 0; antialiasing < 2; antialiasing++) {
+        Str source = {0}; str_cstr(&source, "#version 410 core\n#define AU_SETTINGS\n"
+            "#define AU_POLISH_ROUGHNESS .35\n#define AU_POLISH_AMBIENT .4\n#define AU_POLISH_FOLIAGE_MATTE .65\n#define AU_POLISH_TEXTURE_DETAIL .7\n");
+        str_cstr(&source, enabled ? "#define AU_POLISH_ENABLE 1\n" : "#define AU_POLISH_ENABLE 0\n");
+        str_cstr(&source, antialiasing ? "#define AU_POLISH_SPECULAR_AA 1\n" : "#define AU_POLISH_SPECULAR_AA 0\n");
+        str_cstr(&source, "uniform int testCase;in vec2 fragTexCoords;out vec4 outColor;\n");
+        expand(&source, "#include \"AU_Surface.glsl\"\n", 0);
+        str_cstr(&source, "void main(){float value=0;"
+            "if(testCase==0)value=AU_TextureSmoothness(0,0u,vec3(.8),0);"
+            "else if(testCase==1)value=AU_TextureSmoothness(0,3u,vec3(.8),0);"
+            "else if(testCase==2)value=AU_TextureSmoothness(.6,1u,vec3(.1),0);"
+            "else if(testCase==3)value=AU_TextureSmoothness(.6,1u,vec3(.8),0);"
+            "else if(testCase==4)value=AU_TextureSmoothness(.8,2u,vec3(.8),0);"
+            "else if(testCase==5)value=AU_TextureSmoothness(.6,1u,vec3(.8),.4);"
+            "else if(testCase==6)value=AU_SpecularSmoothness(.9,.16);"
+            "else if(testCase==7)value=AU_SpecularSmoothness(0,10);"
+            "else if(testCase==8||testCase==9||testCase==10){outColor=vec4(AU_DirectionalAmbient(vec3(1),"
+            "vec3(0,testCase==8?1.0:-1.0,0),testCase==10?2:0),1);return;}"
+            "else if(testCase==11||testCase==12||testCase==13||testCase==14)value=AU_FoliageSpecular(testCase==14?0:testCase-10);"
+            "else if(testCase==15)value=AU_SpecularSmoothness(.9,0);"
+            "else if(testCase==16){vec2 footprint=AU_SurfaceFootprint(normalize(vec3(fragTexCoords,1)),vec3(fragTexCoords,1));outColor=vec4(footprint,0,1);return;}"
+            "else if(testCase>=19){outColor=vec4(AU_TextureDefinition(vec3(.4,.5,.6),testCase==19?.5:.2,"
+            "testCase==19?.25:testCase==22?.2:.5,testCase==21?0.0:1.0),1);return;}"
+            "else value=AU_TextureSmoothness(.4,testCase==17?0u:3u,vec3(.8),0);outColor=vec4(value);}");
+        GLuint program = test_program(source.p); free(source.p);
+        r_glUseProgram(program); ov.BindVertexArray(ov.vao); ov.Viewport(0, 0, 8, 8);
+        for (int sample = 0; sample < 23; sample++) {
+            r_glUniform1i(r_glGetUniformLocation(program, "testCase"), sample);
+            r_glDrawArrays(OV_GL_TRIANGLE_STRIP, 0, 4);
+            readPixels(4, 4, 1, 1, GL_RGBA, GL_FLOAT, results[enabled][antialiasing][sample]);
+            for (int channel = 0; channel < 4; channel++)
+                assert(isfinite(results[enabled][antialiasing][sample][channel]));
+        }
+        r_glDeleteProgram(program);
+    }
+    for (int enabled = 0; enabled < 2; enabled++)
+    for (int antialiasing = 0; antialiasing < 2; antialiasing++) {
+        float (*actual)[4] = results[enabled][antialiasing];
+        assert(actual[0][0] == 0 && actual[1][0] == 0 && actual[7][0] == 0);
+        assert(fabsf(actual[5][0] - .6f) < .00001f && fabsf(actual[15][0] - .9f) < .00001f);
+        assert(fabsf(actual[17][0] - .4f) < .00001f && fabsf(actual[18][0] - .4f) < .00001f);
+        assert(fabsf(actual[6][0] - (enabled && antialiasing ? .7f : .9f)) < .00001f);
+        assert(actual[13][0] == 1 && actual[14][0] == 1);
+        for (int channel = 0; channel < 3; channel++) {
+            float original = .4f + channel * .1f;
+            assert(fabsf(actual[19][channel] - original * (enabled ? 1.245f : 1)) < .00001f);
+            assert(fabsf(actual[20][channel] - original * (enabled ? .755f : 1)) < .00001f);
+            assert(fabsf(actual[21][channel] - original) < .00001f && fabsf(actual[22][channel] - original) < .00001f);
+        }
+        assert(fabsf(actual[11][0] - (enabled ? .415f : 1)) < .00001f && actual[12][0] == actual[11][0]);
+        for (int sample = 8; sample <= 10; sample++) {
+            float luminance = actual[sample][0] * .299f + actual[sample][1] * .587f + actual[sample][2] * .114f;
+            float expected = !enabled || sample == 8 ? 1 : sample == 9 ? .888f : .944f;
+            assert(fabsf(luminance - expected) < .00001f);
+        }
+        if (enabled) {
+            assert(actual[2][0] < .6f && actual[3][0] > .6f && actual[4][0] > .8f);
+            assert(actual[16][0] > 0 && actual[16][1] > 0);
+        } else {
+            assert(actual[2][0] == actual[3][0] && fabsf(actual[4][0] - .8f) < .00001f);
+            assert(actual[16][0] == 0 && actual[16][1] == 0);
+        }
+    }
+    PFN_glDeleteTextures deleteTextures = (void *)GetProcAddress(g_real, "glDeleteTextures");
+    deleteTextures(1, &output); assert(!getError());
+    puts("PASS: visual polish off equivalence, matte/wet material protection, resolved roughness, specular footprint filtering, bounded ambient energy and foliage-only highlights");
+}
+
+static void outdoor_sunlight_test(void)
+{
+    GLuint framebuffer, output;
+    generateFramebuffer(1, &framebuffer); bindFramebuffer(0x8d40, framebuffer);
+    ov.GenTextures(1, &output); r_glBindTexture(GL_TEXTURE_2D, output);
+    ov.TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, 8, 8, 0, GL_RGBA, GL_FLOAT, NULL);
+    attachTexture(0x8d40, 0x8ce0, GL_TEXTURE_2D, output, 0);
+    float results[3][40][4];
+    for (int mode = 0; mode < 3; mode++) {
+        Str source = {0};
+        str_cstr(&source, "#version 410 core\n#define AU_SETTINGS\n"
+            "#define AU_POLISH_SKY_FILL 1.0\n#define AU_POLISH_SUN_COLOUR 1.0\n#define AU_POLISH_SUN_HIGHLIGHTS 1.0\n"
+            "#define AU_POLISH_FOLIAGE_SUN 1.0\n#define AU_POLISH_SUN_BOUNCE 2.0\n#define AU_PCSS_SEARCH 9.0\n"
+            "#define AU_POLISH_SUN_DIAMETER testDiameter\n#define AU_SHADOW_SOFTNESS testSoftness\n");
+        str_cstr(&source, mode == 0 ? "#define AU_POLISH_ENABLE 0\n" : "#define AU_POLISH_ENABLE 1\n");
+        str_cstr(&source, mode == 1 ? "#define AU_POLISH_SUNLIGHT 0\n" : "#define AU_POLISH_SUNLIGHT 1\n");
+        str_cstr(&source, "uniform int testCase;uniform float testDiameter,testSoftness;out vec4 outColor;\n");
+        expand(&source, "#include \"AU_Sunlight.glsl\"\n", 0);
+        str_cstr(&source, "void main(){vec3 colour=vec3(0);float value=0;"
+            "if(testCase<4){value=AU_OutdoorSunlight(testCase==1?0.0:1.0,testCase==2?0.0:1.0,testCase==3?1.0:0.0);colour=vec3(value);}"
+            "else if(testCase<=8)colour=AU_SunPalette(vec3(1.2,1,.7),testCase==4?0.0:.9,testCase==6?0.0:1.0,testCase==7?1.0:0.0);"
+            "else if(testCase==9)colour=AU_SunPalette(vec3(0),.9,1,0);"
+            "else if(testCase<=15){vec3 normal=vec3(0,testCase==10?1.0:testCase==11?0.0:-1.0,0);"
+            "colour=AU_OutdoorSkyFill(vec3(1),vec3(1),normal,vec3(.3,.6,1),vec3(.7,.8,1),"
+            "testCase==14?0.0:1.0,testCase==15?1.0:0.0,testCase==13?2:0);}"
+            "else if(testCase<=19)colour=AU_SunDiffuseShoulder(testCase==16?vec3(.3):testCase==19?vec3(100000):vec3(4,2,1),testCase==18?0.0:1.0);"
+            "else if(testCase<=23){value=AU_FoliageSunWrap(.6,.2,testCase==21?1:testCase==22?3:2,testCase==23?0.0:1.0);colour=vec3(value);}"
+            "else if(testCase<=26){value=AU_FoliageSunPhase(.5,testCase==25?3:2,testCase==26?0.0:1.0);colour=vec3(value);}"
+            "else if(testCase<=31)colour=AU_SunBounce(vec3(.2,.4,.6),vec3(1.2,1.1,.9),testCase==31?0.0:.5,"
+            "testCase==29?0.0:1.0,testCase==28?0.0:1.0,testCase==30?0.0:1.0);"
+            "else{mat4 matrix=mat4(1);matrix[0][0]=testCase==36?.005:.01;matrix[1][1]=.01;matrix[2][2]=testCase==35?.004:.002;"
+            "if(testCase==38)matrix=mat4(0);float difference=testCase==32?0.0:testCase==33?.01:testCase==35?.2:testCase==37?100.0:.1;"
+            "vec2 radius=AU_SunShadowRadius(difference,matrix,vec2(1024));colour=vec3(radius,0);"
+            "if(testCase==39)colour=vec3(AU_SunShadowRadius(.1,matrix,vec2(2048))*.5,0);}outColor=vec4(colour,1);}");
+        GLuint program = test_program(source.p); free(source.p);
+        r_glUseProgram(program); ov.BindVertexArray(ov.vao); ov.Viewport(0, 0, 8, 8);
+        r_glUniform1f(r_glGetUniformLocation(program, "testDiameter"), 1.0f);
+        r_glUniform1f(r_glGetUniformLocation(program, "testSoftness"), 1.0f);
+        for (int sample = 0; sample < 40; sample++) {
+            r_glUniform1i(r_glGetUniformLocation(program, "testCase"), sample);
+            r_glDrawArrays(OV_GL_TRIANGLE_STRIP, 0, 4);
+            readPixels(4, 4, 1, 1, GL_RGBA, GL_FLOAT, results[mode][sample]);
+            for (int channel = 0; channel < 4; channel++) assert(isfinite(results[mode][sample][channel]));
+        }
+        r_glUniform1i(r_glGetUniformLocation(program, "testCase"), 34);
+        r_glUniform1f(r_glGetUniformLocation(program, "testSoftness"), 0);
+        r_glDrawArrays(OV_GL_TRIANGLE_STRIP, 0, 4);
+        float hard[4]; readPixels(4, 4, 1, 1, GL_RGBA, GL_FLOAT, hard);
+        assert(hard[0] == 0 && hard[1] == 0);
+        r_glUniform1f(r_glGetUniformLocation(program, "testSoftness"), 1);
+        r_glUniform1f(r_glGetUniformLocation(program, "testDiameter"), .5f);
+        r_glDrawArrays(OV_GL_TRIANGLE_STRIP, 0, 4);
+        float narrow[4]; readPixels(4, 4, 1, 1, GL_RGBA, GL_FLOAT, narrow);
+        assert(narrow[0] < results[mode][34][0] && narrow[0] > .6f);
+        r_glDeleteProgram(program);
+    }
+    for (int sample = 0; sample < 40; sample++)
+        for (int channel = 0; channel < 4; channel++) assert(fabsf(results[0][sample][channel] - results[1][sample][channel]) < .00001f);
+    float (*actual)[4] = results[2];
+    assert(actual[0][0] == 1 && actual[1][0] == 0 && actual[2][0] == 0 && actual[3][0] == 0);
+    assert(actual[4][0] / actual[4][2] > actual[5][0] / actual[5][2]);
+    float originalLuminance = 1.2f * .299f + .587f + .7f * .114f;
+    for (int sample = 4; sample <= 8; sample++) {
+        float luminance = actual[sample][0] * .299f + actual[sample][1] * .587f + actual[sample][2] * .114f;
+        assert(fabsf(luminance - originalLuminance) < .00001f);
+    }
+    assert(fabsf(actual[6][0] - 1.2f) < .00001f && actual[9][0] == 0);
+    assert(fabsf(actual[7][0] - 1.2f) < fabsf(actual[5][0] - 1.2f));
+    const float ambientEnergy[] = {1, .725f, .45f, .725f, 1, .45f};
+    for (int sample = 10; sample <= 15; sample++) {
+        float luminance = actual[sample][0] * .299f + actual[sample][1] * .587f + actual[sample][2] * .114f;
+        assert(fabsf(luminance - ambientEnergy[sample - 10]) < .00001f);
+    }
+    assert(actual[10][2] > actual[10][0] && actual[15][0] == actual[15][2]);
+    assert(fabsf(actual[16][0] - .3f) < .00001f && actual[18][0] == 4);
+    assert(actual[17][0] < 4 && fabsf(actual[17][0] / actual[17][1] - 2) < .00001f);
+    assert(actual[19][0] < 3.51f && actual[19][0] > 3.5f);
+    assert(actual[20][0] < .6f && actual[21][0] > actual[20][0] && actual[22][0] == .6f && actual[23][0] == .6f);
+    assert(actual[24][0] == .125f && actual[25][0] == .015625f && actual[26][0] == .0625f);
+    for (int channel = 0; channel < 3; channel++) {
+        assert(fabsf(actual[27][channel] - 2 * results[0][27][channel]) < .00001f);
+        assert(fabsf(actual[28][channel] - results[0][28][channel]) < .00001f);
+        assert(actual[29][channel] == 0 && actual[30][channel] == 0 && actual[31][channel] == 0);
+    }
+    assert(fabsf(actual[32][0] - .6f) < .00001f && actual[34][0] > actual[33][0]);
+    assert(fabsf(actual[34][0] - actual[35][0]) < .00001f);
+    assert(fabsf(actual[34][0] - 2 * actual[36][0]) < .00001f && fabsf(actual[34][1] - actual[36][1]) < .00001f);
+    assert(actual[37][0] == 9 && fabsf(actual[38][0] - .6f) < .00001f);
+    assert(fabsf(actual[34][0] - actual[39][0]) < .00001f);
+    PFN_glDeleteTextures deleteTextures = (void *)GetProcAddress(g_real, "glDeleteTextures");
+    deleteTextures(1, &output); assert(!getError());
+    puts("PASS: outdoor sun/sky energy, cave/night/water isolation, hue-preserving diffuse shoulder, foliage-only transmission, sun bounce and physical penumbra scale");
+}
+
+static void outdoor_lighting_integration_test(void)
+{
+    GLuint framebuffer, output;
+    generateFramebuffer(1, &framebuffer); bindFramebuffer(0x8d40, framebuffer);
+    ov.GenTextures(1, &output); r_glBindTexture(GL_TEXTURE_2D, output);
+    ov.TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, 8, 8, 0, GL_RGBA, GL_FLOAT, NULL);
+    attachTexture(0x8d40, 0x8ce0, GL_TEXTURE_2D, output, 0);
+    float results[2][8][4];
+    for (int enabled = 0; enabled < 2; enabled++) {
+        Str source = {0}; str_cstr(&source, "#version 410 core\n");
+        expand(&source, "#include \"AU_Settings.glsl\"\n", 0);
+        str_cstr(&source, "\n#undef AU_POLISH_ENABLE\n#define AU_POLISH_ENABLE 1\n#undef AU_POLISH_SUNLIGHT\n");
+        str_cstr(&source, enabled ? "#define AU_POLISH_SUNLIGHT 1\n" : "#define AU_POLISH_SUNLIGHT 0\n");
+        str_cstr(&source, "vec3 SunPositionWS,CameraPosition,AmbientFrontColor,AmbientBackColor;float AmbientIntensity,IsCameraUnderwater,Time;"
+            "vec4 SunLightColor,SunColor,FogTopColor,FogFrontColor,FogBackColor,FogParams,SceneBrightness,SunShadowCascadeStats[4];mat4 SunShadowMatrix[4];"
+            "uniform int testCase;uniform float testElevation;out vec4 outColor;\n");
+        expand(&source, "#include \"AU_Lighting.glsl\"\n", 0);
+        str_cstr(&source, "void main(){SunPositionWS=normalize(vec3(.4,testCase==4?-.8:testCase==8?testElevation:.8,.4));"
+            "CameraPosition=vec3(0,120,0);SunLightColor=SunColor=vec4(1);FogTopColor=FogFrontColor=FogBackColor=vec4(.2,.4,.8,0);"
+            "FogParams=vec4(0,512,0,0);SceneBrightness=vec4(1);Time=0;IsCameraUnderwater=testCase==5?1.0:0.0;"
+            "for(int matrix=0;matrix<4;matrix++){SunShadowMatrix[matrix]=mat4(0);SunShadowCascadeStats[matrix]=vec4(1000,1,0,0);}"
+            "AU_InitCommon();if(testCase==8){outColor=vec4(lightColor,1);return;}"
+            "vec3 normal=testCase==1?vec3(1,0,0):testCase==2?vec3(0,0,1):vec3(0,1,0);"
+            "bool dark=testCase==3||testCase==6||testCase==7;vec3 blockLight=testCase==3?vec3(.2,.1,.05):testCase==7?vec3(10,4,1):vec3(0);"
+            "vec3 colour=AU_DoLighting(vec3(.7,.6,.5),normal,vec3(0,0,-10),dark?0.0:1.0,blockLight,dark?0.0:1.0,1,0,"
+            "testCase==6?3.0:0.0,0,0,false);outColor=vec4(colour,1);}");
+        GLuint program = test_program(source.p); free(source.p);
+        r_glUseProgram(program); ov.BindVertexArray(ov.vao); ov.Viewport(0, 0, 8, 8);
+        for (int sample = 0; sample < 8; sample++) {
+            r_glUniform1i(r_glGetUniformLocation(program, "testCase"), sample);
+            r_glDrawArrays(OV_GL_TRIANGLE_STRIP, 0, 4);
+            readPixels(4, 4, 1, 1, GL_RGBA, GL_FLOAT, results[enabled][sample]);
+            for (int channel = 0; channel < 4; channel++) assert(isfinite(results[enabled][sample][channel]));
+        }
+        r_glUniform1i(r_glGetUniformLocation(program, "testCase"), 8);
+        float previous[4] = {0};
+        for (int sample = 0; sample <= 600; sample++) {
+            r_glUniform1f(r_glGetUniformLocation(program, "testElevation"), -.4f + sample * .002f);
+            r_glDrawArrays(OV_GL_TRIANGLE_STRIP, 0, 4);
+            float actual[4]; readPixels(4, 4, 1, 1, GL_RGBA, GL_FLOAT, actual);
+            for (int channel = 0; channel < 3; channel++) {
+                assert(isfinite(actual[channel]) && actual[channel] >= 0);
+                if (sample) assert(fabsf(actual[channel] - previous[channel]) < .15f);
+                previous[channel] = actual[channel];
+            }
+        }
+        r_glDeleteProgram(program);
+    }
+    for (int sample = 3; sample < 8; sample++)
+        for (int channel = 0; channel < 3; channel++)
+            assert(fabsf(results[1][sample][channel] - results[0][sample][channel]) < .00001f);
+    for (int channel = 0; channel < 3; channel++)
+        assert(fabsf(results[1][1][channel] - results[1][2][channel]) < .00001f);
+    printf("Sunlight face check: legacy %.6f %.6f, outdoor %.6f %.6f\n", results[0][1][0], results[0][2][0], results[1][1][0], results[1][2][0]);
+    assert(fabsf(results[0][1][0] - results[0][2][0]) > .001f);
+    PFN_glDeleteTextures deleteTextures = (void *)GetProcAddress(g_real, "glDeleteTextures");
+    deleteTextures(1, &output); assert(!getError());
+    puts("PASS: shared lighting integration, unchanged cave/torch/emissive/night/underwater response, compass-independent outdoor faces and continuous daylight palette");
+}
+
+static void cloud_shadow_test(void)
+{
+    GLuint framebuffer, output, noiseTexture;
+    generateFramebuffer(1, &framebuffer); bindFramebuffer(0x8d40, framebuffer);
+    ov.GenTextures(1, &output); r_glBindTexture(GL_TEXTURE_2D, output);
+    ov.TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, 8, 8, 0, GL_RGBA, GL_FLOAT, NULL);
+    attachTexture(0x8d40, 0x8ce0, GL_TEXTURE_2D, output, 0);
+    unsigned char noise[128 * 128 * 4]; memset(noise, 217, sizeof noise);
+    ov.GenTextures(1, &noiseTexture); r_glActiveTexture(GL_TEXTURE0); r_glBindTexture(GL_TEXTURE_2D, noiseTexture);
+    ov.TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 128, 128, 0, GL_RGBA, GL_UNSIGNED_BYTE, noise);
+    void (APIENTRY *generateMipmaps)(GLenum) = (void *)real_wglGetProcAddress("glGenerateMipmap");
+    generateMipmaps(GL_TEXTURE_2D);
+    ov.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, 0x2703);
+    ov.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    for (int atmosphere = 0; atmosphere < 2; atmosphere++) {
+        Str source = {0}; str_cstr(&source, "#version 410 core\n");
+        expand(&source, "#include \"AU_Settings.glsl\"\n", 0);
+        str_cstr(&source, "\n#undef AU_BIOME_ATMOSPHERE\n#undef AU_CLOUDS\n#undef AU_CLOUD_SHADOWS\n#undef AU_CLOUD_AMOUNT\n"
+            "#undef AU_CLOUD_ALT1\n#undef AU_CLOUD_SHADOW_STRENGTH\n#define AU_CLOUDS 1\n#define AU_CLOUD_SHADOWS 1\n"
+            "#define AU_CLOUD_AMOUNT 1.0\n#define AU_CLOUD_ALT1 300.0\n#define AU_CLOUD_SHADOW_STRENGTH 1.0\n");
+        str_cstr(&source, atmosphere ? "#define AU_BIOME_ATMOSPHERE 1\n" : "#define AU_BIOME_ATMOSPHERE 0\n");
+        str_cstr(&source, "vec3 SunPositionWS,CameraPosition,AmbientFrontColor,AmbientBackColor;float AmbientIntensity,IsCameraUnderwater,Time;"
+            "vec4 SunLightColor,SunColor,FogTopColor,FogFrontColor,FogBackColor,FogParams,SceneBrightness;mat4 SunShadowMatrix[4];"
+            "uniform float testHeight,testElevation;out vec4 outColor;\n");
+        expand(&source, "#include \"AU_Clouds.glsl\"\n", 0);
+        str_cstr(&source, "void main(){CameraPosition=vec3(0);Time=0;rainFactor=0;lightVec=vec3(sqrt(max(1-testElevation*testElevation,0)),testElevation,0);"
+            "float shadow=GetCloudShadow(vec3(0,testHeight,0));float distance=CloudShadowDistance(testHeight,316,max(testElevation,0));"
+            "outColor=vec4(shadow,distance,0,1);}");
+        GLuint program = test_program(source.p); free(source.p);
+        r_glUseProgram(program); ov.BindVertexArray(ov.vao); ov.Viewport(0, 0, 8, 8);
+        set_texture(program, "noisetex", 0, noiseTexture);
+        r_glUniform1i(r_glGetUniformLocation(program, "uHookCloudCount"), 1);
+        const float cloudColour[4] = {1, 1, 1, 1};
+        r_glUniform4fv(r_glGetUniformLocation(program, "uHookCloudColors"), 1, cloudColour);
+        r_glUniform1f(r_glGetUniformLocation(program, "testElevation"), .05f);
+        float previous = 0;
+        for (int sample = 0; sample <= 160; sample++) {
+            r_glUniform1f(r_glGetUniformLocation(program, "testHeight"), 280 + sample * .25f);
+            r_glDrawArrays(OV_GL_TRIANGLE_STRIP, 0, 4);
+            float value[4]; readPixels(4, 4, 1, 1, GL_RGBA, GL_FLOAT, value);
+            assert(isfinite(value[0]) && value[0] >= 0 && value[0] <= 1);
+            if (sample) assert(fabsf(value[0] - previous) < .02f);
+            previous = value[0];
+        }
+        assert(previous == 1);
+        r_glUniform1f(r_glGetUniformLocation(program, "testHeight"), 100);
+        previous = 1;
+        for (int sample = 0; sample <= 160; sample++) {
+            r_glUniform1f(r_glGetUniformLocation(program, "testElevation"), -.01f + sample * .001f);
+            r_glDrawArrays(OV_GL_TRIANGLE_STRIP, 0, 4);
+            float value[4]; readPixels(4, 4, 1, 1, GL_RGBA, GL_FLOAT, value);
+            assert(isfinite(value[0]) && value[0] >= 0 && value[0] <= 1 && fabsf(value[0] - previous) < .03f);
+            assert(isfinite(value[1]) && value[1] >= 0 && value[1] < 10000);
+            previous = value[0];
+        }
+        assert(previous < .5f);
+        if (atmosphere) {
+            const float noClouds[4] = {1, 1, 1, 0};
+            r_glUniform4fv(r_glGetUniformLocation(program, "uHookCloudColors"), 1, noClouds);
+            r_glDrawArrays(OV_GL_TRIANGLE_STRIP, 0, 4);
+            float value[4]; readPixels(4, 4, 1, 1, GL_RGBA, GL_FLOAT, value); assert(value[0] == 1);
+        }
+        r_glDeleteProgram(program);
+    }
+    PFN_glDeleteTextures deleteTextures = (void *)GetProcAddress(g_real, "glDeleteTextures");
+    deleteTextures(1, &noiseTexture); deleteTextures(1, &output); assert(!getError());
+    puts("PASS: continuous cloud-layer shadow accumulation, finite horizon projection, retained daylight shadows and native cloud opacity");
+}
+
+static void biome_atmosphere_test(void)
+{
+    GLuint framebuffer, output;
+    generateFramebuffer(1, &framebuffer); bindFramebuffer(0x8d40, framebuffer);
+    ov.GenTextures(1, &output); r_glBindTexture(GL_TEXTURE_2D, output);
+    ov.TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, 8, 8, 0, GL_RGBA, GL_FLOAT, NULL);
+    attachTexture(0x8d40, 0x8ce0, GL_TEXTURE_2D, output, 0);
+    float results[2][3][12][4];
+    for (int atmosphere = 0; atmosphere < 2; atmosphere++) {
+        Str source = {0};
+        str_cstr(&source, "#version 410 core\n#define USE_FOG 1\n#define USE_MOOD_FOG 1\n#define USE_SMOOTH_NEAR_MOOD_FOG_COLOR 1\n#define USE_FOG_DITHERING 0\n");
+        expand(&source, "#include \"AU_Settings.glsl\"\n", 0);
+        str_cstr(&source, "\n#undef AU_BIOME_ATMOSPHERE\n#undef AU_ATM_FOG_MULT\n#define AU_ATM_FOG_MULT .95\n"
+            "#undef AU_KEEP_HYTALE_GRADING\n#define AU_KEEP_HYTALE_GRADING .6\n");
+        str_cstr(&source, atmosphere ? "#define AU_BIOME_ATMOSPHERE 1\n" : "#define AU_BIOME_ATMOSPHERE 0\n");
+        str_cstr(&source, "vec3 SunPositionWS,CameraPosition,AmbientFrontColor,AmbientBackColor;float AmbientIntensity,IsCameraUnderwater,Time;"
+            "vec4 SunLightColor,SunColor,FogTopColor,FogFrontColor,FogBackColor,FogParams,SceneBrightness;mat4 SunShadowMatrix[4];"
+            "uniform int testCase,testScene;uniform sampler2D testNoise;out vec4 outColor;\n");
+        expand(&source, "#include \"Fog_inc.glsl\"\n#include \"AU_Fog.glsl\"\n", 0);
+        str_cstr(&source, "void main(){SunPositionWS=normalize(vec3(.3,testScene==2?-.8:.8,.4));CameraPosition=vec3(0,120,0);"
+            "SunLightColor=testScene==0?vec4(.8,.6,.4,.7):vec4(0);SunColor=SunLightColor;"
+            "AmbientFrontColor=AmbientBackColor=testScene==0?vec3(.2,.4,.1):vec3(0);AmbientIntensity=.5;"
+            "vec3 tint=testScene==0?vec3(.4,.2,.05):vec3(.02,.06,.18);FogTopColor=FogFrontColor=FogBackColor=vec4(tint,0);"
+            "FogParams=vec4(-64,256,0,0);SceneBrightness=vec4(1);Time=0;IsCameraUnderwater=0;"
+            "for(int matrix=0;matrix<4;matrix++)SunShadowMatrix[matrix]=mat4(0);AU_InitCommon();vec3 colour=vec3(.7);float amount=1;"
+            "if(testCase==0)colour=lightColor;else if(testCase==1)colour=ambientColor;"
+            "else if(testCase==2)colour=GetSky(0,0,.5,false,false);"
+            "else if(testCase==6){outColor=AU_BiomeCloudColour();return;}"
+            "else if(testCase==7)colour=AU_BiomeSky(1,0);"
+            "else if(testCase==10)colour=shaftColor;"
+            "else if(testCase==11){vec4 color=vec4(.6,.3,.1,1);float uColorSaturation=.5;vec3 uColorFilter=vec3(.4,.8,.6);"
+            "const vec3 BrightnessCoefficients=vec3(.299,.587,.114);\n");
+        char *postEffect = read_file("programs/PostEffectFS.glsl", NULL); assert(postEffect);
+        char *gradingStart = strstr(postEffect, "    float colorIntensity = dot(color.rgb, BrightnessCoefficients);");
+        char *gradingEnd = gradingStart ? strstr(gradingStart, "#if DISCARD_DARK") : NULL;
+        assert(gradingStart && gradingEnd); str_add(&source, gradingStart, (size_t)(gradingEnd - gradingStart)); free(postEffect);
+        str_cstr(&source, "colour=color.rgb;}else{vec3 position=vec3(testCase==4?400.0:200.0,0,0);"
+            "if(testCase==5){position=vec3(0,0,20);FogParams.zw=vec2(20,2);IsCameraUnderwater=1;}"
+            "vec4 mood=vec4(0);float viewerDensity=1;"
+            "if(testCase>=8){FogParams=vec4(0);position=testCase==8?vec3(100,0,0):vec3(0,100,0);mood=vec4(.1,.7,0,0);viewerDensity=.01;}"
+            "\n#if AU_BIOME_ATMOSPHERE\n"
+            "vec4 fog=computeFog(position,CameraPosition,SunPositionWS,FogTopColor.rgb,FogFrontColor.rgb,FogBackColor.rgb,FogParams,mood,viewerDensity,vec2(.5),testNoise,1);"
+            "amount=AU_ApplyBiomeFog(colour,fog);"
+            "\n#else\nDoAUFog(colour,position,.5,1);\n#endif\n}outColor=vec4(colour,amount);}");
+        GLuint program = test_program(source.p); free(source.p);
+        r_glUseProgram(program); ov.BindVertexArray(ov.vao); ov.Viewport(0, 0, 8, 8);
+        const float cloudColours[8] = {0, 1, 0, .5f, 0, 0, 1, .5f};
+        r_glUniform4fv(r_glGetUniformLocation(program, "uHookCloudColors"), 2, cloudColours);
+        r_glUniform1i(r_glGetUniformLocation(program, "uHookCloudCount"), 2);
+        for (int scene = 0; scene < 3; scene++)
+            for (int sample = 0; sample < 12; sample++) {
+                r_glUniform1i(r_glGetUniformLocation(program, "testScene"), scene);
+                r_glUniform1i(r_glGetUniformLocation(program, "testCase"), sample);
+                r_glDrawArrays(OV_GL_TRIANGLE_STRIP, 0, 4);
+                readPixels(4, 4, 1, 1, GL_RGBA, GL_FLOAT, results[atmosphere][scene][sample]);
+                for (int channel = 0; channel < 4; channel++) assert(isfinite(results[atmosphere][scene][sample][channel]));
+            }
+        r_glDeleteProgram(program);
+    }
+    for (int sample = 0; sample < 6; sample++)
+        for (int channel = 0; channel < 3; channel++)
+            assert(fabsf(results[0][0][sample][channel] - results[0][1][sample][channel]) < .00001f);
+    const int lightingCases[] = {0, 1, 10, 11};
+    for (int scene = 0; scene < 3; scene++)
+    for (int sample = 0; sample < 4; sample++)
+    for (int channel = 0; channel < 3; channel++) {
+        int lightingCase = lightingCases[sample];
+        assert(fabsf(results[0][scene][lightingCase][channel] - results[1][scene][lightingCase][channel]) < .00001f);
+        if (scene == 1) assert(fabsf(results[1][0][lightingCase][channel] - results[1][scene][lightingCase][channel]) < .00001f);
+    }
+    const float expectedFog[] = {.4f, .2f, .05f}, expectedGrading[] = {.356028f, .280056f, .124042f};
+    for (int channel = 0; channel < 3; channel++) {
+        assert(fabsf(results[1][0][11][channel] - expectedGrading[channel]) < .00001f);
+        assert(fabsf(results[1][0][2][channel] - expectedFog[channel]) < .00001f);
+        assert(fabsf(results[1][0][4][channel] - expectedFog[channel]) < .00001f);
+        assert(fabsf(results[1][0][5][channel] - expectedFog[channel]) < .00001f);
+        assert(results[1][1][7][channel] == 0);
+    }
+    assert(fabsf(results[1][0][3][3] - expf(-.49f) * 1.02f) < .00001f);
+    assert(fabsf(results[1][0][6][1] - .5f) < .00001f && fabsf(results[1][0][6][2] - .5f) < .00001f);
+    assert(fabsf(results[1][0][6][3] - .75f) < .00001f);
+    assert(fabsf(results[1][0][8][3] - (1.0f - expf(-.7f))) < .00001f);
+    assert(results[1][0][9][3] < results[1][0][8][3] * .2f);
+    PFN_glDeleteTextures deleteTextures = (void *)GetProcAddress(g_real, "glDeleteTextures");
+    deleteTextures(1, &output); assert(!getError());
+    puts("PASS: biome sky/fog/cloud atmosphere, underwater fog, black sky and unchanged Aurora sunlight/ambient/shafts/grading in daylight and at night");
+}
+
 static void original_noise_test(int voxelMode)
 {
     const int width = 128, height = 128;
@@ -912,12 +1300,17 @@ int wmain(int count, wchar_t **arguments)
     TEST_GL(glCreateShader); TEST_GL(glShaderSource); TEST_GL(glCompileShader); TEST_GL(glGetShaderiv); TEST_GL(glGetShaderInfoLog);
     TEST_GL(glDeleteShader); TEST_GL(glAttachShader); TEST_GL(glLinkProgram); TEST_GL(glGetProgramiv); TEST_GL(glDeleteProgram);
     TEST_GL(glGetUniformLocation); TEST_GL(glUseProgram); TEST_GL(glUniformMatrix4fv); TEST_GL(glUniform1i); TEST_GL(glUniform2f);
-    TEST_GL(glUniform3f); TEST_GL(glBindSampler); TEST_GL(glActiveTexture);
+    TEST_GL(glUniform3f); TEST_GL(glUniform4fv); TEST_GL(glBindSampler); TEST_GL(glActiveTexture);
     TEST_GL(glUniform1f);
 #undef TEST_GL
     assert(ov_init()); readPixels = (void *)GetProcAddress(g_real, "glReadPixels"); getError = (void *)GetProcAddress(g_real, "glGetError");
     generateFramebuffer = (void *)real_wglGetProcAddress("glGenFramebuffers"); bindFramebuffer = (void *)real_wglGetProcAddress("glBindFramebuffer");
     attachTexture = (void *)real_wglGetProcAddress("glFramebufferTexture2D");
+    surface_polish_test();
+    outdoor_sunlight_test();
+    outdoor_lighting_integration_test();
+    cloud_shadow_test();
+    biome_atmosphere_test();
     original_noise_test(0);
     original_noise_test(1);
     original_spatial_guide_test();

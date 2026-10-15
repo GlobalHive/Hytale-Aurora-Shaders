@@ -6,6 +6,7 @@
 
 #include "AU_Common.glsl"
 #include "AU_LightColour.glsl"
+#include "AU_Surface.glsl"
 
 float GetNoHSquared(float radiusTan, float NoL, float NoV, float VoL)
 {
@@ -119,9 +120,10 @@ vec3 auSSSVolumeLight = vec3(0.0);
 vec3 auSSSVolumeTransmission = vec3(1.0);
 float auSSSMask = 1.0;
 
-vec3 AU_SSSVolumeRadiance(vec3 transport, vec3 scatteringDepth, vec3 normal, vec3 playerPosition, float skyLight)
+vec3 AU_SSSVolumeRadiance(vec3 transport, vec3 scatteringDepth, vec3 normal, vec3 playerPosition, float skyLight, int subsurfaceMode)
 {
-    float forwardScatter = pow(max(dot(normalize(playerPosition), lightVec), 0.0), 4.0);
+    float outdoor = AU_OutdoorSunlight(skyLight, sunVisibility2, IsCameraUnderwater);
+    float forwardScatter = AU_FoliageSunPhase(dot(normalize(playerPosition), lightVec), subsurfaceMode == 3 ? 0 : subsurfaceMode, outdoor);
     float backLighting = smoothstep(-0.15, 0.8, -dot(normal, lightVec));
     vec3 accumulated = clamp(transport * scatteringDepth, 0.0, 1.0);
     return lightColor * accumulated * (AU_SSS_STRENGTH * shadowTime * smoothstep(0.02, 0.3, skyLight)
@@ -154,6 +156,7 @@ vec3 AU_DoLighting(vec3 albedo, vec3 normalM, vec3 playerPos, float skyLight, ve
     float ambientMult = 1.0;
     vec3 lightColorM = lightColor;
     vec3 ambientColorM = ambientColor;
+    float outdoor = emission > 0.0 ? 0.0 : AU_OutdoorSunlight(skyLight, sunVisibility2, IsCameraUnderwater);
 
     // ---- Sun / moon light with shadows ----
     float NdotLmax0 = max0(NdotL);
@@ -166,6 +169,7 @@ vec3 AU_DoLighting(vec3 albedo, vec3 normalM, vec3 playerPos, float skyLight, ve
         // Leaves take full light (translucent); grass is half top-lit.
         NdotLM = subsurfaceMode == 2 ? max0((NdotLfol + 0.55) / 1.55)
                 : subsurfaceMode == 3 ? max0((NdotL + 0.18) / 1.18) : max0(mix(NdotLfol, 1.0, 0.5));
+        NdotLM = AU_FoliageSunWrap(NdotLM, NdotLfol, subsurfaceMode, outdoor);
         highlightMult *= max0(NdotLfol);
     } else {
 #if AU_SIDE_SHADOWING
@@ -229,6 +233,7 @@ vec3 AU_DoLighting(vec3 albedo, vec3 normalM, vec3 playerPos, float skyLight, ve
 
     // ---- Directional shading ----
     float directionShade = 1.0;
+    vec3 unboostedLight = lightColorM;
 #if AU_DIRECTIONAL_SHADING
     if (!noDirectionalShading) {
         float absNdotE2 = pow2(absNdotE);
@@ -245,6 +250,12 @@ vec3 AU_DoLighting(vec3 albedo, vec3 normalM, vec3 playerPos, float skyLight, ve
     }
 #endif
 
+    directionShade = mix(directionShade, 1.0, outdoor);
+    lightColorM = mix(lightColorM, unboostedLight, outdoor);
+    ambientColorM = mix(ambientColorM, ambientColor, outdoor);
+    ambientColorM = AU_DirectionalAmbient(ambientColorM, normalM, subsurfaceMode);
+    ambientColorM = AU_OutdoorSkyFill(ambientColorM, ambientColor, normalM, dayUpSkyColor, dayMiddleSkyColor,
+                                     outdoor, rainFactor, subsurfaceMode);
     vec3 sceneLighting = lightColorM * shadowLightMult + ambientColorM * ambientMult;
     float dotSceneLighting = dot(sceneLighting, sceneLighting);
 
@@ -263,6 +274,7 @@ vec3 AU_DoLighting(vec3 albedo, vec3 normalM, vec3 playerPos, float skyLight, ve
 #if AU_LIGHT_HIGHLIGHT
     vec3 highlightColor = normalize(pow(lightColor, vec3(0.37))) * (0.3 + 1.5 * sunVisibility2) * (1.0 - 0.85 * rainFactor);
     float specularHighlight = GGX(normalM, nViewPos, lightVec, NdotLmax0, smoothnessG) * highlightMult;
+    specularHighlight *= AU_FoliageSpecular(subsurfaceMode);
     lightHighlight = IsCameraUnderwater < 0.5 ? shadowMult : pow(shadowMult, vec3(0.25)) * 0.35;
     lightHighlight *= (subsurfaceHighlight + specularHighlight) * highlightColor;
 #endif
@@ -281,13 +293,22 @@ vec3 AU_DoLighting(vec3 albedo, vec3 normalM, vec3 playerPos, float skyLight, ve
         if (subsurfaceMode == 3) tint = mix(tint, vec3(0.45, 0.75, 1.0), 0.35);
         vec3 absorption = vec3(0.25) - log(tint) * AU_SSS_ABSORPTION;
         vec3 transmission = exp(-absorption * thickness);
-        float forwardScatter = pow(max(dot(nViewPos, lightVec), 0.0), subsurfaceMode == 3 ? 6.0 : 4.0);
+        float forwardScatter = AU_FoliageSunPhase(dot(nViewPos, lightVec), subsurfaceMode, outdoor);
         float backLighting = smoothstep(-0.15, 0.8, -NdotL);
         float exposure = sqrt(skyLight) * mix(0.12, 1.0, shadowVis) * shadowTime;
         scattering = lightColor * transmission * (AU_SSS_STRENGTH * auSSSMask * exposure * (0.2 + 0.8 * forwardScatter) * backLighting);
     }
 #endif
+#if AU_POLISH_ENABLE && AU_POLISH_SUNLIGHT
+    vec3 diffuse = albedo * finalDiffuse;
+    float sunEnergy = GetLuminance(lightColorM * shadowLightMult);
+    float otherEnergy = GetLuminance(ambientColorM * ambientMult + blockLighting + minLighting);
+    float sunlightShare = outdoor * sunEnergy / max(sunEnergy + otherEnergy + emission, 0.0001);
+    diffuse = AU_SunDiffuseShoulder(diffuse, sunlightShare);
+    return diffuse + albedo * scattering + lightHighlight;
+#else
     return albedo * (finalDiffuse + scattering) + lightHighlight;
+#endif
 }
 
 #endif // AU_LIGHTING

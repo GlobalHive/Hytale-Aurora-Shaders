@@ -19,6 +19,7 @@ vec3 AU_AddVL(vec3 color, vec3 vl)
 vec3 GetVolumetricLight(vec3 nPlayerPos, float lViewPos1, bool sky, float dither)
 {
 #if AU_LIGHTSHAFTS
+    if (GetLuminance(lightColor) <= 0.00001) return vec3(0.0);
     float far = AU_LIGHTSHAFT_DISTANCE;
     float vlMult = AU_LIGHTSHAFT_STRENGTH;
     vec3 vlColor = lightColor;   // r5.9 volumetricLight.glsl uses the sun light colour
@@ -32,7 +33,8 @@ vec3 GetVolumetricLight(vec3 nPlayerPos, float lViewPos1, bool sky, float dither
         vlSceneIntensity = 0.0;
         float vlMultNightModifier = 0.3 + 0.4 * rainFactor2 + 0.5 * max0(far - lViewPos1) / far;
         vlMult *= vlMultNightModifier;
-        vlColor = normalize(pow(vlColor, vec3(1.0 - max0(1.0 - 1.5 * nightFactor) + rainFactor)));
+        vlColor = pow(vlColor, vec3(1.0 - max0(1.0 - 1.5 * nightFactor) + rainFactor));
+        vlColor /= max(length(vlColor), 0.0001);
         vlColor *= 0.0766 + 0.0766 * vsBrightness;
     }
 

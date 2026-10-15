@@ -66,19 +66,27 @@ def build_emitters(assets):
             base = resolve(name).get("BlockType")
             if not isinstance(base, dict):
                 continue
-            blocks = [base] + [merge_objects(base, state) for state in base.get("State", {}).get("Definitions", {}).values()]
+            blocks = [base]
+            for state in base.get("State", {}).get("Definitions", {}).values():
+                block = merge_objects(base, state)
+                if state.get("DrawType", base.get("DrawType")) != base.get("DrawType") and "Light" not in state:
+                    block.pop("Light", None)
+                blocks.append(block)
             for block in blocks:
                 color = hex_color((block.get("Light") or {}).get("Color"))
                 if not color or color == "000000":
                     continue
                 textures = set()
-                texture_sets = block.get("Textures") or []
+                texture_sets = [] if block.get("DrawType") == "Model" else block.get("Textures") or []
                 if isinstance(texture_sets, dict):
                     texture_sets = [texture_sets]
                 for texture_set in texture_sets:
                     textures.update("Common/" + value for value in texture_set.values()
                                     if isinstance(value, str) and value.endswith(".png"))
-                for texture in block.get("CustomModelTexture") or []:
+                model_textures = (block.get("CustomModelTexture") or []) if block.get("DrawType") == "Model" else []
+                if isinstance(model_textures, dict):
+                    model_textures = [model_textures]
+                for texture in model_textures:
                     if texture.get("Texture"):
                         textures.add("Common/" + texture["Texture"])
                 tints = block.get("Tint") or []

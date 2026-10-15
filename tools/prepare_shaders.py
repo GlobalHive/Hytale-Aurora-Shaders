@@ -180,7 +180,7 @@ def make_map_chunk(source):
     s = s[:start] + "    if (isWater(effectID) && uWaterQuality >= 1)\n    {\n#if AU_FORWARD && AU_WATER\n" + snippet("water.glsl") + "#else\n" + body + "#endif\n    }\n\n" + s[end:]
     s = replace(s, "#if USE_FOG\n    // Apply fog\n    outColor0.rgb = mix(outColor0.rgb, fragFog.rgb, fragFog.w);\n"
                 "    hasBloom = hasBloom && fragFog.w < 0.9;\n#endif // USE_FOG",
-                "#if USE_FOG\n#if AU_FORWARD\n    DoAUFog(outColor0.rgb, fragPositionWS, auDither, fragStaticLight.a);\n"
+                "#if USE_FOG\n#if AU_FORWARD\n#if AU_BIOME_ATMOSPHERE\n    AU_ApplyBiomeFog(outColor0.rgb, fragFog);\n#else\n    DoAUFog(outColor0.rgb, fragPositionWS, auDither, fragStaticLight.a);\n#endif\n"
                 "    outColor0.rgb = AU_AddVL(outColor0.rgb, auForwardVL);\n#else\n"
                 "    // Apply fog\n    outColor0.rgb = mix(outColor0.rgb, fragFog.rgb, fragFog.w);\n#endif\n"
                 "    hasBloom = hasBloom && fragFog.w < 0.9;\n#endif // USE_FOG")

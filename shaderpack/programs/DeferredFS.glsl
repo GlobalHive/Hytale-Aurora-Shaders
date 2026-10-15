@@ -82,6 +82,8 @@ vec3 AU_GIHitLightData(vec2 uv, out vec2 albedoSky)
     vec3 n = decodeNormal(g1.rg);
     // Foliage is lit flat (no N.L) by Hytale's shading.
     float NdotL = hitSSAO ? max(dot(n, lightVec), 0.0) : 0.6;
+    vec3 sunlightBounce = AU_SunBounce(alb, lightColor, getShadowFactor(uv) * NdotL, g1.b,
+                                       sunVisibility2 * (1.0 - clamp(IsCameraUnderwater, 0.0, 1.0)), shadowTime);
 #if AU_VOXELS
     // Path tracing: plus the torch light it gets (Hytale's glow), so that bounces too.
     vec3 hitStatic = textureLod(uLightTexture, uv, 0.0).rgb;
@@ -91,9 +93,9 @@ vec3 AU_GIHitLightData(vec2 uv, out vec2 albedoSky)
     // And the sky light it gets, for the further bounces (what fills a room with light):
     // Hytale's sky light there, through the same curve as the ambient term.
     float hitSky = smoothstep1(clamp(g1.b, 0.0, 1.0));
-    return alb * (lightColor * (getShadowFactor(uv) * NdotL) + hitGlow * 0.5 + ambientColor * (hitSky * AU_PT_AMBIENT_BOUNCE)) + oreLight;
+    return sunlightBounce + alb * (hitGlow * 0.5 + ambientColor * (hitSky * AU_PT_AMBIENT_BOUNCE)) + oreLight;
 #else
-    return alb * lightColor * (getShadowFactor(uv) * NdotL) + oreLight;
+    return sunlightBounce + oreLight;
 #endif
 }
 
@@ -188,6 +190,7 @@ void main()
     normal = mat3(InvViewMatrix) * normal;
 #endif
 
+    vec2 surfaceFootprint = AU_SurfaceFootprint(normal, gbuffer0.rgb);
     float dither = GetDither(gl_FragCoord.xy);
 
 
@@ -259,6 +262,7 @@ void main()
     if (matClass == 1u) matSmooth = matLevel < 0.5 ? 0.0 : mix(0.12, 0.92, matLevel);
     if (matClass == 2u) { matSmooth = mix(0.35, 0.85, matLevel); metal = 1.0; }
     matSmooth = min(matSmooth * AU_MATERIAL_GLOSS, 0.95);
+    matSmooth = AU_TextureSmoothness(matSmooth, matClass, gbuffer0.rgb, surfaceFootprint.y);
     if (!hasBloom && subsurfaceMode == 0)
         wet = max(rainFactor, uHookWetness) * smoothstep(0.6, 0.9, skyLight) * mix(0.35, 1.0, max0(normal.y)) * AU_RAIN_WETNESS;
     if (matClass == 3u) albedo *= 1.0 - 0.4 * wet * (0.4 + 0.6 * matLevel);
@@ -294,7 +298,7 @@ void main()
         auSSSVolumeValid = transmission.a > 0.5;
         if (auSSSVolumeValid) {
             auSSSVolumeTransmission = transmission.rgb * auSSSMask * SampleShadowWS(playerPos + lightVec * AU_SSS_TRACE_DISTANCE, 1.0);
-            auSSSVolumeLight = AU_SSSVolumeRadiance(auSSSVolumeTransmission, scatteringDepth, normal, playerPos, skyLight);
+            auSSSVolumeLight = AU_SSSVolumeRadiance(auSSSVolumeTransmission, scatteringDepth, normal, playerPos, skyLight, subsurfaceMode);
         }
     }
 #endif
@@ -387,6 +391,7 @@ void main()
         smoothnessG = max(smoothnessG, 0.8 * crystal);
         highlightMult = max(highlightMult, 1.0 + 3.0 * crystal);
     }
+    smoothnessG = AU_SpecularSmoothness(smoothnessG, surfaceFootprint.x);
     // Plain surfaces (grass, dirt, wood, stone): only a faint sun sheen - more read as plastic.
     if (matSmooth <= 0.0 && crystal <= 0.0 && subsurfaceMode == 0) highlightMult *= 0.25;
     vec3 litAlbedo = albedo;
@@ -442,6 +447,7 @@ void main()
         float wetness = rainFactor * smoothstep(0.7, 0.95, normal.y) * smoothstep(0.6, 0.9, skyLight);
         float smoothness = subsurfaceMode == 1 || subsurfaceMode == 2 ? 0.0 : mix(AU_RTX_SMOOTHNESS, 0.85, wetness);
         smoothness = max(smoothness, max(0.85 * crystal, matSmooth));
+        smoothness = AU_SpecularSmoothness(smoothness, surfaceFootprint.x);
         // Dielectrics reflect a little head-on (gems a bit more); metals mostly reflect, in
         // their own colour.
         float f0 = max(0.06 * crystal, matSmooth > 0.0 ? 0.04 : 0.0);
@@ -504,7 +510,19 @@ void main()
     if (!hasBloom) color += albedo * localLighting;
 #endif
 
+#if AU_BIOME_ATMOSPHERE
+#if USE_FOG
+    vec4 biomeFogParams = FogParams;
+    if (biomeFogParams.y > 0.0 && biomeFogParams.y - biomeFogParams.x < 0.0001)
+        biomeFogParams.x = biomeFogParams.y - 0.0001;
+    vec4 biomeFog = computeFog(playerPos, CameraPosition, SunPositionWS,
+                              FogTopColor.rgb, FogFrontColor.rgb, FogBackColor.rgb, biomeFogParams, FogMoodParamsA, FogHeightDensityAtViewer,
+                              texCoords, uFogNoiseTexture, SceneBrightness.r);
+    AU_ApplyBiomeFog(color, biomeFog);
+#endif
+#else
     DoAUFog(color, playerPos, dither, skyLight);
+#endif
     color += AU_GetRainbow(playerPos / max(length(playerPos), 0.0001), length(playerPos), false, dither);
 
     // Volumetric light shafts in front of this surface.

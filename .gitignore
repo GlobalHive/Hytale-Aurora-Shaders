@@ -55,6 +55,7 @@ shaderpack/dlss/
 shaderpack/streamline/
 shaderpack/taa-warning-seen
 backups/
+docs/*-plan.md
 shaderpack/emitters.txt
 shaderpack/emitters.json
 shaderpack/programs/BlockyModelFS.glsl

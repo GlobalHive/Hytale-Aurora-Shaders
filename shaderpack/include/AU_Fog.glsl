@@ -17,6 +17,18 @@ float GetEyeBrightness()
     return clamp(SceneBrightness.r, 0.0, 1.0);
 }
 
+float AU_ApplyBiomeFog(inout vec3 color, vec4 fog)
+{
+    float amount = clamp01(fog.a);
+#if !AU_ATMOSPHERIC_FOG
+    if (IsCameraUnderwater < 0.5) amount = 0.0;
+#endif
+    float density = max(AU_ATM_FOG_MULT, 0.0) / 0.95;
+    amount = density > 0.0 ? 1.0 - pow(max(1.0 - amount, 0.0), density) : 0.0;
+    color = mix(color, max(fog.rgb, vec3(0.0)), amount);
+    return amount;
+}
+
 vec3 GetAtmFogColor(float altitudeFactorRaw, float VdotS)
 {
     float nightFogMult = 2.5 - 0.625 * max(pow2(pow2(altitudeFactorRaw)), rainFactor);

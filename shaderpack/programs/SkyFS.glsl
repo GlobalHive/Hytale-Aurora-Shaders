@@ -95,12 +95,25 @@ void main()
     float VdotS = dot(dir, sunVec);
     float dither = GetDither(gl_FragCoord.xy);
 
+#if AU_BIOME_ATMOSPHERE
+    vec3 sky = max(fragBackgroundSunsetColor.rgb, vec3(0.0));
+#else
     vec3 sky = GetSky(VdotU, VdotS, dither, true, false);
+#endif
 
 #if AU_STARS == 2
     sky += GetHytaleStars(dir);
 #elif AU_STARS
     if (1.0 == uDrawSkySunMoonStars.w) sky += GetStars(dir, VdotU, VdotS);
+#endif
+
+#if AU_BIOME_ATMOSPHERE
+    if (1.0 == uDrawSkySunMoonStars.y && uSunScale > 0.0) {
+        float sunDistance = min(distance(fragSpherePosition, uSunPosition) / (uSunScale * 0.4), 0.99);
+        float sunHalo = 1.0 - clamp(sin(sunDistance * 1.5707963), 0.0, 1.0);
+        float nightLevel = clamp(-uSunPosition.y * 1.5, 0.0, 1.0);
+        sky = mix(sky, max(uSunGlowColor.rgb, vec3(0.0)), clamp01(uSunGlowColor.a * sunHalo * (1.0 - 2.0 * nightLevel)));
+    }
 #endif
 
     // Hytale's moon glow: the halo around the moon, in the colour the game sets for it.
@@ -115,7 +128,13 @@ void main()
     sky = AU_AddVL(sky, GetVolumetricLight(dir, 100000.0, true, dither));
     // Sky seen from inside a cave (openings, or chunks the game culled): cave fog.
     // Only when deep inside (openings, or chunks the game culled), not while stepping out.
+#if AU_BIOME_ATMOSPHERE
+#if USE_MOOD_FOG
+    AU_ApplyBiomeFog(sky, fragFogInfo);
+#endif
+#else
     DoCaveFog(sky, 100000.0, smoothstep(0.1, 0.35, GetEyeBrightness()));
+#endif
 
     outColor = vec4(sky, 1.0);
 }

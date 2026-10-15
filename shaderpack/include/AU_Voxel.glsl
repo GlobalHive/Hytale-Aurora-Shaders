@@ -568,7 +568,7 @@ vec3 AU_VoxHitLight(ivec3 hb, vec3 hn, uint hv, vec4 hitColor, vec3 hitWorld, fl
     if (NdotL <= 0.0 || max(lightColor.r, max(lightColor.g, lightColor.b)) <= 0.0) return alb * amb;
     ivec3 sb; vec3 sn; float st; uint sv;
     if (AU_VoxTrace(hitWorld + hn * 0.02, lightVec, 64.0, 64, rnd, sb, sn, st, sv)) return alb * amb;
-    return alb * (lightColor * NdotL + amb);
+    return AU_SunBounce(alb, lightColor, NdotL, 1.0, sunVisibility2 * (1.0 - clamp(IsCameraUnderwater, 0.0, 1.0)), shadowTime) + alb * amb;
 }
 
 // Path-traced diffuse bounce + ambient occlusion through the voxel grid; same outputs as

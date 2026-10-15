@@ -2949,6 +2949,9 @@ static int g_menuPresetNaming, g_menuProfileChoice = -1;
 static void menu_profiles_load(MenuOpt *option);
 static void menu_profile_action(const char *name);
 static void menu_profile_finish(void);
+static void menu_profile_action_display(const char *name, wchar_t *out, int cap);
+static int menu_profile_delete_armed(void);
+static void menu_profile_disarm_delete(void);
 static int g_menuSDLReady;
 static volatile LONG g_menuKeyEdges;
 #ifdef _WIN32
@@ -3082,6 +3085,7 @@ static char *find_define_value(char *txt, const char *name, char **tokEnd)
 //   DEFINE "!PACK" is the shaderpack on/off switch (same as the Pause key).
 static void menu_load(void)
 {
+    menu_profile_disarm_delete();
     char *opt = read_file("options.txt", NULL);
     char *set = read_file(MENU_SETTINGS, NULL);
     g_nMo = 0;
@@ -3218,6 +3222,10 @@ static void display_value(const MenuOpt *m, wchar_t *out, int cap)
         if (!strcmp(m->define, "!PROFILE_SAVE")) {
             _snwprintf(out, cap, L"%ls", g_menuPresetNaming ? L"Save name" : L"Save preset...");
             out[cap - 1] = 0;
+            return;
+        }
+        if (!strcmp(m->define, "!PROFILE_EXPORT") || !strcmp(m->define, "!PROFILE_DELETE")) {
+            menu_profile_action_display(m->define, out, cap);
             return;
         }
         _snwprintf(out, cap, L"%ls", now_sec() < g_menuResetUntil ? L"Confirm reset" : L"Reset all");
@@ -3483,6 +3491,10 @@ static void menu_pointer(int clicked)
         if (pointerX > layout->width - layout->row * 3 && pointerX < layout->width - layout->pad
             && pointerY >= resetTop && pointerY <= resetBottom) {
             if (g_moSel >= 0 && g_mo[g_moSel].kind == MO_PROFILE) menu_change(1, 0);
+            else if (g_moSel >= 0 && g_mo[g_moSel].kind == MO_ACTION) {
+                if (!strncmp(g_mo[g_moSel].define, "!PROFILE_", 9)) menu_profile_action(g_mo[g_moSel].define);
+                else menu_reset_all();
+            }
             else menu_change(0, 1);
         }
         return;
@@ -3499,7 +3511,7 @@ static void menu_pointer(int clicked)
         menu_change(1, 0);
         return;
     }
-    if (option->kind == MO_ACTION && !strcmp(option->define, "!PROFILE_SAVE")) {
+    if (option->kind == MO_ACTION && !strncmp(option->define, "!PROFILE_", 9)) {
         menu_profile_action(option->define);
         return;
     }
@@ -3932,9 +3944,16 @@ static void menu_render(int screenWidth, int screenHeight)
         MenuOpt *option = &g_mo[optionIndex];
         int top = layout->contentTop + row * layout->row;
         int active = optionIndex == g_moSel;
-        if (option->kind == MO_ACTION && !strcmp(option->define, "!PROFILE_SAVE")) {
-            menu_round(dc, contentLeft, top + 2, contentRight, top + layout->row - 4, (int)(8 * scale), RGB(83, 69, 39));
-            menu_text(dc, g_menuPresetNaming ? L"Save name" : L"Save current settings as...", contentLeft + pad, top,
+        if (option->kind == MO_ACTION && !strncmp(option->define, "!PROFILE_", 9)) {
+            wchar_t actionLabel[96];
+            if (!strcmp(option->define, "!PROFILE_SAVE")) _snwprintf(actionLabel, 96, L"%ls", g_menuPresetNaming ? L"Save name" : L"Save current settings as...");
+            else display_value(option, actionLabel, 96);
+            actionLabel[95] = 0;
+            int confirming = !strcmp(option->define, "!PROFILE_DELETE") && menu_profile_delete_armed();
+            menu_round(dc, contentLeft, top + 2, contentRight, top + layout->row - 4, (int)(8 * scale), confirming ? RGB(126, 52, 44) : RGB(83, 69, 39));
+            if (active) menu_fill(dc, contentLeft + (int)(4 * scale), top + (int)(8 * scale), contentLeft + (int)(6 * scale),
+                                  top + layout->row - (int)(10 * scale), RGB(139, 235, 206));
+            menu_text(dc, actionLabel, contentLeft + pad, top,
                       contentRight - pad, top + layout->row, g_fSmall, RGB(246, 209, 105), DT_CENTER);
             continue;
         }
@@ -3977,8 +3996,10 @@ static void menu_render(int screenWidth, int screenHeight)
         if (option->kind == MO_ACTION) {
             int buttonLeft = contentLeft + pad, buttonRight = contentRight - pad;
             int buttonTop = top + layout->row / 2, buttonBottom = top + layout->row - (int)(8 * scale);
+            int confirming = !strcmp(option->define, "!PROFILE_DELETE") ? menu_profile_delete_armed()
+                           : !strcmp(option->define, "!RESET_ALL") && now_sec() < g_menuResetUntil;
             menu_round(dc, buttonLeft, buttonTop, buttonRight, buttonBottom, (int)(8 * scale),
-                       now_sec() < g_menuResetUntil ? RGB(126, 52, 44) : RGB(83, 69, 39));
+                       confirming ? RGB(126, 52, 44) : RGB(83, 69, 39));
             menu_text(dc, value, buttonLeft, buttonTop, buttonRight, buttonBottom, g_fSmall, RGB(246, 209, 105), DT_CENTER);
         } else if (option->present && (option->kind == MO_BOOL || option->kind == MO_PACK)) {
             int toggleWidth = (int)(58 * scale), toggleHeight = (int)(24 * scale);
@@ -4062,7 +4083,8 @@ static void menu_render(int screenWidth, int screenHeight)
     menu_text(dc, defaultText, pad, height - (int)(30 * scale),
               width - layout->row * 3, height - 4, g_fSmall, RGB(246, 209, 105), DT_LEFT);
     menu_round(dc, width - layout->row * 3, height - (int)(31 * scale), width - pad, height - (int)(7 * scale), (int)(12 * scale), RGB(30, 47, 62));
-    menu_text(dc, g_moSel >= 0 && g_mo[g_moSel].kind == MO_PROFILE ? L"Apply profile" : L"Reset selected", width - layout->row * 3, height - (int)(31 * scale), width - pad, height - (int)(7 * scale),
+    menu_text(dc, g_moSel >= 0 && g_mo[g_moSel].kind == MO_PROFILE ? L"Apply profile"
+              : g_moSel >= 0 && g_mo[g_moSel].kind == MO_ACTION ? L"Run action" : L"Reset selected", width - layout->row * 3, height - (int)(31 * scale), width - pad, height - (int)(7 * scale),
               g_fSmall, RGB(164, 199, 218), DT_CENTER);
     int pointerX = (int)g_menuPointerX - layout->x, pointerY = (int)g_menuPointerY - layout->y;
 #ifdef _WIN32

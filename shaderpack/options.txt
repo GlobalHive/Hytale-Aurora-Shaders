@@ -13,10 +13,20 @@ AU_CAVE_LIGHTING | Cave lighting % | range 0.0 500.0 25.0 | 250.0
 
 @ Profiles
 !PROFILE_SAVE | Save current settings as... | action | 0 | Enter a name in the field above while holding Alt, then press Enter or click Save name. Existing profiles are never overwritten.
+!PROFILE_EXPORT | Export saved profile | action | 0 | Apply a saved custom profile, then export it as a shareable GLSL file in shaderpack/presets/exports. Includes its name and settings. Existing exports are never overwritten.
+!PROFILE_DELETE | Delete saved profile | action | 0 | Apply a custom profile, then delete and confirm within five seconds. Current settings and exports stay. Default and quality presets cannot be deleted.
 !PROFILE | Quality profiles | list | -1 | Click a profile or press Right to apply it. RTX uses DLSS Quality+ at 77% with RR when supported. Non-RTX uses native resolution with DLSS off. Both offer Lowest through Ultra.
 
 @ Lighting
+AU_POLISH_SUNLIGHT | Outdoor sunlight | bool | 1 | Requires Surface detail & shading. On in Medium through Ultra for both profile families; off in Lowest and Low. Directional sky fill, sun colour, highlight protection and foliage. Individual controls below and in Shadows.
+AU_POLISH_SKY_FILL | Directional sky fill | range 0.0 1.0 0.05 | 0.65 | Requires Outdoor sunlight. Sky-facing surfaces receive more sky fill than walls and undersides. Sky hue is bounded; caves, night and underwater lighting keep their existing fill. Zero restores the previous ambient response.
+AU_POLISH_SUN_COLOUR | Sun / sky colour balance | range 0.0 1.0 0.05 | 0.5 | Requires Outdoor sunlight. More neutral midday sun and warm low sun against cool sky fill, without boosting light energy. Smooths the daylight palette transition. Zero restores the previous sun palette.
+AU_POLISH_SUN_HIGHLIGHTS | Sunlit highlight protection | range 0.0 1.0 0.05 | 0.6 | Requires Outdoor sunlight. Gently compresses bright sunlit diffuse surfaces while keeping texture hue. Does not alter the tonemapper, emissive glow, torch light, reflections or bloom. Zero disables it.
+AU_POLISH_FOLIAGE_SUN | Sunlit foliage detail | range 0.0 1.0 0.05 | 0.65 | Requires Outdoor sunlight. Refines grass/leaf wrapped lighting and broadens backlit transmission, rather than adding a second scattering layer. Keeps leaf masks and measured voxel thickness; does not add gloss. Zero restores the previous response.
+AU_POLISH_SUN_BOUNCE | Sunlight bounce intensity | range 0.0 2.0 0.05 | 1.0 | Requires Outdoor sunlight and the RTX family or path tracing. Reuses existing GI rays to gather texture-coloured, shadowed sunlight. Zero removes sun bounce, not torch/ore light. Does not enable GI in Non-RTX profiles or increase ray counts.
 AU_SSAO_STRENGTH | Ambient occlusion | range 0.0 3.0 0.05 | 1.25
+AU_POLISH_AMBIENT | Directional ambient depth | range 0.0 1.0 0.05 | 0.4 | Requires Surface detail & shading. Gently separates upward faces, walls and undersides without changing sun, torch or emissive brightness. Foliage receives half strength. No extra tracing.
+AU_POLISH_FOLIAGE_MATTE | Matte foliage highlights | range 0.0 1.0 0.05 | 0.65 | Requires Surface detail & shading. Reduces broad plastic-like sun highlights on grass and leaves without reducing subsurface transmission or affecting ice and polished blocks.
 AU_BLOCKLIGHT_STRENGTH | Torch light | range 0.0 3.0 0.1 | 1.0
 AU_BLOCKLIGHT_HYTALE_HUE | Torch colour (warm to Hytale) | range 0.0 1.0 0.05 | 1.0
 AU_EMISSION_STRENGTH | Emissive glow | range 0.0 6.0 0.25 | 3.0
@@ -47,6 +57,7 @@ AU_SSS_TRACE_STEPS | Scattering trace budget | enum 16:16_cells 24:24_cells 32:3
 AU_LIGHT_HIGHLIGHT | Sun highlights | bool | 1
 
 @ Ores & materials
+AU_POLISH_ENABLE | Surface detail & shading | bool | 1 | Texture definition, material roughness, specular antialiasing, directional ambient depth, matte foliage and outdoor sunlight. On by default in profiles. Individual controls are here, in Lighting and in Shadows.
 AU_ORE_BLOOM | Ore glow halo | range 0.0 20.0 0.5 | 10.0
 AU_ORE_LIGHT | Ore light on surroundings | range 0.0 12.0 0.5 | 8.0 | Coloured light cast onto nearby visible surfaces by ores. Independent of the animated glint.
 AU_ORE_GLOW | Glowing ores | bool | 1
@@ -59,11 +70,17 @@ AU_ORE_PULSE_STRENGTH | Ore blink strength | range 0.0 1.0 0.05 | 0.85 | Pulses 
 AU_ORE_PULSE_SPEED | Ore blink speed | range 0.0 3.0 0.1 | 0.5 | Glow pulses per second. Different ore colours pulse at different phases.
 AU_MATERIALS | Block materials (metal, polish, wet) | bool | 1
 AU_MATERIAL_GLOSS | Material gloss | range 0.0 2.0 0.1 | 1.0
+AU_POLISH_TEXTURE_DETAIL | Texture definition | range 0.0 1.0 0.05 | 0.7 | Requires Surface detail & shading and Block relief. Defines painted recesses and raised texels using existing relief samples; fades with distance. No added reflections or emissive changes.
+AU_POLISH_ROUGHNESS | Texture roughness detail | range 0.0 1.0 0.05 | 0.35 | Requires Surface detail & shading. Roughness variation on polished and metal textures; fades unresolved detail. Dry wood, soil and ordinary stone stay matte. Shared with DLSS RR guides.
+AU_POLISH_SPECULAR_AA | Specular antialiasing | bool | 1 | Requires Surface detail & shading. Broadens unresolved normal highlights to reduce shimmering without blurring textures or adding a fullscreen pass. Shared with DLSS RR guides.
 AU_RAIN_WETNESS | Rain wetness | range 0.0 2.0 0.1 | 1.0
 AU_GENERATED_NORMALS | Block relief | bool | 1
 AU_GENERATED_NORMAL_MULT | Relief strength | range 25.0 400.0 25.0 | 100.0
 
 @ Shadows
+AU_POLISH_SUN_SHADOWS | Sun-sized soft shadows | bool | 1 | Requires Outdoor sunlight and Contact-hardening shadows. Computes penumbrae from blocker distance and shadow-matrix scale rather than cascade index. Uses the existing sample budget. Contact shadow strength below also uses this switch.
+AU_POLISH_SUN_DIAMETER | Sun angular diameter (degrees) | range 0.1 3.0 0.05 | 0.75 | Requires Sun-sized soft shadows. Small gives firmer sun shadows; larger gives broader distant penumbrae. Shadow softness still scales the result; the existing blocker search limits maximum width.
+AU_POLISH_CONTACT_WEIGHT | Contact shadow strength | range 0.0 1.0 0.05 | 0.85 | Requires Sun-sized soft shadows. Controls the existing contact-shadow contribution so grass stays grounded without becoming black. Zero removes contact shadows only; terrain and cloud shadows remain.
 AU_SHADOW_SAMPLES | Shadow samples | range 4 64 4 | 24
 AU_PCSS | Contact-hardening shadows | bool | 1
 AU_SHADOW_SOFTNESS | Shadow softness | range 0.0 3.0 0.1 | 1.0
@@ -107,14 +124,15 @@ AU_SSGI_HISTORY | History frames (non-PT) | range 1.0 63.0 1.0 | 8.0 | Non-PT GI
 AU_PT_HISTORY | History frames (PT) | range 1.0 63.0 1.0 | 24.0 | PT history length. More frames reduce noise but respond more slowly to changing light.
 AU_SSGI_SELF_HIT_FIX | Non-PT GI self-hit correction | bool | 1
 
-@ Sky
+@ Sky & atmosphere
+AU_BIOME_ATMOSPHERE | Biome & weather atmosphere | bool | 0 | Optional biome/weather fog, sky and cloud colours. Does not replace Aurora sunlight, ambient lighting, exposure or colour grading. Off by default in profiles. Denoisers and coloured lights are unchanged.
 AU_STARS | Stars | enum 0:Off 1:Procedural 2:Hytale | 2
 AU_MOON_GLOW | Moon glow | range 0.0 2.0 0.1 | 1.0
 AU_STARS_BRIGHTNESS | Star brightness | range 0.0 3.0 0.1 | 2.0
 AU_STARS_SCALE | Star density | range 0.5 2.0 0.1 | 1.0
-AU_NIGHT_SKY_SATURATION | Night sky blue | range 1.0 4.0 0.1 | 3.0
+AU_NIGHT_SKY_SATURATION | Night sky blue | range 1.0 4.0 0.1 | 3.0 | Applies to Aurora's previous atmosphere. Biome & weather atmosphere keeps Hytale's authored night colours instead.
 AU_RAINBOWS | Rainbows | bool | 1
-AU_ATMOSPHERIC_FOG | Atmospheric fog | bool | 1
+AU_ATMOSPHERIC_FOG | Atmospheric fog | bool | 1 | Controls atmospheric haze, or native weather/biome fog when Biome & weather atmosphere is enabled. Underwater depth fog stays active.
 AU_ATM_FOG_MULT | Fog density | range 0.0 2.0 0.05 | 0.95
 
 @ Clouds

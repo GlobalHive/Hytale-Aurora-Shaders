@@ -225,7 +225,7 @@ public static class AuroraPrep
 
         s = Rep(s, "#if USE_FOG\n    // Apply fog\n    outColor0.rgb = mix(outColor0.rgb, fragFog.rgb, fragFog.w);\n"
                  + "    hasBloom = hasBloom && fragFog.w < 0.9;\n#endif // USE_FOG",
-                "#if USE_FOG\n#if AU_FORWARD\n    DoAUFog(outColor0.rgb, fragPositionWS, auDither, fragStaticLight.a);\n"
+                "#if USE_FOG\n#if AU_FORWARD\n#if AU_BIOME_ATMOSPHERE\n    AU_ApplyBiomeFog(outColor0.rgb, fragFog);\n#else\n    DoAUFog(outColor0.rgb, fragPositionWS, auDither, fragStaticLight.a);\n#endif\n"
                 + "    outColor0.rgb = AU_AddVL(outColor0.rgb, auForwardVL);\n#else\n"
                 + "    // Apply fog\n    outColor0.rgb = mix(outColor0.rgb, fragFog.rgb, fragFog.w);\n#endif\n"
                 + "    hasBloom = hasBloom && fragFog.w < 0.9;\n#endif // USE_FOG");

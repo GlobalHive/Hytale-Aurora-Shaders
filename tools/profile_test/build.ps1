@@ -18,7 +18,7 @@ try {
         & build\profile_test.exe $fixture
         if ($LASTEXITCODE -ne 0) { throw 'Profile tests failed.' }
         Add-Type -AssemblyName System.Drawing
-        foreach ($preview in @('rtx', 'non-rtx')) {
+        foreach ($preview in @('rtx', 'non-rtx', 'profile-actions')) {
             $image = [Drawing.Image]::FromFile((Join-Path $fixture "preview-$preview.bmp"))
             try { $image.Save((Join-Path $root "build\validation\profiles-$preview.png"), [Drawing.Imaging.ImageFormat]::Png) }
             finally { $image.Dispose() }

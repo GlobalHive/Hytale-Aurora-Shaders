@@ -24,6 +24,8 @@ https://github.com/user-attachments/assets/9c0842a6-0442-40e9-8760-67f695989e0c
 
 # Aurora Shaders for Hytale
 
+[Download 1.4.0](../../releases/tag/v1.4.0) · [Changelog](CHANGELOG.md)
+
 A shader pack for Hytale: soft sun shadows, volumetric clouds, light shafts through trees and
 caves, reflective water, ray-traced bounce light and ambient occlusion, rain puddles, rainbows,
 a rotating star sky, lens flare and a filmic tonemap - with an in-game options menu.
@@ -153,9 +155,26 @@ a name, then press Enter or click **Save name**. Presets are stored in `shaderpa
 and retained during updates. On Linux, use the keyboard to enter the name. Applying a built-in profile resets other
 shader-menu settings to their defaults; saving a custom preset keeps your current settings.
 
+To manage a custom preset, apply it, then choose **Export saved profile** or **Delete saved profile**.
+Exports are named `.glsl` files in `shaderpack/presets/exports/`; repeated exports create new copies.
+Deletion requires a second confirmation within five seconds, keeps your current shader settings and
+never deletes Default, quality presets or exported copies. To import a shared export, copy it into an
+unused `shaderpack/presets/preset-00.glsl` through `preset-15.glsl` slot, then reopen the menu. Do not
+overwrite an existing slot. On Linux, use the installed `Client/.aurora/shaderpack/presets/` folder.
+
 ## Menu options
 
-### General
+### Surface detail and atmosphere
+
+The TAA reminder is the first entry in **General**.
+
+**Ores & materials → Surface detail & shading** adds adjustable texture definition and roughness,
+specular antialiasing, directional ambient depth, matte foliage and outdoor sunlight. It defaults to On in all
+profiles. Individual controls are under Lighting, Ores & materials and Shadows. [Details](docs/visual-polish.md).
+
+**Sky & atmosphere → Biome & weather atmosphere** keeps Hytale's fog, sky and cloud colours, including special worlds,
+without replacing Aurora's sunlight, ambient lighting or colour grading. Switch it off to restore the previous
+atmosphere. It defaults to Off in all profiles and reloads immediately. [Details and research](docs/biome-atmosphere.md).
 
 | Option | What it does |
 |---|---|
@@ -164,6 +183,13 @@ shader-menu settings to their defaults; saving a custom preset keeps your curren
 | **Cave lighting %** | The minimum light in places the sun and sky can't reach - caves, deep interiors. Lower makes caves darker. |
 
 ### Lighting
+
+**Outdoor sunlight** balances direct sun against directional sky fill, protects bright diffuse textures
+and refines backlit foliage. It defaults to On from Medium through Ultra in both profile families,
+and Off in Lowest and Low. Each effect has its own slider. Sunlight bounce reuses the existing GI rays
+in the RTX family and path tracing; it does not enable GI in Non-RTX profiles. **Shadows → Sun-sized soft
+shadows** controls distance-dependent penumbrae and contact strength. These controls require Surface
+detail & shading, add no passes or history buffers, and leave biome atmosphere independent. [Details](docs/outdoor-sunlight.md).
 
 | Option | What it does |
 |---|---|
@@ -196,7 +222,7 @@ These only apply with the **RTX** preset.
 | **Bounce reach** | How far (in blocks) bounced light travels. |
 | **Ray-traced AO** | How much those rays also darken enclosed corners and the shade under overhangs. |
 
-### Sky
+### Sky & atmosphere
 
 | Option | What it does |
 |---|---|

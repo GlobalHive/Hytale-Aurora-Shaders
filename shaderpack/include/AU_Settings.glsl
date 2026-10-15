@@ -15,6 +15,21 @@
 #define AU_SCREEN_BRIGHTNESS 1.0    // Minecraft "brightness" slider equivalent (0 = moody, 1 = bright)
 #define AU_TWILIGHT_SHIFT 0.10      // keeps daylight up longer to fit Hytale's long dusk
 #define AU_SUNSET_SHIFT 0.0         // sun height (sin) offset for the sunset colour palette
+#define AU_POLISH_ENABLE 1
+#define AU_POLISH_TEXTURE_DETAIL 0.7
+#define AU_POLISH_ROUGHNESS 0.35
+#define AU_POLISH_SPECULAR_AA 1
+#define AU_POLISH_AMBIENT 0.4
+#define AU_POLISH_FOLIAGE_MATTE 0.65
+#define AU_POLISH_SUNLIGHT 1
+#define AU_POLISH_SKY_FILL 0.65
+#define AU_POLISH_SUN_COLOUR 0.5
+#define AU_POLISH_SUN_HIGHLIGHTS 0.6
+#define AU_POLISH_FOLIAGE_SUN 0.65
+#define AU_POLISH_SUN_BOUNCE 1.0
+#define AU_POLISH_SUN_SHADOWS 1
+#define AU_POLISH_SUN_DIAMETER 0.75
+#define AU_POLISH_CONTACT_WEIGHT 0.85
 
 // ---- Lighting ------------------------------------------------------------------------
 #define AU_ALBEDO_MULT 0.78          // Hytale textures are painted brighter than Minecraft's
@@ -78,6 +93,7 @@
 #define AU_NEAR_IGNORE 1.2             // depth (blocks) below which geometry is the first-person hand
 
 // ---- Sky / atmosphere ----------------------------------------------------------------
+#define AU_BIOME_ATMOSPHERE 0
 #define AU_STARS 2                    // 0 off, 1 procedural, 2 Hytale's star texture (turning with the sky)
 #define AU_STARS_BRIGHTNESS 2.0
 #define AU_MOON_GLOW 1.0              // Hytale's halo around the moon

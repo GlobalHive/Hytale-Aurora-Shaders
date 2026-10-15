@@ -28,15 +28,19 @@
         vec2 minCoord = floor(fragTexCoords / tileSize) * tileSize;
         vec2 maxCoord = minCoord + tileSize;
         float lOriginal = length(texColor.rgb);
+        float auHeightSum = 0.0, auHeightWeight = 0.0, auHeight = 0.0;
 
         vec3 nts = vec3(0.0, 0.0, 1.0);
         vec2 oc; float d;
-#define AU_GN_DIF(coord) (d = lOriginal - length(texture(uTexture, vec3(coord, fragAtlasPages.x)).rgb), d = d > 0.0 ? max(d - normalThreshold, 0.0) : min(d + normalThreshold, 0.0), clamp(d, -normalClamp, normalClamp))
+#define AU_GN_DIF(coord) (auHeight = length(texture(uTexture, vec3(coord, fragAtlasPages.x)).rgb), auHeightSum += auHeight, auHeightWeight += 1.0, d = lOriginal - auHeight, d = d > 0.0 ? max(d - normalThreshold, 0.0) : min(d + normalThreshold, 0.0), clamp(d, -normalClamp, normalClamp))
         oc = fragTexCoords + vec2(0.0, offsetR.y); if (oc.y < maxCoord.y) nts.y += AU_GN_DIF(oc);
         oc = fragTexCoords + vec2(offsetR.x, 0.0); if (oc.x < maxCoord.x) nts.x += AU_GN_DIF(oc);
         oc = fragTexCoords - vec2(0.0, offsetR.y); if (oc.y > minCoord.y) nts.y -= AU_GN_DIF(oc);
         oc = fragTexCoords - vec2(offsetR.x, 0.0); if (oc.x > minCoord.x) nts.x -= AU_GN_DIF(oc);
 #undef AU_GN_DIF
+        float auMeanHeight = auHeightWeight > 0.0 ? auHeightSum / auHeightWeight : lOriginal;
+        vec2 auResolved = (tileSize / 32.0) / offsetR;
+        albedo = AU_TextureDefinition(albedo, lOriginal, auMeanHeight, min(auResolved.x, auResolved.y));
         nts.xy *= AU_GENERATED_NORMAL_MULT * 0.025 * sqrt(AU_GENERATED_NORMAL_RES / 128.0) * (originalOffsetR / offsetR);
         nts.xy = clamp(nts.xy, vec2(-1.0), vec2(1.0));
 

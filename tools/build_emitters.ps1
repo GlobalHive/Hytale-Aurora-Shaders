@@ -82,7 +82,10 @@ try {
         $blocks = @($item.BlockType)
         if ($item.BlockType.State.Definitions) {
             foreach ($state in $item.BlockType.State.Definitions.PSObject.Properties) {
-                $blocks += Merge-Object $item.BlockType $state.Value
+                $block = Merge-Object $item.BlockType $state.Value
+                if ($state.Value.DrawType -and $state.Value.DrawType -ne $item.BlockType.DrawType -and
+                    -not $state.Value.PSObject.Properties['Light']) { $block.PSObject.Properties.Remove('Light') }
+                $blocks += $block
             }
         }
         foreach ($block in $blocks) {
@@ -90,13 +93,15 @@ try {
             $color = Hex-Color $block.Light.Color
             if (-not $color -or $color -eq '000000') { continue }
             $textures = New-Object 'System.Collections.Generic.HashSet[string]'
-            foreach ($textureSet in @($block.Textures)) {
+            $textureSets = if ($block.DrawType -eq 'Model') { @() } else { @($block.Textures) }
+            foreach ($textureSet in $textureSets) {
                 if (-not $textureSet) { continue }
                 foreach ($property in $textureSet.PSObject.Properties) {
                     if ($property.Value -is [string] -and $property.Value -match '\.png$') { [void]$textures.Add('Common/' + $property.Value) }
                 }
             }
-            foreach ($texture in @($block.CustomModelTexture)) {
+            $modelTextures = if ($block.DrawType -eq 'Model') { @($block.CustomModelTexture) } else { @() }
+            foreach ($texture in $modelTextures) {
                 if ($texture.Texture) { [void]$textures.Add('Common/' + $texture.Texture) }
             }
             $tints = @($block.Tint | ForEach-Object { Hex-Color $_ } | Where-Object { $_ })

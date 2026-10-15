@@ -8,15 +8,17 @@
 
 vec3 GetSky(float VdotU, float VdotS, float dither, bool doGlare, bool doGround)
 {
+    float VdotUmax0 = max(VdotU, 0.0);
+    float VdotUmax0M = 1.0 - pow2(VdotUmax0);
+    float VdotSML = sunVisibility > 0.5 ? VdotS : -VdotS;
+#if AU_BIOME_ATMOSPHERE
+    vec3 finalSky = AU_BiomeSky(VdotU, VdotS);
+#else
     float nightFactorSqrt2 = sqrt2(nightFactor);
     float nightFactorM = sqrt2(nightFactorSqrt2) * 0.4;
     float VdotSM1 = pow2(max(VdotS, 0.0));
     float VdotSM2 = pow2(VdotSM1);
     float VdotSM3 = pow2(pow2(max(-VdotS, 0.0)));
-    float VdotSML = sunVisibility > 0.5 ? VdotS : -VdotS;
-
-    float VdotUmax0 = max(VdotU, 0.0);
-    float VdotUmax0M = 1.0 - pow2(VdotUmax0);
 
     vec3 upColor = mix(nightUpSkyColor * (1.5 - 0.5 * nightFactorSqrt2 + nightFactorM * VdotSM3 * 1.5), dayUpSkyColor, sunFactor);
     vec3 middleColor = mix(nightMiddleSkyColor * (3.0 - 2.0 * nightFactorSqrt2), dayMiddleSkyColor * (1.0 + VdotSM2 * 0.3), sunFactor);
@@ -42,6 +44,7 @@ vec3 GetSky(float VdotU, float VdotS, float dither, bool doGlare, bool doGround)
     finalSky = mix(finalSky, downColor, scatteredGroundMixer);
 
     if (doGround) finalSky *= smoothstep1(pow2(1.0 + min(VdotU, 0.0)));
+#endif
 
     if (IsCameraUnderwater > 0.5) finalSky = mix(finalSky * 3.0, waterFogColor, VdotUmax0M);
 
@@ -57,6 +60,9 @@ vec3 GetSky(float VdotU, float VdotS, float dither, bool doGlare, bool doGround)
 
         float glareWaterFactor = IsCameraUnderwater * sunVisibility;
         vec3 glareColor = mix(vec3(0.38, 0.4, 0.5) * 0.3, vec3(1.5, 0.7, 0.3) + vec3(0.0, 0.5, 0.5) * noonFactor, sunVisibility);
+#if AU_BIOME_ATMOSPHERE
+        glareColor = max(SunColor.rgb, vec3(0.0)) * max(SunLightColor.a, 0.0);
+#endif
         glareColor = glareColor + glareWaterFactor * vec3(7.0);
         glare *= 1.0 - 0.8 * rainFactor;
         glareColor = mix(glareColor, vec3(GetLuminance(glareColor)), 0.5 * rainFactor);

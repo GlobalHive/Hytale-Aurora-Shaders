@@ -6,6 +6,7 @@
 #define AU_COMMON
 
 #include "AU_Settings.glsl"
+#include "AU_Sunlight.glsl"
 
 // ---- Helpers -------------------------------------------------------------------------
 #ifndef AU_HAS_POW2
@@ -93,6 +94,27 @@ vec3 lightColor, ambientColor;   // ground / cloud lighting
 vec3 shaftColor;                 // light shaft colour (COMPOSITE1 variant)
 vec3 waterFogColor;
 vec3 blocklightCol;
+
+vec3 AU_BiomeSky(float viewUp, float viewSun)
+{
+    vec3 horizon = mix(max(FogBackColor.rgb, vec3(0.0)), max(FogFrontColor.rgb, vec3(0.0)), clamp01(viewSun * 0.5 + 0.5));
+    return mix(horizon, max(uHookTopGradientColor.rgb, vec3(0.0)), clamp01(viewUp * 1.25));
+}
+
+vec4 AU_BiomeCloudColour()
+{
+    vec3 colour = vec3(0.0);
+    float weight = 0.0;
+    float opacity = 0.0;
+    for (int layer = 0; layer < 4; layer++) {
+        if (layer >= uHookCloudCount) break;
+        float alpha = clamp01(uHookCloudColors[layer].a);
+        colour += max(uHookCloudColors[layer].rgb, vec3(0.0)) * alpha;
+        weight += alpha;
+        opacity = 1.0 - (1.0 - opacity) * (1.0 - alpha);
+    }
+    return vec4(colour / max(weight, 0.0001), opacity);
+}
 
 float GetRainFactor()
 {
@@ -206,7 +228,12 @@ void AU_InitCommon()
     vec3 nightRainLightColor = vec3(0.03, 0.035, 0.05) * (0.5 + 0.5 * vsBrightness);
     vec3 nightRainAmbientColor = vec3(0.16, 0.20, 0.3) * (0.75 + 0.6 * vsBrightness);
 
-    vec3 dayLightColor = mix(sunsetClearLightColor, noonClearLightColor, noonFactor);
+    float lightPaletteBlend = noonFactor;
+#if AU_POLISH_ENABLE && AU_POLISH_SUNLIGHT
+    lightPaletteBlend = mix(noonFactor, smoothstep(0.0, 0.85, noonFactorRaw),
+                            clamp(AU_POLISH_SUN_COLOUR, 0.0, 1.0) * (1.0 - clamp(IsCameraUnderwater, 0.0, 1.0)));
+#endif
+    vec3 dayLightColor = mix(sunsetClearLightColor, noonClearLightColor, lightPaletteBlend);
     vec3 dayAmbientColor = mix(sunsetClearAmbientColor, noonClearAmbientColor, noonFactor);
     vec3 clearLightColor = mix(nightClearLightColor, dayLightColor, sunVisibility2);
     vec3 clearAmbientColor = mix(nightClearAmbientColor, dayAmbientColor, sunVisibility2);
@@ -217,6 +244,7 @@ void AU_InitCommon()
 
     lightColor = mix(clearLightColor, rainLightColor, rainFactor);
     ambientColor = mix(clearAmbientColor, rainAmbientColor, rainFactor);
+    lightColor = AU_SunPalette(lightColor, sunVec.y, sunVisibility2 * (1.0 - clamp(IsCameraUnderwater, 0.0, 1.0)), rainFactor);
 
     // Light shaft colour (the COMPOSITE1 variant of the same file).
     vec3 noonShaft = vec3(0.4, 0.75, 1.3);

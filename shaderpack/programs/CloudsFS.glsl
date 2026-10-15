@@ -6,7 +6,10 @@
 
 #include "SceneData_inc.glsl"
 #include "Fog_inc.glsl"
+#define uHookCloudColors uColors
+#define uHookCloudCount uCloudsTextureCount
 #include "AU_Clouds.glsl"
+#include "AU_Fog.glsl"
 
 in vec3 fragSpherePosition;
 in vec2 fragTexCoords;
@@ -33,6 +36,12 @@ void main()
     float dither = GetDither(gl_FragCoord.xy);
 
     vec4 clouds = GetClouds(dir, 1000000000.0, 1.0, VdotS, VdotU, dither);
+#if AU_BIOME_ATMOSPHERE
+    clouds.a *= AU_BiomeCloudColour().a;
+#if USE_MOOD_FOG
+    AU_ApplyBiomeFog(clouds.rgb, fragFogInfo);
+#endif
+#endif
     if (clouds.a < 0.002) discard;
     outColor = vec4(clouds.rgb, clamp(clouds.a, 0.0, 1.0));
 #else

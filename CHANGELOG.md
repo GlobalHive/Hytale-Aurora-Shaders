@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.4.0
+
+- Added outdoor sunlight controls: directional sky fill, sun colour balance, highlight protection and improved backlit foliage.
+- Added sun-sized soft shadows, angular diameter and contact-shadow strength controls.
+- Added texture definition, material roughness detail, specular antialiasing and matte foliage controls.
+- Added optional biome/weather fog, sky and cloud colours; Off by default.
+- Added custom-profile export and confirmed deletion.
+- Fixed moving cloud-shadow bands at dawn and sunset.
+- Fixed Sandy Gravel incorrectly glowing and emitting light.
+- Enabled Outdoor sunlight from Medium upward in both profile families; moved the TAA warning to the top of General.
+- Reduced unnecessary shadow filtering in fully shadowed areas.
+
 ## 1.3.0
 
 - Added RTX and Non-RTX quality profiles, from Lowest to Ultra, plus a saved Default profile.

@@ -44,6 +44,7 @@ layout(r8) uniform writeonly image2D auDlssResponsive;
 // DLSS Ray Reconstruction also reads what each pixel's surface is made of (guide images,
 // units 5-7), worked out here from Hytale's G-buffer (shared by the hook).
 #include "Deferred_inc.glsl"
+#include "AU_Surface.glsl"
 uniform sampler2D uHookGBuffer0;   // albedo + render flags
 uniform sampler2D uHookGBuffer1;   // world-space normal (encoded)
 layout(rgba8) uniform writeonly image2D auDlssAlbedo;
@@ -556,12 +557,14 @@ void main()
         if (lin * FarClip < AU_NEAR_IGNORE) response = 0.8;
         imageStore(auDlssResponsive, pix, vec4(response));
         if (uHookDlssRR == 1) {
+            vec3 guideNormal = decodeNormal(responseNormal.rg);
+            vec2 surfaceFootprint = AU_SurfaceFootprint(guideNormal, responseSurface.rgb);
             // Sky: the defaults NVIDIA recommends (grey albedo, no specular, no normal).
             vec3 diffuseAlbedo = vec3(0.5), specularAlbedo = vec3(0.0);
             vec4 normalRough = vec4(0.0);
             if (lin < 1.0) {
-                vec4 g0 = texture(uHookGBuffer0, fragTexCoords);
-                vec3 normal = decodeNormal(texture(uHookGBuffer1, fragTexCoords).rg);
+                vec4 g0 = responseSurface;
+                vec3 normal = guideNormal;
                 // Matte blocks; the glowing ore crystals are glossy (DeferredFS gives them gloss).
                 uint meta = uint(round(g0.a * 255.0));
                 bool emissive = (meta & 2u) != 0u;
@@ -573,7 +576,8 @@ void main()
 #if !AU_MATERIALS
                 gloss = 0.0;
 #endif
-                float roughness = 1.0 - clamp(max(0.85 * crystal, gloss * AU_MATERIAL_GLOSS), 0.0, 0.95);
+                float materialGloss = AU_TextureSmoothness(min(gloss * AU_MATERIAL_GLOSS, 0.95), cls, g0.rgb, surfaceFootprint.y);
+                float roughness = 1.0 - AU_SpecularSmoothness(clamp(max(0.85 * crystal, materialGloss), 0.0, 0.95), surfaceFootprint.x);
                 vec3 nVS = mat3(ViewMatrix) * normal;
                 float NdotV = clamp(dot(nVS, -normalize(posVS)), 0.0, 1.0);
                 diffuseAlbedo = pow(clamp(mix(vec3(GetLuminance(g0.rgb)), g0.rgb, AU_ALBEDO_SATURATION) * AU_ALBEDO_MULT, 0.0, 1.0), vec3(2.2));

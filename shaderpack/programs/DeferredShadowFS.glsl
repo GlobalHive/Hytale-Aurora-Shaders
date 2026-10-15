@@ -8,6 +8,7 @@
 #include "Reconstruction_inc.glsl"
 #include "Deferred_inc.glsl"
 #include "AU_Settings.glsl"
+#include "AU_Sunlight.glsl"
 
 #ifndef CASCADE_COUNT
 #define CASCADE_COUNT 4
@@ -151,6 +152,11 @@ void main()
     int cascade = getCascade(positionFromCameraWS, biasNormal, positionLS);
     float visibility = 1.0;
     bool backLit = false;   // a face turned away from the sun
+#if AU_POLISH_ENABLE && AU_POLISH_SUNLIGHT && AU_POLISH_SUN_SHADOWS
+    float sunHeight = SunPositionWS.y / max(length(SunPositionWS), 0.0001);
+    float sunVisibility = clamp((sunHeight + AU_TWILIGHT_SHIFT + 0.0625) / 0.125, 0.0, 1.0);
+    float sunlightWeight = AU_OutdoorSunlight(1.0, sunVisibility * sunVisibility, IsCameraUnderwater);
+#endif
     if (cascade >= 0) {
 
     vec3 uvw = positionLS.xyz * 0.5 + 0.5;
@@ -160,6 +166,7 @@ void main()
     // Soft shadows: Vogel disk, rotated per pixel and per frame (resolved by temporal filtering).
     vec2 texel = 1.0 / vec2(textureSize(uShadowMap, 0));
     float radius = 2.2 * AU_SHADOW_SOFTNESS / (1.0 + 0.6 * float(cascade));
+    vec2 filterRadius = vec2(radius);
     float rot = 6.2831853 * BlueNoise(gl_FragCoord.xy, 1);
     float cascadeMinX = cascadeScale * float(cascade) + texel.x * 2.0;
     float cascadeMaxX = cascadeScale * float(cascade + 1) - texel.x * 2.0;
@@ -184,20 +191,32 @@ void main()
             float dz = uvw.z - blockerSum / blockers;
             float scale = 1.0 / (1.0 + 1.5 * float(cascade));
             radius = clamp(dz * AU_PCSS_SCALE * scale, 0.6, AU_PCSS_SEARCH) * AU_SHADOW_SOFTNESS;
+#if AU_POLISH_ENABLE && AU_POLISH_SUNLIGHT && AU_POLISH_SUN_SHADOWS
+            filterRadius = mix(vec2(radius), AU_SunShadowRadius(dz, SunShadowMatrix[cascade],
+                               vec2(textureSize(uShadowMap, 0)) * vec2(cascadeScale, 1.0)), sunlightWeight);
+#else
+            filterRadius = vec2(radius);
+#endif
         } else {
             radius = 0.6;
+            filterRadius = vec2(radius);
+#if AU_POLISH_ENABLE && AU_POLISH_SUNLIGHT && AU_POLISH_SUN_SHADOWS
+            filterRadius *= mix(1.0, AU_SHADOW_SOFTNESS, sunlightWeight);
+#endif
         }
     }
 #endif
     visibility = 0.0;
-    for (int i = 0; i < AU_SHADOW_SAMPLES; i++) {
-        float r = sqrt((float(i) + 0.5) / float(AU_SHADOW_SAMPLES));
-        float a = float(i) * 2.39996323 + rot;
-        vec2 o = vec2(cos(a), sin(a)) * r * radius * texel;
-        vec2 suv = vec2(clamp(uvw.x + o.x, cascadeMinX, cascadeMaxX), uvw.y + o.y);
-        visibility += texture(uShadowMap, vec3(suv, uvw.z - 0.0001));
+    if (blockerFrac < 0.95) {
+        for (int i = 0; i < AU_SHADOW_SAMPLES; i++) {
+            float r = sqrt((float(i) + 0.5) / float(AU_SHADOW_SAMPLES));
+            float a = float(i) * 2.39996323 + rot;
+            vec2 o = vec2(cos(a), sin(a)) * r * filterRadius * texel;
+            vec2 suv = vec2(clamp(uvw.x + o.x, cascadeMinX, cascadeMaxX), uvw.y + o.y);
+            visibility += texture(uShadowMap, vec3(suv, uvw.z - 0.0001));
+        }
+        visibility /= float(AU_SHADOW_SAMPLES);
     }
-    visibility /= float(AU_SHADOW_SAMPLES);
     // Nearly every blocker-search sample occluded: the point is deep in shadow. A wide penumbra
     // (from a far blocker) would otherwise smear a one-texel corner leak into a lit band.
     visibility = min(visibility, 1.0 - smoothstep(0.75, 0.95, blockerFrac));
@@ -238,6 +257,9 @@ void main()
     vec3 planeN = fastNormalFromPosition(positionNoBias);   // screen derivatives: outside the branch
     if (visibility > 0.01 && lView < contactDist && !backLit) {
         float contact = ContactShadow(positionNoBias, normalWS, planeN, -lightDir, dither);
+#if AU_POLISH_ENABLE && AU_POLISH_SUNLIGHT && AU_POLISH_SUN_SHADOWS
+        contact = mix(1.0, contact, mix(1.0, clamp(AU_POLISH_CONTACT_WEIGHT, 0.0, 1.0), sunlightWeight));
+#endif
         float fade = smoothstep(contactDist * 0.8, contactDist, lView);
         visibility = min(visibility, mix(contact, 1.0, fade));
     }

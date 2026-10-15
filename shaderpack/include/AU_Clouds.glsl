@@ -8,16 +8,21 @@
 
 uniform sampler2D noisetex;
 
-float Noise3D(vec3 p)
+float Noise3D(vec3 p, float lod)
 {
     p.z = fract(p.z) * 128.0;
     float iz = floor(p.z);
     float fz = fract(p.z);
     vec2 a_off = vec2(23.0, 29.0) * (iz) / 128.0;
     vec2 b_off = vec2(23.0, 29.0) * (iz + 1.0) / 128.0;
-    float a = textureLod(noisetex, p.xy + a_off, 0.0).r;
-    float b = textureLod(noisetex, p.xy + b_off, 0.0).r;
+    float a = textureLod(noisetex, p.xy + a_off, lod).r;
+    float b = textureLod(noisetex, p.xy + b_off, lod).r;
     return mix(a, b, fz);
+}
+
+float Noise3D(vec3 p)
+{
+    return Noise3D(p, 0.0);
 }
 
 const float cloudStretch = 16.0;
@@ -31,6 +36,11 @@ void InitCloudColors()
     vec3 cloudRainColor = mix(nightMiddleSkyColor, dayMiddleSkyColor, sunFactor);
     cloudAmbientColor = mix(ambientColor * (sunVisibility2 * (0.55 + vec3(0.2, 0.1, 0.0) * noonFactor) + 0.35), cloudRainColor * 0.5, rainFactor);
     cloudLightColor = mix(lightColor * (1.3 + vec3(0.1, -0.1, -0.3) * noonFactor), cloudRainColor * 0.45, noonFactor * rainFactor);
+#if AU_BIOME_ATMOSPHERE
+    vec3 nativeTint = AU_BiomeCloudColour().rgb;
+    cloudAmbientColor = nativeTint * 0.55;
+    cloudLightColor = nativeTint * 0.45;
+#endif
 }
 
 float GetCloudWind()
@@ -38,7 +48,7 @@ float GetCloudWind()
     return 0.0006 * Time * AU_CLOUD_SPEED;
 }
 
-float GetCloudNoise(vec3 tracePos, float cloudAltitude, float lTracePosXZ, float cloudPlayerPosY)
+float GetCloudNoise(vec3 tracePos, float cloudAltitude, float lTracePosXZ, float cloudPlayerPosY, float footprint)
 {
     vec3 tracePosM = tracePos.xyz * cloudNarrowness;
     float wind = GetCloudWind();
@@ -51,10 +61,12 @@ float GetCloudNoise(vec3 tracePos, float cloudAltitude, float lTracePosXZ, float
     float noiseMult = 1.14; // CLOUD_QUALITY 2, main (deferred1) path
 
     for (int i = 0; i < sampleCount; i++) {
-        noise += Noise3D(tracePosM - vec3(0.0, 0.0, wind)) * currentPersist;
+        float lod = log2(max(footprint * cloudNarrowness * float(textureSize(noisetex, 0).x), 1.0));
+        noise += Noise3D(tracePosM - vec3(0.0, 0.0, wind), lod) * currentPersist;
         total += currentPersist;
         tracePosM *= 3.0;
         wind *= 0.5;
+        footprint *= 3.0;
         currentPersist *= persistance;
     }
     noise = pow2(noise / total);
@@ -67,6 +79,11 @@ float GetCloudNoise(vec3 tracePos, float cloudAltitude, float lTracePosXZ, float
     float threshold = clamp(abs(cloudAltitude - tracePos.y) / cloudStretch, 0.001, 0.999);
     threshold = pow2(pow2(pow2(threshold)));
     return noise - (threshold * 0.2 + 0.25);
+}
+
+float GetCloudNoise(vec3 tracePos, float cloudAltitude, float lTracePosXZ, float cloudPlayerPosY)
+{
+    return GetCloudNoise(tracePos, cloudAltitude, lTracePosXZ, cloudPlayerPosY, 0.0);
 }
 
 vec4 GetVolumetricClouds(float cloudAltitude, float distanceThreshold, float skyFade, float skyMult0,
@@ -150,24 +167,49 @@ vec4 GetVolumetricClouds(float cloudAltitude, float distanceThreshold, float sky
 
 // Shadow of the volumetric cloud layer on a surface (1 = no cloud), sampling the same noise
 // the sky renders, where the light ray crosses the middle of the layer.
+float CloudShadowDistance(float viewerHeight, float sampleHeight, float lightElevation)
+{
+    const float curvatureRadius = 65536.0;
+    float height = max(sampleHeight - viewerHeight, 0.0);
+    float radialDistance = max(curvatureRadius + viewerHeight, 1.0);
+    float projectedRadius = radialDistance * max(lightElevation, 0.0);
+    float shellDifference = height * (2.0 * radialDistance + height);
+    return shellDifference / max(sqrt(projectedRadius * projectedRadius + shellDifference) + projectedRadius, 0.0001);
+}
+
 float GetCloudShadow(vec3 playerPos)
 {
 #if AU_CLOUDS && AU_CLOUD_SHADOWS
-    if (lightVec.y < 0.02) return 1.0;
+    float horizonWeight = smoothstep(0.0, 0.08, lightVec.y);
+    if (horizonWeight <= 0.0) return 1.0;
     float modFactor = floor(1.0 / cloudNarrowness);
     vec3 cameraPos = vec3(mod(CameraPosition.x, modFactor), CameraPosition.y, mod(CameraPosition.z, modFactor));
     vec3 worldPos = playerPos + cameraPos;
-    float shadow = 1.0;
-    // Two samples through the layer for softer, thicker shadows.
-    for (int i = 0; i < 2; i++) {
-        float alt = AU_CLOUD_ALT1 + (float(i) - 0.5) * cloudStretch * 0.8;
-        float t = (alt - worldPos.y) / lightVec.y;
-        if (t < 0.0) continue;
+    float lowerHeight = max(worldPos.y, AU_CLOUD_ALT1 - cloudStretch);
+    float upperHeight = AU_CLOUD_ALT1 + cloudStretch;
+    if (lowerHeight >= upperHeight) return 1.0;
+    float entryDistance = CloudShadowDistance(worldPos.y, lowerHeight, lightVec.y);
+    float exitDistance = CloudShadowDistance(worldPos.y, upperHeight, lightVec.y);
+    const int sampleCount = 4;
+    float sampleSpan = (exitDistance - entryDistance) / float(sampleCount);
+    float layerWeight = (upperHeight - lowerHeight) / cloudTallness;
+    float opticalDepth = 0.0;
+    for (int sampleIndex = 0; sampleIndex < sampleCount; sampleIndex++) {
+        float fraction = (float(sampleIndex) + 0.5) / float(sampleCount);
+        float alt = mix(lowerHeight, upperHeight, fraction);
+        float t = CloudShadowDistance(worldPos.y, alt, lightVec.y);
         vec3 cloudPos = worldPos + lightVec * t;
-        float noise = GetCloudNoise(cloudPos, AU_CLOUD_ALT1, 0.0, 0.0);
-        shadow *= 1.0 - clamp(noise * 6.0, 0.0, 1.0) * 0.55;
+        cloudPos.y = alt;
+        float footprint = max(t * 0.0093, max(sampleSpan, 8.0));
+        float noise = GetCloudNoise(cloudPos, AU_CLOUD_ALT1, 0.0, 0.0, footprint);
+        opticalDepth += max(noise, 0.0) * layerWeight * (2.0 / float(sampleCount));
     }
-    return mix(1.0, shadow, AU_CLOUD_SHADOW_STRENGTH);
+    float shadow = exp(-3.0 * opticalDepth);
+#if AU_BIOME_ATMOSPHERE
+    return mix(1.0, shadow, horizonWeight * AU_CLOUD_SHADOW_STRENGTH * AU_BiomeCloudColour().a);
+#else
+    return mix(1.0, shadow, horizonWeight * AU_CLOUD_SHADOW_STRENGTH);
+#endif
 #else
     return 1.0;
 #endif

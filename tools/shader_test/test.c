@@ -29,6 +29,7 @@ static char *shader_source(const char *name)
                       "#define ALPHA_BLEND 0\n#define USE_SCENE_DATA_OVERRIDE 0\n#define ANIMATED 0\n");
     str_cstr(&output, "#define MAX_NODES_COUNT 256\n#define FIRST_PERSON_VIEW 0\n#define ALPHA_TEST 0\n"
                       "#define SHADOW_VERSION 0\n#define USE_COMPRESSED_POSITION 1\n#define USE_FOLIAGE_CULLING 0\n");
+    str_cstr(&output, "#define USE_MOOD_FOG 0\n#define USE_SMOOTH_NEAR_MOOD_FOG_COLOR 1\n#define SKY_VERSION 0\n");
     if (strstr(name, "ZOnlyChunk")) str_cstr(&output, "#define USE_BACKFACE_CULLING 0\n");
     str_cstr(&output, "#define EFFECT_WATER 4\n#define EFFECT_WATERENVIRONMENTCOLOR 5\n"
                       "#define EFFECT_WATERENVIRONMENTTRANSITION 6\n"
@@ -106,6 +107,48 @@ static int check_non_rtx_history(int lights, int spatial, int temporal, int trac
         }
     }
     deleteProgram(program); free(fragment);
+    return valid;
+}
+
+static int check_atmosphere_pair(int atmosphere, int mood, int sky)
+{
+    GLuint (APIENTRY *createProgram)(void) = (void *)real_wglGetProcAddress("glCreateProgram");
+    void (APIENTRY *deleteProgram)(GLuint) = (void *)real_wglGetProcAddress("glDeleteProgram");
+    GLuint program = createProgram();
+    int valid = 1;
+    for (int stage = 0; stage < 2; stage++) {
+        char *source = shader_source(stage ? sky ? "SkyFS" : "CloudsFS" : "SkyAndCloudsVS");
+        source = override_number(source, "USE_MOOD_FOG", mood ? "1" : "0");
+        if (stage) source = override_number(source, "AU_BIOME_ATMOSPHERE", atmosphere ? "1" : "0");
+        else source = override_number(source, "SKY_VERSION", sky ? "1" : "0");
+        GLuint shader = r_glCreateShader(stage ? GL_FRAGMENT_SHADER : GL_VERTEX_SHADER);
+        const GLchar *pointer = source;
+        r_glShaderSource(shader, 1, &pointer, NULL); r_glCompileShader(shader);
+        GLint compiled = 0; r_glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+        if (!compiled) {
+            char message[8192] = {0}; r_glGetShaderInfoLog(shader, sizeof message, NULL, message);
+            fprintf(stderr, "FAIL atmosphere linked stage: %s\n", message);
+            valid = 0;
+        }
+        r_glAttachShader(program, shader); r_glDeleteShader(shader); free(source);
+    }
+    if (valid) {
+        r_glLinkProgram(program);
+        GLint linked = 0; r_glGetProgramiv(program, GL_LINK_STATUS, &linked);
+        if (!linked) {
+            void (APIENTRY *getLog)(GLuint, GLsizei, GLsizei *, GLchar *) = (void *)real_wglGetProcAddress("glGetProgramInfoLog");
+            char message[8192] = {0}; getLog(program, sizeof message, NULL, message);
+            fprintf(stderr, "FAIL linked atmosphere sky=%d mood=%d native=%d: %s\n", sky, mood, atmosphere, message);
+            valid = 0;
+        } else if (atmosphere) {
+            if (r_glGetUniformLocation(program, sky ? "uTopGradientColor" : "uColors") < 0
+                || r_glGetUniformLocation(program, sky ? "uSunsetColor" : "uCloudsTextureCount") < 0) {
+                fprintf(stderr, "FAIL native sky/cloud atmosphere inputs were optimized out\n");
+                valid = 0;
+            }
+        }
+    }
+    deleteProgram(program);
     return valid;
 }
 
@@ -198,6 +241,85 @@ int main(int argumentCount, char **arguments)
     GET_GL(glUniform1i);
     GET_GL(glUniform1f);
     int tested = 0, failures = 0;
+    for (int sunlight = 0; sunlight < 2; sunlight++)
+    for (int preset = 1; preset <= 2; preset++)
+    for (int method = 0; method < 3; method++)
+    for (int program = 0; program < 5; program++) {
+        const char *name = program == 4 ? "DeferredShadowFS" : program == 3 ? "PostEffectFS" : program == 2 ? "MapChunkFS" : program == 1 ? "SkyFS" : "DeferredFS";
+        char *source = shader_source(name);
+        source = override_number(source, "AU_POLISH_SUNLIGHT", sunlight ? "1" : "0");
+        source = override_number(source, "AU_PRESET", preset == 1 ? "1" : "2");
+        source = override_number(source, "AU_SSS_VOXEL", method == 2 ? "2" : method == 1 ? "1" : "0");
+        source = override_number(source, "AU_PATH_TRACING", method == 1 ? "1" : "0");
+        source = override_number(source, "AU_DLSS", method == 2 ? "1" : "0");
+        source = override_number(source, "AU_GI_DENOISER", method == 2 ? "2" : "1");
+        if (program == 2) {
+            source = override_number(source, "ALPHA_BLEND", "1");
+            source = override_number(source, "DEFERRED", "0");
+        }
+        failures += !check_source(name, source); tested++;
+    }
+    for (int polish = 0; polish < 2; polish++)
+    for (int antialiasing = 0; antialiasing < 2; antialiasing++)
+    for (int preset = 1; preset <= 2; preset++)
+    for (int dlss = 0; dlss < 2; dlss++)
+    for (int tracing = 0; tracing < 2; tracing++)
+    for (int program = 0; program < 3; program++) {
+        const char *name = program == 2 ? "MapChunkFS" : program ? "PostEffectFS" : "DeferredFS";
+        char *source = shader_source(name);
+        source = override_number(source, "AU_POLISH_ENABLE", polish ? "1" : "0");
+        source = override_number(source, "AU_POLISH_SPECULAR_AA", antialiasing ? "1" : "0");
+        source = override_number(source, "AU_PRESET", preset == 1 ? "1" : "2");
+        source = override_number(source, "AU_DLSS", dlss ? "1" : "0");
+        source = override_number(source, "AU_GI_DENOISER", dlss ? "2" : "1");
+        source = override_number(source, "AU_PATH_TRACING", tracing ? "1" : "0");
+        failures += !check_source(name, source); tested++;
+    }
+    for (int cascades = 1; cascades <= 4; cascades++)
+    for (int linear = 0; linear < 2; linear++)
+    for (int pcss = 0; pcss < 2; pcss++)
+    for (int normals = 0; normals < 2; normals++)
+    for (int screenSpace = 0; screenSpace < 2; screenSpace++) {
+        char cascadeValue[8]; snprintf(cascadeValue, sizeof cascadeValue, "%d", cascades);
+        char *source = shader_source("DeferredShadowFS");
+        source = override_number(source, "CASCADE_COUNT", cascadeValue);
+        source = override_number(source, "USE_LINEAR_Z", linear ? "1" : "0");
+        source = override_number(source, "INPUT_NORMALS_IN_WS", normals ? "1" : "0");
+        source = override_number(source, "AU_PCSS", pcss ? "1" : "0");
+        source = override_number(source, "AU_CONTACT_SHADOWS", screenSpace ? "1" : "0");
+        source = override_number(source, "AU_FAR_SHADOWS", screenSpace ? "1" : "0");
+        Str flags = {0};
+        str_cstr(&flags, "#version 410 core\n");
+        str_cstr(&flags, normals ? "#define USE_NORMAL_BIAS 1\n#define USE_CLEAN_BACKFACES 1\n"
+                                : "#define USE_NORMAL_BIAS 0\n#define USE_CLEAN_BACKFACES 0\n");
+        expand(&flags, source, 0); free(source);
+        failures += !check_source("Sunset shadow variants", flags.p); tested++;
+    }
+    for (int atmosphere = 0; atmosphere < 2; atmosphere++)
+    for (int mood = 0; mood < 2; mood++)
+    for (int sky = 0; sky < 2; sky++) {
+        failures += !check_atmosphere_pair(atmosphere, mood, sky);
+        tested += 2;
+    }
+    const char *atmospherePrograms[] = {"DeferredFS", "SkyFS", "CloudsFS", "MapChunkFS", "PostEffectFS", "TemporalAAFS", "BlockyModelFS", "SkyAndCloudsVS"};
+    for (int atmosphere = 0; atmosphere < 2; atmosphere++)
+    for (int mood = 0; mood < 2; mood++)
+    for (int dlss = 0; dlss < 2; dlss++)
+    for (int program = 0; program < 8; program++) {
+        char *source = shader_source(atmospherePrograms[program]);
+        if (program != 7) source = override_number(source, "AU_BIOME_ATMOSPHERE", atmosphere ? "1" : "0");
+        source = override_number(source, "USE_MOOD_FOG", mood ? "1" : "0");
+        if (program != 7) {
+            source = override_number(source, "AU_DLSS", dlss ? "1" : "0");
+            source = override_number(source, "AU_GI_DENOISER", dlss ? "2" : "1");
+        }
+        if (program == 3) {
+            source = override_number(source, "DEFERRED", "0");
+            source = override_number(source, "ALPHA_BLEND", "1");
+        }
+        if (program == 7) source = override_number(source, "SKY_VERSION", "1");
+        failures += !check_source(atmospherePrograms[program], source); tested++;
+    }
     for (int lights = 0; lights < 2; lights++)
     for (int spatial = 0; spatial < 2; spatial++)
     for (int temporal = 0; temporal < 2; temporal++)

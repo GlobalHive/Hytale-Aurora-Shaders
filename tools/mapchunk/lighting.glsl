@@ -43,7 +43,7 @@
             auSSSVolumeValid = auTransmission.a > 0.5;
             if (auSSSVolumeValid) {
                 auSSSVolumeTransmission = auTransmission.rgb * auSSSMask * SampleShadowWS(fragPositionWS + lightVec * AU_SSS_TRACE_DISTANCE, 1.0);
-                auSSSVolumeLight = AU_SSSVolumeRadiance(auSSSVolumeTransmission, auScatteringDepth, normalWS, fragPositionWS, fragStaticLight.a);
+                auSSSVolumeLight = AU_SSSVolumeRadiance(auSSSVolumeTransmission, auScatteringDepth, normalWS, fragPositionWS, fragStaticLight.a, auSubsurface);
             }
         }
 #endif

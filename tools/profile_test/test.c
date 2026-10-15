@@ -5,7 +5,9 @@ static void expect_setting(const char *name, double expected)
 {
     char *settings = read_file(MENU_SETTINGS, NULL);
     assert(settings);
-    assert(fabs(settings_num(settings, name, -999) - expected) < 0.00001);
+    double actual = settings_num(settings, name, -999);
+    if (fabs(actual - expected) >= .00001) fprintf(stderr, "%s: expected %.6f, actual %.6f\n", name, expected, actual);
+    assert(fabs(actual - expected) < 0.00001);
     free(settings);
 }
 
@@ -51,6 +53,104 @@ static void profile_preview(const char *relative)
     free(bitmap);
 }
 
+static void profile_management_test(void)
+{
+    char *defaultSnapshot = read_file("presets/default.glsl", NULL);
+    assert(defaultSnapshot);
+    int originalCount = profile_count();
+    for (int selected = AU_DEFAULT_PROFILE; selected < AU_BUILTIN_PROFILES; selected++) {
+        g_menuProfileChoice = selected;
+        menu_profile_action("!PROFILE_DELETE");
+        menu_profile_action("!PROFILE_EXPORT");
+        assert(!menu_profile_delete_armed() && profile_count() == originalCount);
+    }
+    select_profile(12);
+    size_t savedLength = 0;
+    char *saved = read_file("presets/preset-00.glsl", &savedLength);
+    assert(saved && strstr(saved, "// Aurora preset: Caf\xc3\xa9 cave\n"));
+    for (int index = 0; index < g_nMo; index++)
+        if (!strcmp(g_mo[index].define, "!PROFILE_EXPORT")) g_moSel = index;
+    wchar_t action[64];
+    display_value(&g_mo[g_moSel], action, 64);
+    assert(!wcscmp(action, L"Export: Caf\x00e9 cave"));
+    g_menuLayout = (MenuLayout){0, 0, 500, 700, 12, 140, 50, 100, 38, 10, 100, 152};
+    g_moTop = menu_visible_index(g_moSel);
+    g_menuPointerX = 200; g_menuPointerY = 106; g_menuLastClick = -1;
+    menu_pointer(1);
+    char *first = read_file("presets/exports/Aurora-Caf-cave-00-001.glsl", NULL);
+    assert(first && !strcmp(first, saved));
+    menu_profile_set("AU_SCREEN_BRIGHTNESS", 1.6);
+    menu_save();
+    char *settings = read_file(MENU_SETTINGS, NULL);
+    menu_change(1, 0);
+    char *second = read_file("presets/exports/Aurora-Caf-cave-00-002.glsl", NULL);
+    char *sourceAfter = read_file("presets/preset-00.glsl", NULL);
+    assert(second && sourceAfter && !strcmp(first, second) && !strcmp(saved, sourceAfter));
+    free(sourceAfter);
+    MenuOpt unsafeName = {0};
+    unsafeName.value = 14;
+    wcscpy(unsafeName.label, L"../../CON:bad /?Name");
+    char relative[128];
+    assert(menu_profile_export_file(&unsafeName, saved, savedLength, relative, sizeof relative));
+    assert(!strcmp(relative, "presets/exports/Aurora-CON-bad-Name-02-001.glsl"));
+    char *portable = read_file(relative, NULL);
+    assert(portable && !strcmp(portable, saved));
+    free(portable);
+    assert(!menu_profile_export_file(&unsafeName, saved, savedLength, relative, 16));
+    select_profile(13);
+    menu_profile_action("!PROFILE_DELETE");
+    assert(menu_profile_delete_armed());
+    uint64_t previousHash = g_menuProfileDeleteHash;
+    size_t changedLength = 0;
+    char *changed = read_file("presets/preset-01.glsl", &changedLength);
+    assert(changed);
+    Str update = {0}; str_add(&update, changed, changedLength); str_cstr(&update, "\n");
+    write_file("presets/preset-01.glsl", update.p, update.n);
+    free(changed); free(update.p);
+    g_menuProfileDeleteArmedAt -= 1;
+    menu_profile_action("!PROFILE_DELETE");
+    assert(menu_profile_delete_armed() && g_menuProfileDeleteHash != previousHash);
+    assert(profile_count() == originalCount);
+    menu_load();
+    assert(!menu_profile_delete_armed());
+    select_profile(12);
+    menu_profile_set("AU_SCREEN_BRIGHTNESS", 1.6);
+    menu_save();
+    for (int index = 0; index < g_nMo; index++)
+        if (!strcmp(g_mo[index].define, "!PROFILE_DELETE")) g_moSel = index;
+    assert(g_mo[g_moSel].help[0]);
+    g_moTop = menu_visible_index(g_moSel);
+    g_menuPointerX = 200; g_menuPointerY = 106; g_menuLastClick = -1;
+    menu_pointer(1);
+    assert(menu_profile_delete_armed());
+    display_value(&g_mo[g_moSel], action, 64);
+    assert(!wcscmp(action, L"Confirm delete: Caf\x00e9 cave"));
+    menu_change(1, 0);
+    assert(menu_profile_find(12) && profile_count() == originalCount);
+    g_menuProfileDeleteUntil = 0;
+    g_menuProfileDeleteArmedAt -= 1;
+    menu_change(1, 0);
+    assert(menu_profile_delete_armed() && profile_count() == originalCount);
+    g_menuProfileDeleteArmedAt -= 1;
+    menu_change(1, 0);
+    assert(!menu_profile_find(12) && profile_count() == originalCount - 1 && g_menuProfileChoice == -1);
+    assert(!read_file("presets/preset-00.glsl", NULL));
+    char *afterDelete = read_file(MENU_SETTINGS, NULL);
+    char *afterDefault = read_file("presets/default.glsl", NULL);
+    char *afterExport = read_file("presets/exports/Aurora-Caf-cave-00-001.glsl", NULL);
+    assert(afterDelete && !strcmp(afterDelete, settings));
+    assert(afterDefault && !strcmp(afterDefault, defaultSnapshot));
+    assert(afterExport && !strcmp(afterExport, first));
+    free(afterDelete); free(afterDefault); free(afterExport);
+    free(first); free(second); free(saved); free(settings); free(defaultSnapshot);
+    wcscpy(g_menuSearch, L"Reused slot");
+    g_menuPresetNaming = 1;
+    menu_profile_finish();
+    assert(profile_count() == originalCount && !wcscmp(menu_profile_find(12)->label, L"Reused slot"));
+    profile_preview("preview-profile-actions.bmp");
+    puts("PASS: portable UTF-8 named profile export, collision-safe copies, protected built-ins, confirmed deletion, double-input/expiry/change rejection, preserved settings/exports and slot reuse");
+}
+
 int wmain(int count, wchar_t **arguments)
 {
     assert(count == 2);
@@ -59,14 +159,38 @@ int wmain(int count, wchar_t **arguments)
     QueryPerformanceFrequency(&g_freq);
     menu_load();
     assert(profile_count() == 13 && g_nMo < MENU_MAX);
+    int firstGeneral = -1;
+    for (int index = 0; index < g_nMo; index++) {
+        MenuOpt *option = &g_mo[index];
+        if (option->tab == 0 && option->kind != MO_HEADER && firstGeneral < 0) firstGeneral = index;
+        if (!strcmp(option->define, "AU_POLISH_ENABLE")) {
+            assert(!wcscmp(option->label, L"Surface detail & shading"));
+            assert(!wcscmp(g_menuTabs[option->tab].label, L"Ores & materials"));
+            assert(option->def == 1);
+        }
+        if (!strcmp(option->define, "AU_BIOME_ATMOSPHERE")) {
+            assert(!wcscmp(g_menuTabs[option->tab].label, L"Sky & atmosphere"));
+            assert(option->def == 0);
+        }
+        if (!strcmp(option->define, "AU_POLISH_SUNLIGHT") || !strcmp(option->define, "AU_POLISH_SUN_BOUNCE"))
+            assert(!wcscmp(g_menuTabs[option->tab].label, L"Lighting"));
+        if (!strcmp(option->define, "AU_POLISH_SUN_SHADOWS") || !strcmp(option->define, "AU_POLISH_SUN_DIAMETER") ||
+            !strcmp(option->define, "AU_POLISH_CONTACT_WEIGHT"))
+            assert(!wcscmp(g_menuTabs[option->tab].label, L"Shadows"));
+    }
+    assert(firstGeneral >= 0 && !strcmp(g_mo[firstGeneral].define, "!TAA_INFO"));
     char *defaultSnapshot = read_file("presets/default.glsl", NULL);
     assert(defaultSnapshot && !wcscmp(menu_profile_find(AU_DEFAULT_PROFILE)->label, L"Default"));
+    menu_profile_set("AU_BIOME_ATMOSPHERE", 1);
+    menu_profile_set("AU_POLISH_ENABLE", 0);
     select_profile(AU_DEFAULT_PROFILE);
+    expect_setting("AU_POLISH_ENABLE", 1);
     expect_setting("AU_PRESET", 2);
     expect_setting("AU_DLSS", 0);
     expect_setting("AU_GI_DENOISER", 1);
     expect_setting("AU_PATH_TRACING", 0);
     expect_setting("AU_SHADOW_SAMPLES", 24);
+    expect_setting("AU_BIOME_ATMOSPHERE", 0);
     assert(!wcscmp(g_menuStatus, L"Default applied"));
     assert(!strcmp(g_mo[g_nMo - 1].define, "!DLSS_FG_INFO"));
     static const wchar_t *names[] = {L"Lowest", L"Low", L"Medium", L"High", L"Highest", L"Ultra"};
@@ -84,6 +208,17 @@ int wmain(int count, wchar_t **arguments)
         expect_setting("AU_GI_HISTORY_TAPS", 9);
         expect_setting("AU_GI_TEMPORAL_FILTER", 1);
         expect_setting("AU_LOCAL_LIGHTS", selected % 6 == 5);
+        expect_setting("AU_BIOME_ATMOSPHERE", 0);
+        expect_setting("AU_POLISH_ENABLE", 1);
+        expect_setting("AU_POLISH_SUNLIGHT", selected % 6 >= 2);
+        expect_setting("AU_POLISH_SKY_FILL", .65);
+        expect_setting("AU_POLISH_SUN_COLOUR", .5);
+        expect_setting("AU_POLISH_SUN_HIGHLIGHTS", .6);
+        expect_setting("AU_POLISH_FOLIAGE_SUN", .65);
+        expect_setting("AU_POLISH_SUN_BOUNCE", 1.0);
+        expect_setting("AU_POLISH_SUN_SHADOWS", 1);
+        expect_setting("AU_POLISH_SUN_DIAMETER", .75);
+        expect_setting("AU_POLISH_CONTACT_WEIGHT", .85);
         char *settings = read_file(MENU_SETTINGS, NULL);
         double shadow = settings_num(settings, "AU_SHADOW_SAMPLES", 0);
         double cloudStep = settings_num(settings, "AU_CLOUD_STEP", 0);
@@ -114,6 +249,11 @@ int wmain(int count, wchar_t **arguments)
     select_profile(11);
     profile_preview("preview-non-rtx.bmp");
     menu_profile_set("AU_SCREEN_BRIGHTNESS", 1.35);
+    menu_profile_set("AU_BIOME_ATMOSPHERE", 1);
+    menu_profile_set("AU_POLISH_ENABLE", 0);
+    menu_profile_set("AU_POLISH_ROUGHNESS", .75);
+    menu_profile_set("AU_POLISH_SUNLIGHT", 0);
+    menu_profile_set("AU_POLISH_SUN_DIAMETER", 1.25);
     for (int index = 0; index < g_nMo; index++)
         if (!strcmp(g_mo[index].define, "AU_PATH_TRACING")) g_moSel = index;
     menu_change(1, 0);
@@ -128,8 +268,14 @@ int wmain(int count, wchar_t **arguments)
     assert(!wcscmp(menu_profile_find(12)->label, L"Caf\x00e9 cave"));
     select_profile(0);
     expect_setting("AU_SCREEN_BRIGHTNESS", 1.0);
+    expect_setting("AU_POLISH_ENABLE", 1);
     select_profile(12);
     expect_setting("AU_SCREEN_BRIGHTNESS", 1.35);
+    expect_setting("AU_BIOME_ATMOSPHERE", 1);
+    expect_setting("AU_POLISH_ENABLE", 0);
+    expect_setting("AU_POLISH_ROUGHNESS", .75);
+    expect_setting("AU_POLISH_SUNLIGHT", 0);
+    expect_setting("AU_POLISH_SUN_DIAMETER", 1.25);
     expect_setting("AU_PATH_TRACING", 1);
     wcscpy(g_menuSearch, L"Caf\x00e9 cave");
     g_menuPresetNaming = 1;
@@ -160,10 +306,27 @@ int wmain(int count, wchar_t **arguments)
     menu_profile_cancel();
     select_profile(AU_DEFAULT_PROFILE);
     expect_setting("AU_SCREEN_BRIGHTNESS", 1.0);
+    expect_setting("AU_POLISH_SUNLIGHT", 1);
+    expect_setting("AU_POLISH_SUN_DIAMETER", .75);
     expect_setting("AU_PATH_TRACING", 0);
     char *afterRestore = read_file("presets/default.glsl", NULL);
     assert(afterRestore && !strcmp(defaultSnapshot, afterRestore));
     free(afterRestore); free(defaultSnapshot);
+    const char *lookProfile = "// Aurora preset: Surface Detail & Shading\n#define AU_POLISH_ENABLE 1\n#define AU_POLISH_ROUGHNESS .35\n"
+        "#define AU_POLISH_SPECULAR_AA 1\n#define AU_POLISH_AMBIENT .4\n#define AU_POLISH_FOLIAGE_MATTE .65\n";
+    write_file("presets/preset-15.glsl", lookProfile, strlen(lookProfile));
+    menu_load();
+    menu_profile_set("AU_SCREEN_BRIGHTNESS", 1.2);
+    menu_save();
+    select_profile(27);
+    expect_setting("AU_POLISH_ENABLE", 1);
+    expect_setting("AU_SCREEN_BRIGHTNESS", 1.2);
+    expect_setting("AU_DLSS", 0);
+    expect_setting("AU_PATH_TRACING", 0);
+    select_profile(AU_DEFAULT_PROFILE);
+    expect_setting("AU_POLISH_ENABLE", 1);
+    expect_setting("AU_BIOME_ATMOSPHERE", 0);
+    profile_management_test();
     unsigned char maskFile[12 + 2 * sizeof(SSSMaskRecord)] = {0};
     memcpy(maskFile, "AUSSS001", 8);
     unsigned maskCount = 2;
