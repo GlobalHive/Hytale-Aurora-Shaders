@@ -5,9 +5,27 @@ https://www.youtube.com/watch?v=AnV2Ek9_pGk
 
 https://github.com/user-attachments/assets/9c0842a6-0442-40e9-8760-67f695989e0c
 
+https://github.com/user-attachments/assets/55316aae-4729-4537-8840-b3e5d5a30a6e
+
+<img width="3840" height="2160" alt="HytaleClient_mA5cWvFjpR" src="https://github.com/user-attachments/assets/a9f44805-9e51-40f8-b493-9174b37dedc8" />
+
+<img width="3840" height="2160" alt="HytaleClient_jA8qtVqNoz" src="https://github.com/user-attachments/assets/3a8d26e4-41b2-4e28-87d4-f94f4158ffc4" />
+
+<img width="2956" height="1663" alt="HytaleClient_xQDaUhgztt" src="https://github.com/user-attachments/assets/098cc4b4-380c-488e-90d5-f2a9a69fa49f" />
+
 <img width="3840" height="2160" alt="HytaleClient_ARPBNL3it1" src="https://github.com/user-attachments/assets/b79537e3-1a60-4631-a084-619f9bd18946" />
 
 <img width="3840" height="2160" alt="HytaleClient_XLE7vjtrBp" src="https://github.com/user-attachments/assets/1cf4d1f9-71e0-4597-a119-d9321ea4f554" />
+
+<img width="3840" height="2160" alt="image" src="https://github.com/user-attachments/assets/bba36eb8-ee54-4599-a0a7-34b65995309c" />
+
+<img width="3840" height="2160" alt="HytaleClient_iXEQJUArUL" src="https://github.com/user-attachments/assets/ae779dc9-944d-4ca4-a88d-f1c164e0393e" />
+
+<img width="3840" height="2160" alt="HytaleClient_jK6PYPZ5mO" src="https://github.com/user-attachments/assets/b16a91c7-6f33-4242-9e1a-ab10f8d40eb3" />
+
+<img width="3840" height="2160" alt="HytaleClient_iPaT8SGzRg" src="https://github.com/user-attachments/assets/b8ce33f3-78bc-4877-977a-638c4319377b" />
+
+<img width="3840" height="2160" alt="HytaleClient_1Ct0iumhDG" src="https://github.com/user-attachments/assets/605dfb67-8cc8-475a-9dc9-0d5d6c546140" />
 
 <img width="3840" height="2160" alt="HytaleClient_yiDS4pwOJz" src="https://github.com/user-attachments/assets/3d899ec1-089d-4af7-8fac-14bec9981215" />
 
@@ -19,8 +37,7 @@ https://github.com/user-attachments/assets/9c0842a6-0442-40e9-8760-67f695989e0c
 
 <img width="3840" height="2160" alt="image" src="https://github.com/user-attachments/assets/6c50f4f3-098d-4eac-86d0-67ac4d0e60f9" />
 
-<img width="3840" height="2160" alt="image" src="https://github.com/user-attachments/assets/e63f95ea-0f36-4845-ae8d-54bf9d7eab6c" />
-
+<img width="3840" height="2160" alt="HytaleClient_pmXZrodYOq" src="https://github.com/user-attachments/assets/d1f9550a-67e7-4a15-9620-515b5e6832af" />
 
 # Aurora Shaders for Hytale
 
@@ -335,7 +352,6 @@ made through the menu or shader files reload while you play.
 
 ## Known Issues
 
-- **When Sunrise hits for few seconds there is flicker on the opposite side from where the sun is.**
 - **Disable native TAA in Hytale's Graphics settings to avoid shaking and double temporal filtering.**
 
 
