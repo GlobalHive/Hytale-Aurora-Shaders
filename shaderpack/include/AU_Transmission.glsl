@@ -1,7 +1,7 @@
 #ifndef AU_TRANSMISSION_INC
 #define AU_TRANSMISSION_INC
 
-#if AU_SSS && AU_SSS_VOXEL
+#if AU_SSS && AU_SSS_VOXEL == 1
 vec4 AU_TraceSubsurface(vec3 origin, vec3 direction, vec3 tint, int medium, out float thickness, out vec3 scatteringDepth)
 {
     thickness = 0.0;

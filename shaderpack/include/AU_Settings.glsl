@@ -5,7 +5,7 @@
 #define AU_SETTINGS
 
 // ---- Preset --------------------------------------------------------------------------
-// 1 = Standard (Deprecated)
+// 1 = Standard
 // 2 = RTX: + screen-space global illumination, material-specific reflections,
 //          more shadow / light shaft / cloud samples
 #define AU_PRESET 2
@@ -50,6 +50,9 @@
 #define AU_SSS_THICKNESS 1.0
 #define AU_SSS_ABSORPTION 1.0
 #define AU_SSS_VOXEL 1
+#define AU_SSS_TEXTURES 1
+#define AU_SSS_MASK_STRENGTH 1.0
+#define AU_SSS_SHADOW_DITHER 0.5
 #define AU_SSS_DENSITY 0.55
 #define AU_SSS_TRACE_DISTANCE 12.0
 #define AU_SSS_TRACE_STEPS 32
@@ -59,18 +62,10 @@
 #define AU_LIGHT_HIGHLIGHT 1         // soft GGX sun highlight
 
 // ---- Shadows -------------------------------------------------------------------------
-#if AU_PRESET >= 2
 #define AU_SHADOW_SAMPLES 24
-#else
-#define AU_SHADOW_SAMPLES 12         // PCF taps for soft shadows
-#endif
 #define AU_SHADOW_SOFTNESS 1.0
 #define AU_SHADOW_CASCADES 4
-#if AU_PRESET >= 2
 #define AU_PCSS 1                    // contact-hardening shadows (needs the hook's raw shadow share)
-#else
-#define AU_PCSS 0
-#endif
 #define AU_PCSS_SEARCH 9.0           // max penumbra / blocker search radius in shadow texels
 #define AU_PCSS_SCALE 900.0          // shadow-depth difference -> penumbra texels
 #define AU_CONTACT_SHADOWS 1         // screen-space shadows for grass/plants (not in Hytale's shadow map)
@@ -104,22 +99,14 @@
 #define AU_CLOUD_LAYERS 2
 #define AU_CLOUD_AMOUNT 1.0
 #define AU_CLOUD_SPEED 1.0
-#if AU_PRESET >= 2
 #define AU_CLOUD_STEP 14.0
-#else
-#define AU_CLOUD_STEP 32.0           // ray step in blocks (lower = better quality, slower)
-#endif
 #define AU_CLOUD_DISTANCE 2400.0
 #define AU_CLOUD_SHADOWS 1
 #define AU_CLOUD_SHADOW_STRENGTH 1.0
 
 // ---- Volumetric light ----------------------------------------------------------------
 #define AU_LIGHTSHAFTS 1
-#if AU_PRESET >= 2
 #define AU_LIGHTSHAFT_SAMPLES 28
-#else
-#define AU_LIGHTSHAFT_SAMPLES 12
-#endif
 #define AU_LIGHTSHAFT_STRENGTH 1.0
 #define AU_LIGHTSHAFT_HAZE 0.4         // open-air haze (beams through trees / windows are separate)
 #define AU_LIGHTSHAFT_DISTANCE 192.0
@@ -170,7 +157,7 @@
 #define AU_GI_TEMPORAL_FILTER 1
 #define AU_SSGI_HISTORY 8.0
 #define AU_SSGI_SELF_HIT_FIX 1
-#define AU_GI_DENOISE (AU_PRESET >= 2 && AU_GI_DENOISER > 0 && (AU_GI_SPATIAL_FILTER || AU_GI_TEMPORAL_FILTER) && ((AU_PATH_TRACING && AU_PT_DENOISE) || (!AU_PATH_TRACING && AU_SSGI_DENOISE)))
+#define AU_GI_DENOISE ((AU_PRESET >= 2 || AU_LOCAL_LIGHTS) && AU_GI_DENOISER > 0 && (AU_GI_SPATIAL_FILTER || AU_GI_TEMPORAL_FILTER) && ((AU_VOXELS && AU_PT_DENOISE) || (!AU_VOXELS && AU_SSGI_DENOISE)))
 #define AU_GI_LEGACY AU_GI_DENOISE
 #define AU_NATIVE_EMISSION 1
 #define AU_NATIVE_EMISSION_STRENGTH 1.0
@@ -183,7 +170,7 @@
 #define AU_LOCAL_LIGHT_SOFTNESS 0.35
 #define AU_LOCAL_LIGHT_CANDIDATES 8
 #define AU_ORE_TORCH_RATIO 0.3
-#define AU_VOXEL_WORLD (AU_VOXELS || AU_LOCAL_LIGHTS || (AU_SSS && AU_SSS_VOXEL))
+#define AU_VOXEL_WORLD (AU_VOXELS || AU_LOCAL_LIGHTS || (AU_SSS && AU_SSS_VOXEL == 1))
 
 // ---- Path tracing (RTX preset) -------------------------------------------------------
 // Voxel path tracing: the hook keeps a 256x128x256 block grid of the world around the

@@ -135,19 +135,22 @@ Linux currently uses the keyboard controls; Alt-mouse editing and input capture 
 
 ### Profiles
 
-Open the **Profiles** tab, choose a saved profile, then select **Apply profile**.
-All built-in profiles use the **RTX** renderer, now the default.
+Open **Profiles** and click an entry, or highlight it with the arrow keys and press Right.
+**Default** restores the saved original defaults, kept separately from the quality presets.
+**RTX** and **Non-RTX** each offer **Lowest, Low, Medium, High, Highest and Ultra**.
+Higher levels increase shadow, cloud, reflection and lighting quality. The old Preset selector
+is replaced by this list; the shipped configuration still uses the RTX feature set.
 
-| Profile | Denoiser | DLSS resolution | Path tracing |
-|---|---|---|---|
-| **Default** | Original | Off | Off |
-| **DLSS Preset** | NVIDIA Ray Reconstruction | 77% Quality+ | Off |
-| **Path Tracing** | NVIDIA Ray Reconstruction | 77% Quality+ | On |
+RTX profiles include bounce GI and material reflections, using NVIDIA Ray Reconstruction
+with **77% Quality+ DLSS** where supported. Non-RTX profiles use native resolution, the lighter
+lighting path and Original denoising, with DLSS off. Neither family enables Frame
+Generation or path tracing. Those remain available as manual settings. Builds without
+NVIDIA support use Original as the fallback for RTX profiles.
+Coloured area lights are enabled only by **Ultra** in either quality list; you can still toggle them manually.
 
 **Save current settings as...** lets you name and save up to 16 custom presets. Hold Alt to type
 a name, then press Enter or click **Save name**. Presets are stored in `shaderpack/presets/`
-and retained during updates. On Linux, use the keyboard to enter the name; NVIDIA profiles
-require the Windows build and a supported RTX GPU. Applying a built-in profile resets other
+and retained during updates. On Linux, use the keyboard to enter the name. Applying a built-in profile resets other
 shader-menu settings to their defaults; saving a custom preset keeps your current settings.
 
 ## Menu options
@@ -157,7 +160,6 @@ shader-menu settings to their defaults; saving a custom preset keeps your curren
 | Option | What it does |
 |---|---|
 | **Shaders** | Turns the whole pack on or off (same as the Pause key). |
-| **Preset** | **RTX** is the default: bounce light, ray-traced ambient occlusion, contact-hardening shadows and richer material lighting. **Standard (Deprecated)** keeps the older, lighter renderer available. |
 | **Brightness** | Overall brightness of shaded areas and nights, like Minecraft's brightness slider: low is moody, high is bright. |
 | **Cave lighting %** | The minimum light in places the sun and sky can't reach - caves, deep interiors. Lower makes caves darker. |
 
@@ -172,6 +174,7 @@ shader-menu settings to their defaults; saving a custom preset keeps your curren
 | **Block relief** | Gives block textures a slight 3D surface, so stone, bricks and wood catch the light per pixel. |
 | **Relief strength** | How deep that relief looks. |
 | **Foliage translucency** | Sunlight shining through leaves and grass when the sun is behind them. |
+| **Scattering method** | Surface approximation, voxel depth + accumulation, or foliage shadow dithering. [Foliage masks and controls](shaderpack/sss/README.md). |
 | **Sun highlights** | Soft sun reflections on surfaces and a sheen on leaves. |
 
 ### Shadows
@@ -256,8 +259,8 @@ These only apply with the **RTX** preset.
 ## Performance
 
 The biggest costs, roughly in order: the **RTX** preset (try fewer **Bounce rays** first),
-**Volumetric clouds**, **Light shafts**, and **Shader water** reflections. Standard (Deprecated)
-runs much lighter than RTX.
+**Volumetric clouds**, **Light shafts**, and **Shader water** reflections. Non-RTX profiles
+use the lighter lighting path; lower quality levels reduce the other costs.
 
 ## Build it yourself
 

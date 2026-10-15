@@ -21,6 +21,12 @@
     if (!hasSSAO && !hasBloom) auSubsurface = max(abs(normalWS.x), max(abs(normalWS.y), abs(normalWS.z))) > 0.96 ? 2 : 1;
 #endif
 #if AU_SSS
+#if ALPHA_TEST
+    if (!hasBloom && shadingMode != SHADING_REFLECTIVE) {
+        vec2 auMask = AU_FoliageMask(fragTexCoords, fragAtlasPages.x, vec2(textureSize(uTexture, 0).xy));
+        if (auMask.y > 0.5) { auSubsurface = 2; auSSSMask = auMask.x; }
+    }
+#endif
     if (!hasBloom && shadingMode != SHADING_REFLECTIVE) {
         ivec3 materialTile = ivec3(ivec2(fragTexCoords * vec2(textureSize(uTexture, 0).xy) / 32.0), int(fragAtlasPages.x + 0.5));
         vec2 material = round(texelFetch(uHookMaterials, materialTile, 0).rg * 255.0);
@@ -28,7 +34,7 @@
     }
 #endif
     {
-#if AU_SSS && AU_SSS_VOXEL && AU_VOXEL_WORLD
+#if AU_SSS && AU_SSS_VOXEL == 1 && AU_VOXEL_WORLD
         if (auSubsurface >= 2 && !hasBloom && fragStaticLight.a > 0.02) {
             float auVolumeThickness;
             vec3 auScatteringDepth;
@@ -36,7 +42,7 @@
                                                     auSubsurface, auVolumeThickness, auScatteringDepth);
             auSSSVolumeValid = auTransmission.a > 0.5;
             if (auSSSVolumeValid) {
-                auSSSVolumeTransmission = auTransmission.rgb * SampleShadowWS(fragPositionWS + lightVec * AU_SSS_TRACE_DISTANCE, 1.0);
+                auSSSVolumeTransmission = auTransmission.rgb * auSSSMask * SampleShadowWS(fragPositionWS + lightVec * AU_SSS_TRACE_DISTANCE, 1.0);
                 auSSSVolumeLight = AU_SSSVolumeRadiance(auSSSVolumeTransmission, auScatteringDepth, normalWS, fragPositionWS, fragStaticLight.a);
             }
         }

@@ -6,15 +6,14 @@
 @ General
 !TAA_INFO | REMINDER/WARNING: | info | 0 | REMINDER/WARNING: Disable TAA in Hytale Graphics settings. It can cause shaking and ghosting. Aurora TAA and NVIDIA DLSS settings are separate.
 !PACK | Shaders | bool
-AU_PRESET | Preset | enum 1:Standard_(Deprecated) 2:RTX | 2
+AU_PRESET | Profile family | internal | 2
 AU_SCREEN_BRIGHTNESS | Brightness | range 0.0 2.0 0.05 | 1.0
 AU_CAVE_LIGHTING | Cave lighting % | range 0.0 500.0 25.0 | 250.0
 !RESET_ALL | Reset all categories | action | 0 | Restores every shader option to its shipped default. Click once to arm, then click again to confirm. Arrow keys cannot activate this button.
 
 @ Profiles
-!PROFILE | Saved profile | enum | -1 | Choose a profile, then Apply profile. Default uses Original denoising without DLSS or path tracing. NVIDIA profiles require a supported RTX GPU.
-!PROFILE_APPLY | Apply selected profile | action | 0 | Applies the selected profile. Built-in profiles start from shipped defaults. Custom profiles restore saved menu settings.
 !PROFILE_SAVE | Save current settings as... | action | 0 | Enter a name in the field above while holding Alt, then press Enter or click Save name. Existing profiles are never overwritten.
+!PROFILE | Quality profiles | list | -1 | Click a profile or press Right to apply it. RTX uses DLSS Quality+ at 77% with RR when supported. Non-RTX uses native resolution with DLSS off. Both offer Lowest through Ultra.
 
 @ Lighting
 AU_SSAO_STRENGTH | Ambient occlusion | range 0.0 3.0 0.05 | 1.25
@@ -35,7 +34,10 @@ AU_LOCAL_LIGHT_CANDIDATES | Light sampling candidates | enum 4:4 8:8 16:16 | 8 |
 AU_ORE_TORCH_RATIO | Ore light / torch ratio | range 0.0 1.0 0.05 | 0.3 | Ore light brightness relative to a torch, independent of surface glow and bloom.
 AU_SUBSURFACE | Foliage translucency | bool | 1
 AU_SSS | Subsurface scattering | bool | 1 | Coloured transmission through foliage and ice. Voxel mode measures material depth and accumulates scattering along a bounded ray; solid walls still block light.
-AU_SSS_VOXEL | Scattering method | enum 0:Surface_approximation 1:Voxel_depth_+_accumulation | 1 | Measures leaf and ice thickness instead of treating every leaf as an opaque shadow plane. Reuses the geometry grid and existing Original/DLSS lighting accumulation.
+AU_SSS_VOXEL | Scattering method | enum 0:Surface_approximation 1:Voxel_depth_+_accumulation 2:Foliage_shadow_dithering | 1 | Voxel mode measures leaf/ice depth. Dithering selectively opens foliage shadow-map texels, not camera depth. The methods are alternatives, avoiding double transmission.
+AU_SSS_TEXTURES | Foliage SSS textures | bool | 1 | Per-pixel leaf transmission masks: black veins remain opaque, white leaf tissue transmits. Automatically generated from your game textures; custom PNG overrides are supported.
+AU_SSS_MASK_STRENGTH | SSS texture influence | range 0.0 1.0 0.05 | 1.0 | Zero uses uniform transmission; one fully respects the SSS texture.
+AU_SSS_SHADOW_DITHER | Foliage shadow permeability | range 0.0 0.8 0.05 | 0.5 | Used only by Foliage shadow dithering. Zero preserves opaque shadows; 0.5 and 0.8 allow progressively more light. Pattern is fixed to each leaf, not animated per frame.
 AU_SSS_STRENGTH | Scattering strength | range 0.0 2.0 0.05 | 0.65
 AU_SSS_THICKNESS | Scattering thickness | range 0.25 3.0 0.05 | 1.0 | Thickness of foliage and ice. Higher values absorb more light inside the material.
 AU_SSS_ABSORPTION | Scattering colour absorption | range 0.0 2.0 0.05 | 1.0
@@ -62,9 +64,14 @@ AU_GENERATED_NORMALS | Block relief | bool | 1
 AU_GENERATED_NORMAL_MULT | Relief strength | range 25.0 400.0 25.0 | 100.0
 
 @ Shadows
+AU_SHADOW_SAMPLES | Shadow samples | range 4 64 4 | 24
+AU_PCSS | Contact-hardening shadows | bool | 1
 AU_SHADOW_SOFTNESS | Shadow softness | range 0.0 3.0 0.1 | 1.0
 AU_CONTACT_SHADOWS | Contact shadows | bool | 1
+AU_CONTACT_SHADOW_STEPS | Contact shadow steps | range 4 32 2 | 18
+AU_CONTACT_SHADOW_DISTANCE | Contact shadow distance | range 24.0 480.0 8.0 | 480.0
 AU_FAR_SHADOWS | Distant shadows | bool | 1
+AU_FAR_SHADOW_STEPS | Distant shadow steps | range 8 48 4 | 32
 AU_CLOTH_TRANSMIT | Sun through curtains / cloth | range 0.0 2.0 0.1 | 0.5
 
 @ Screen-space GI
@@ -72,6 +79,7 @@ AU_RTX_GI_STRENGTH | Bounce light | range 0.0 3.0 0.1 | 1.0
 AU_RTX_GI_AO | Ray-traced AO | range 0.0 1.0 0.05 | 0.55
 AU_RTX_GI_RAYS | Screen-space rays (no PT) | range 4 32 4 | 8
 AU_RTX_GI_RADIUS | Screen-space reach (no PT) | range 2.0 16.0 0.5 | 8.0
+AU_RTX_SSR_STEPS | Material reflection steps | range 8 64 4 | 32
 
 @ Path tracing
 AU_PATH_TRACING | Path tracing | bool | 0 | Voxel GI. Choose Original or NVIDIA DLSS Ray Reconstruction in the GI denoising tab.
@@ -114,10 +122,12 @@ AU_CLOUDS | Volumetric clouds | bool | 1
 AU_CLOUD_AMOUNT | Cloud amount | range 0.0 2.0 0.1 | 1.0
 AU_CLOUD_SPEED | Cloud speed | range 0.0 4.0 0.25 | 1.0
 AU_CLOUD_LAYERS | Cloud layers | range 1 2 1 | 2
+AU_CLOUD_STEP | Cloud ray step | range 4.0 64.0 2.0 | 14.0 | Smaller steps produce finer clouds at a higher GPU cost.
 AU_CLOUD_SHADOWS | Cloud shadows | bool | 1
 
 @ Light shafts
 AU_LIGHTSHAFTS | Light shafts | bool | 1
+AU_LIGHTSHAFT_SAMPLES | Light shaft samples | range 4 48 4 | 28
 AU_LIGHTSHAFT_STRENGTH | Strength | range 0.0 3.0 0.1 | 1.0
 AU_LIGHTSHAFT_HAZE | Open-air haze | range 0.0 1.0 0.05 | 0.4
 AU_LIGHTSHAFT_SCENE_AWARE | Forest / cave beams | range 0.0 1.0 0.05 | 1.0
@@ -127,6 +137,7 @@ AU_LIGHTSHAFT_NIGHT_I | Moonlight haze | range 0.0 1.0 0.05 | 0.35
 
 @ Water & glass
 AU_WATER | Shader water | bool | 1
+AU_WATER_SSR_STEPS | Water reflection steps | range 8 64 4 | 48
 AU_GLASS | Shader glass | bool | 1
 AU_GLASS_TINT | Glass tint | range 0.0 1.0 0.05 | 0.7
 AU_GLASS_ABSORB | Glass darkness | range 0.0 0.9 0.05 | 0.35

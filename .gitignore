@@ -7,7 +7,8 @@ install.config
 shaderpack/hook.log
 shaderpack/shot.bmp
 shaderpack/_shot
-shaderpack/presets/
+shaderpack/presets/*
+!shaderpack/presets/default.glsl
 shaderpack/errors/
 shaderpack/dump/
 shaderpack/programs/_*
@@ -17,6 +18,10 @@ shaderpack/programs/_*
 shaderpack/original/
 shaderpack/index.txt
 shaderpack/materials.txt
+shaderpack/sss-masks.bin
+shaderpack/sss/Blocks/
+shaderpack/programs/ZOnlyChunkFS.glsl
+shaderpack/programs/ZOnlyChunkVS.glsl
 shaderpack/programs/ParticleFS.glsl
 shaderpack/programs/Batcher2DFS.glsl
 shaderpack/programs/MapChunkFS.glsl

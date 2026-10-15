@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.0
+
+- Added RTX and Non-RTX quality profiles, from Lowest to Ultra, plus a saved Default profile.
+- Coloured area lights now enable only in Ultra quality profiles; manual controls remain available.
+- Fixed Non-RTX area-light denoising and reduced Original denoiser grain.
+- Improved light-cache turnover and culling so new cave lights load reliably with less overhead.
+- Added per-pixel foliage transmission masks and optional shadow dithering.
+- Added more quality controls and preserved custom foliage masks during Windows/Linux updates.
+
 ## 1.2.0
 
 - RTX is now default; Standard is marked deprecated.

@@ -2,6 +2,9 @@
 #include "AU_Settings.glsl"
 #include "AU_Emission.glsl"
 uniform sampler2DArray uHookMaterials;   // per-tile block materials (hook.c materials_build)
+#if AU_SSS
+#include "AU_SSSMask.glsl"
+#endif
 #if AU_VOXEL_WORLD && DEFERRED && !ALPHA_BLEND && !USE_SCENE_DATA_OVERRIDE
 #define AU_VOX_WRITER_ONLY
 #include "AU_Voxel.glsl"

@@ -117,6 +117,7 @@ bool auSSSVolumeValid = false;
 bool auSSSUseGI = false;
 vec3 auSSSVolumeLight = vec3(0.0);
 vec3 auSSSVolumeTransmission = vec3(1.0);
+float auSSSMask = 1.0;
 
 vec3 AU_SSSVolumeRadiance(vec3 transport, vec3 scatteringDepth, vec3 normal, vec3 playerPosition, float skyLight)
 {
@@ -179,14 +180,17 @@ vec3 AU_DoLighting(vec3 albedo, vec3 normalM, vec3 playerPos, float skyLight, ve
     float shadowFar = max(SunShadowCascadeStats[AU_SHADOW_CASCADES - 1].x, 1.0);
     float beyondShadows = smoothstep(0.8, 1.0, lViewPos / shadowFar);
     // Leaves let some light through even where the shadow map says they are occluded.
-    float shadowVisM = subsurfaceMode == 2 && !auSSSVolumeValid ? mix(shadowVis, 1.0, 0.3) : shadowVis;
+    float shadowVisM = shadowVis;
+#if !(AU_SSS && AU_SSS_VOXEL == 2)
+    if (subsurfaceMode == 2 && !auSSSVolumeValid) shadowVisM = mix(shadowVis, 1.0, 0.3 * auSSSMask);
+#endif
     // Beyond the cascades the mask holds the distant screen-space shadows, combined with the
     // lightmap; distant leaves also get the shadowless leaf shading.
     float farLeaf = 1.0;
     if (subsurfaceMode == 2) farLeaf = (NdotL * 0.4999 + 0.5) * mix(1.0, NdotU * 0.5 + 0.5, 0.125 + 0.125 * pow2(noonFactor));
     else if (subsurfaceMode == 1) farLeaf = 0.6 + 0.3 * pow2(noonFactor);
     vec3 shadowMult = vec3(mix(shadowVisM * smoothstep(0.0, 0.4, skyLight), skyLightShadowMult * shadowVis * farLeaf, beyondShadows));
-#if AU_SSS && AU_SSS_VOXEL
+#if AU_SSS && AU_SSS_VOXEL == 1
     if (auSSSVolumeValid)
         shadowMult = mix(shadowMult, auSSSVolumeTransmission * smoothstep(0.0, 0.4, skyLight), clamp(AU_SSS_STRENGTH, 0.0, 1.0));
 #endif
@@ -280,7 +284,7 @@ vec3 AU_DoLighting(vec3 albedo, vec3 normalM, vec3 playerPos, float skyLight, ve
         float forwardScatter = pow(max(dot(nViewPos, lightVec), 0.0), subsurfaceMode == 3 ? 6.0 : 4.0);
         float backLighting = smoothstep(-0.15, 0.8, -NdotL);
         float exposure = sqrt(skyLight) * mix(0.12, 1.0, shadowVis) * shadowTime;
-        scattering = lightColor * transmission * (AU_SSS_STRENGTH * exposure * (0.2 + 0.8 * forwardScatter) * backLighting);
+        scattering = lightColor * transmission * (AU_SSS_STRENGTH * auSSSMask * exposure * (0.2 + 0.8 * forwardScatter) * backLighting);
     }
 #endif
     return albedo * (finalDiffuse + scattering) + lightHighlight;

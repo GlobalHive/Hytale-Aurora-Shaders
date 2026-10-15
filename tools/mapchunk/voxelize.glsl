@@ -32,7 +32,7 @@
                 ivec3 auCell = auBlock & AU_VOX_MASK;
                 uint auTag = AU_VoxTag(auBlock) << 8;
                 uint auMedium = 0u;
-#if AU_SSS && AU_SSS_VOXEL
+#if AU_SSS && AU_SSS_VOXEL == 1
                 ivec3 auMaterialTile = ivec3(ivec2(fragTexCoords * vec2(textureSize(uTexture, 0).xy) / 32.0), int(fragAtlasPages.x + 0.5));
                 vec2 auMaterial = round(texelFetch(uHookMaterials, auMaterialTile, 0).rg * 255.0);
                 if (auMaterial == vec2(1.0, 6.0)) auMedium = AU_VOX_ICE;
@@ -61,6 +61,10 @@
             }
 #endif
 #if (AU_LOCAL_LIGHTS || AU_PT_LIGHTS) && DEFERRED
+            vec4 auEmitterClip = ViewProjectionMatrix * vec4(vec3(auBlock) + 0.5 - CameraPosition, 1.0);
+            float auEmitterReach = AU_LOCAL_LIGHT_RANGE + 1.0;
+            vec2 auEmitterMargin = vec2(abs(ProjectionMatrix[0][0]), abs(ProjectionMatrix[1][1])) * auEmitterReach;
+            if (auEmitterClip.w > -auEmitterReach && all(lessThanEqual(abs(auEmitterClip.xy), vec2(max(auEmitterClip.w, 0.0)) + auEmitterMargin))) {
             // Light sources: Hytale draws glowing faces (flames, crystals) FULLBRIGHT. The first
             // such vertex of a block this frame (frame stamp in the cell's top 16 bits) adds the
             // block to this frame's light list, with Hytale's light colour there.
@@ -75,6 +79,7 @@
                 auGlow = max(auGlow, auTextureTint);
             if (shadingMode == SHADING_REFLECTIVE) auGlow = max(auGlow, auTextureTint * AU_ORE_TORCH_RATIO * (AU_ORE_LIGHT / 8.0));
             AU_RecordEmitter(auBlock, auGlow);
+            }
 #endif
         }
     }

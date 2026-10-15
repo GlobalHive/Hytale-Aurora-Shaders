@@ -243,6 +243,25 @@ try {
     }
     if ($owned -and $packMoved -and -not $linkedHere) {
         Restore-Settings (Join-Path $rollbackPack 'include\AU_Settings.glsl') (Join-Path $link 'include\AU_Settings.glsl')
+        $previousSSS = Join-Path $rollbackPack 'sss'
+        $sssDestination = Join-Path $link 'sss'
+        $copiedSSS = $false
+        if (Test-Path -LiteralPath $previousSSS -PathType Container) {
+            foreach ($mask in Get-ChildItem -LiteralPath $previousSSS -Recurse -File -Filter '*.png') {
+                if (-not $mask.FullName.StartsWith($previousSSS + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'SSS mask path escaped its folder.' }
+                $relativeMask = $mask.FullName.Substring($previousSSS.Length + 1)
+                $destination = Join-Path $sssDestination $relativeMask
+                if (-not (Test-Path -LiteralPath $destination)) {
+                    New-Item -ItemType Directory -Path (Split-Path $destination -Parent) -Force | Out-Null
+                    Copy-Item -LiteralPath $mask.FullName -Destination $destination
+                    $copiedSSS = $true
+                }
+            }
+        }
+        $assets = Join-Path (Split-Path $ClientDir -Parent) 'Assets.zip'
+        if ($copiedSSS -and (Test-Path -LiteralPath $assets -PathType Leaf)) {
+            & (Join-Path $PSScriptRoot 'tools\build_sss.ps1') -Assets $assets -Output (Join-Path $link 'sss-masks.bin') -Overrides $sssDestination
+        }
         $previousPresets = Join-Path $rollbackPack 'presets'
         if (Test-Path -LiteralPath $previousPresets -PathType Container) {
             $presetDestination = Join-Path $link 'presets'

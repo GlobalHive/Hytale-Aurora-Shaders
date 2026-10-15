@@ -141,7 +141,7 @@ void main()
 {
 #if AU_LOCAL_LIGHTS
     if (uHookPTPass == 2) {
-        AU_BuildLocalLightTile();
+        AU_BuildLocalLightTile(min(textureSize(uDepthTexture, 0).y, 2048));
         discard;
     }
 #endif
@@ -207,7 +207,14 @@ void main()
         noDirectionalShading = !axisAligned;
     }
 #endif
-#if AU_PRESET >= 2
+#if AU_SSS
+    if (!hasSSAO && !hasBloom && AU_MaterialClass(gbuffer0.a) == 3u) {
+        subsurfaceMode = 2;
+        noDirectionalShading = false;
+        auSSSMask = AU_MaterialLevel(gbuffer0.a);
+    }
+#endif
+#if AU_PRESET >= 2 || AU_GI_DENOISE
 #if AU_GI_DENOISE || (!AU_VOXELS && AU_SSGI_SELF_HIT_FIX)
     vec3 historyNormal = fastNormalFromPosition(playerPos);
 #else
@@ -278,7 +285,7 @@ void main()
     float aoUse = (hasSSAO || subsurfaceMode != 0) ? ao : 1.0;
 
     vec3 localLighting = vec3(0.0);
-#if AU_SSS && AU_SSS_VOXEL && AU_VOXEL_WORLD
+#if AU_SSS && AU_SSS_VOXEL == 1 && AU_VOXEL_WORLD
     if (subsurfaceMode >= 2 && !hasBloom && skyLight > 0.02) {
         float volumeThickness;
         vec3 scatteringDepth;
@@ -286,7 +293,7 @@ void main()
                                                subsurfaceMode, volumeThickness, scatteringDepth);
         auSSSVolumeValid = transmission.a > 0.5;
         if (auSSSVolumeValid) {
-            auSSSVolumeTransmission = transmission.rgb * SampleShadowWS(playerPos + lightVec * AU_SSS_TRACE_DISTANCE, 1.0);
+            auSSSVolumeTransmission = transmission.rgb * auSSSMask * SampleShadowWS(playerPos + lightVec * AU_SSS_TRACE_DISTANCE, 1.0);
             auSSSVolumeLight = AU_SSSVolumeRadiance(auSSSVolumeTransmission, scatteringDepth, normal, playerPos, skyLight);
         }
     }
@@ -298,6 +305,17 @@ void main()
         else
             localLighting = AU_LocalLighting(playerPos, normal, noDirectionalShading, GetDither2(gl_FragCoord.xy));
     }
+#endif
+#if AU_PRESET < 2 && AU_GI_DENOISE
+    float localOcclusion = 1.0, localSky = 1.0;
+    vec3 localDirect = vec3(0.0);
+    if (uHookPTPass != 5)
+        AU_GIQuadFilter(playerPos, historyNormal, hasBloom, localLighting, localOcclusion, localSky, localDirect);
+#if AU_GI_TEMPORAL_FILTER
+    if (!hasBloom && uHookPTPass == 3)
+        AU_GIAccumulate(texCoords, playerPos, historyNormal, localLighting, localOcclusion, localSky, localDirect,
+                        GetLuminance(blockLight) + shadow * GetLuminance(lightColor) * max(dot(normal, lightVec), 0.0));
+#endif
 #endif
 #if AU_PRESET >= 2
     // RTX: the GI rays double as ray-traced ambient occlusion.
@@ -321,7 +339,7 @@ void main()
     gi = gi * AU_RTX_GI_STRENGTH + localLighting + auSSSVolumeLight;
 #endif
 #if AU_GI_DENOISE
-    if (uHookPTPass != 5) AU_GIQuadFilter(playerPos, normal, hasBloom, gi, giVisibility, skyVis, ptLight);
+    if (uHookPTPass != 5) AU_GIQuadFilter(playerPos, historyNormal, hasBloom, gi, giVisibility, skyVis, ptLight);
 #endif
     if (!hasBloom) {
 #if AU_GI_DENOISE && AU_GI_TEMPORAL_FILTER

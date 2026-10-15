@@ -19,6 +19,10 @@
 #include <wctype.h>
 #include <stddef.h>
 
+#ifndef AU_HAS_DLSS
+#define AU_HAS_DLSS 0
+#endif
+
 #ifdef _WIN32
 #define AU_GL_EXPORT __declspec(dllexport)
 #else
@@ -467,6 +471,7 @@ typedef struct {
     int usesDlss;
     GLint locDlssActive, locDlssRR;
     GLint locMaterials;      // uHookMaterials (terrain): per-tile block materials
+    GLint locSSSMasks, locSSSReady;
     int shareGen, shareSrc;  // cached: is this program the source of a texture share
 } ProgRec;
 
@@ -1108,6 +1113,7 @@ static int g_postPresent;                 // the frame is on the window: UI foll
 // Terrain program in use (materials): the atlas is bound by draw time, not at glUseProgram.
 static ProgRec *g_matProgRec;
 static void materials_draw_check(void);
+static void materials_use(ProgRec *p);
 typedef struct { GLint viewport[4], scissor[4]; int active, fragmentLocation; } RenderUIState;
 static RenderUIState render_ui_begin(void);
 static void render_ui_end(RenderUIState state);
@@ -1345,7 +1351,7 @@ static void ensure_textures(void)
 #define VOX_UNIT_COL 7
 #define VOX_UNIT_LIGHTS 3
 #define VOX_LIGHTS_W 2049
-#define VOX_LIGHTS_H 5
+#define VOX_LIGHTS_H 37
 
 typedef void (APIENTRY *PFN_glTexImage3D)(GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *);
 typedef void (APIENTRY *PFN_glBindImageTexture)(GLuint, GLuint, GLint, GLboolean, GLint, GLenum, GLenum);
@@ -1578,13 +1584,13 @@ static void gi_draw(GLenum mode, GLint first, GLsizei count)
         GLboolean scissor = isEnabled(0x0c11);
         if (scissor) disable(0x0c11);
         profile_use("GI local light culling");
+        r_glUniform1i(program->locLocalLightTiles, 2);
         r_glUniform1i(program->locPTPass, 2);
-        setViewport(0, 0, 32, 64);
+        setViewport(0, 0, 32, 2048);
         r_glDrawArrays(mode, first, count);
         r_glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
         setViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
         if (scissor) enable(0x0c11);
-        r_glUniform1i(program->locLocalLightTiles, 1);
     }
     profile_use(useHistory ? "GI Original + lighting" : "GI lighting");
     r_glUniform1i(program->locPTPass, rayReconstruction ? 5 : useHistory ? 3 : 4);
@@ -1634,7 +1640,8 @@ static int g_matTries;
 static LARGE_INTEGER g_matNextTry;
 static LARGE_INTEGER g_freq;           // (defined with the frame timer below)
 #include "emissions.h"
-static FILETIME g_materialsStamp, g_emissionsStamp;
+#include "sss_masks.h"
+static FILETIME g_materialsStamp, g_emissionsStamp, g_sssMasksStamp;
 
 static FILETIME material_file_stamp(const char *relative)
 {
@@ -1648,8 +1655,10 @@ static FILETIME material_file_stamp(const char *relative)
 static void materials_load(void)
 {
     emissions_load();
+    sss_masks_load();
     g_materialsStamp = material_file_stamp("materials.txt");
     g_emissionsStamp = material_file_stamp("emitters.txt");
+    g_sssMasksStamp = material_file_stamp("sss-masks.bin");
     g_nMat = 0;
     char *txt = read_file("materials.txt", NULL);
     if (!txt) { logf_("materials: no materials.txt, blocks stay plain"); return; }
@@ -1676,8 +1685,10 @@ static void materials_reset(void)
 {
     FILETIME materials = material_file_stamp("materials.txt");
     FILETIME emissions = material_file_stamp("emitters.txt");
+    FILETIME masks = material_file_stamp("sss-masks.bin");
     if (g_nMat >= 0 && CompareFileTime(&materials, &g_materialsStamp) == 0
-        && CompareFileTime(&emissions, &g_emissionsStamp) == 0) return;
+        && CompareFileTime(&emissions, &g_emissionsStamp) == 0
+        && CompareFileTime(&masks, &g_sssMasksStamp) == 0) return;
     free(g_matKey);
     free(g_matVal);
     g_matKey = NULL;
@@ -1737,7 +1748,7 @@ static void materials_build(GLuint atlas)
     getLevel(GL_TEXTURE_2D_ARRAY_, 0, GL_TEXTURE_INTERNAL_FORMAT_, &fmt);
     int tx = w / 32, ty = h / 32;
     unsigned char *px = (tx > 0 && ty > 0 && d > 0) ? (unsigned char *)malloc((size_t)w * h * d * 4) : NULL;
-    unsigned char *map = px ? (unsigned char *)calloc((size_t)tx * ty * d, 2) : NULL;
+    unsigned char *map = px ? (unsigned char *)calloc((size_t)tx * ty * d, 4) : NULL;
     unsigned char *emissionMap = px ? calloc((size_t)tx * ty * d * EMISSION_VARIANTS * 2, 4) : NULL;
     int found = 0, flipped = 0;
     if (map) {
@@ -1777,8 +1788,11 @@ static void materials_build(GLuint atlas)
                     int m = materials_find(hf);
                     if (m < 0 && (m = materials_find(hr)) >= 0) flipped++;
                     emissions_tile(hf, hr, emissionMap, tx, ty, l, i, j);
+                    unsigned char *o = map + (((size_t)l * ty + j) * tx + i) * 4;
+                    unsigned mask = sss_mask_tile(hf, hr);
+                    o[2] = (unsigned char)mask;
+                    o[3] = (unsigned char)(mask >> 8);
                     if (m < 0) continue;
-                    unsigned char *o = map + (((size_t)l * ty + j) * tx + i) * 2;
                     o[0] = g_matVal[m][0];
                     o[1] = g_matVal[m][1];
                     found++;
@@ -1786,6 +1800,12 @@ static void materials_build(GLuint atlas)
         if (!g_matTex) genTextures(1, &g_matTex);
         r_glBindTexture(GL_TEXTURE_2D_ARRAY_, g_matTex);
         GLint unpackBuf = 0, unpackAlign = 4, unpackRow = 0, unpackImgH = 0;
+        const GLenum unpackSkips[3] = {0x0cf4, 0x0cf3, 0x806d};
+        GLint unpackSkipValues[3];
+        for (int index = 0; index < 3; index++) {
+            r_glGetIntegerv(unpackSkips[index], &unpackSkipValues[index]);
+            pixelStore(unpackSkips[index], 0);
+        }
         r_glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING_, &unpackBuf);
         r_glGetIntegerv(GL_UNPACK_ALIGNMENT_, &unpackAlign);
         r_glGetIntegerv(GL_UNPACK_ROW_LENGTH_, &unpackRow);
@@ -1794,7 +1814,21 @@ static void materials_build(GLuint atlas)
         pixelStore(GL_UNPACK_ALIGNMENT_, 1);
         pixelStore(GL_UNPACK_ROW_LENGTH_, 0);
         pixelStore(GL_UNPACK_IMAGE_HEIGHT_, 0);
-        texImage3D(GL_TEXTURE_2D_ARRAY_, 0, GL_RG8_, tx, ty, d, 0, GL_RG_, GL_UNSIGNED_BYTE, map);
+        texImage3D(GL_TEXTURE_2D_ARRAY_, 0, GL_RGBA8, tx, ty, d, 0, GL_RGBA, GL_UNSIGNED_BYTE, map);
+        size_t maskBytes = (size_t)(g_sssMaskCount + 1) * 1024;
+        unsigned char *maskPixels = calloc(maskBytes, 1);
+        if (maskPixels) {
+            for (unsigned index = 0; index < g_sssMaskCount; index++)
+                memcpy(maskPixels + (size_t)(index + 1) * 1024, g_sssMasks[index].pixels, 1024);
+            if (!g_sssMaskTexture) genTextures(1, &g_sssMaskTexture);
+            r_glBindTexture(GL_TEXTURE_2D_ARRAY_, g_sssMaskTexture);
+            texImage3D(GL_TEXTURE_2D_ARRAY_, 0, 0x8229, 32, 32, g_sssMaskCount + 1, 0, 0x1903, GL_UNSIGNED_BYTE, maskPixels);
+            texParam(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            texParam(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            texParam(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_MAX_LEVEL, 0);
+            free(maskPixels);
+            r_glBindTexture(GL_TEXTURE_2D_ARRAY_, g_matTex);
+        }
         if (emissionMap) {
             if (!g_emissionTexture) genTextures(1, &g_emissionTexture);
             r_glBindTexture(GL_TEXTURE_2D_ARRAY_, g_emissionTexture);
@@ -1807,6 +1841,7 @@ static void materials_build(GLuint atlas)
         pixelStore(GL_UNPACK_ALIGNMENT_, unpackAlign);
         pixelStore(GL_UNPACK_ROW_LENGTH_, unpackRow);
         pixelStore(GL_UNPACK_IMAGE_HEIGHT_, unpackImgH);
+        for (int index = 0; index < 3; index++) pixelStore(unpackSkips[index], unpackSkipValues[index]);
         if (unpackBuf) bindBuffer(GL_PIXEL_UNPACK_BUFFER_, (GLuint)unpackBuf);
         texParam(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         texParam(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -1832,7 +1867,7 @@ static void materials_draw_check(void)
     ProgRec *p = g_matProgRec;
     g_matProgRec = NULL;
     if (g_nMat < 0) materials_load();
-    if (g_nMat <= 0) return;
+    if (g_nMat <= 0 && g_sssMaskCount == 0 && g_emissionCount == 0) return;
     GLint unit = 0;   // a sampler the game never sets reads unit 0
     for (int k = 0; k < p->nuni; k++)
         if (p->uni[k].fn == U_1I && p->uni[k].data && !strcmp(p->uni[k].name, "uTexture")) unit = *(GLint *)p->uni[k].data;
@@ -1846,8 +1881,11 @@ static void materials_draw_check(void)
         LARGE_INTEGER now;
         QueryPerformanceCounter(&now);
         GLuint atlas = g_units[unit].tex;
-        if (atlas != g_matAtlas || (g_matNextTry.QuadPart && now.QuadPart > g_matNextTry.QuadPart && g_matTries < 12))
+        if (atlas != g_matAtlas || (g_matNextTry.QuadPart && now.QuadPart > g_matNextTry.QuadPart && g_matTries < 12)) {
             materials_build(atlas);
+            materials_use(p);
+            g_matProgRec = NULL;
+        }
     }
 }
 
@@ -1855,6 +1893,16 @@ static void materials_draw_check(void)
 static void materials_use(ProgRec *p)
 {
     g_matProgRec = p;
+    if (p->locSSSReady >= 0) r_glUniform1i(p->locSSSReady, g_sssMaskTexture != 0 && g_matTex != 0 && g_sssMaskCount > 0);
+    if (p->locSSSMasks >= 0 && g_sssMaskTexture) {
+        r_glActiveTexture(GL_TEXTURE0 + SSS_MASK_UNIT);
+        r_glBindTexture(GL_TEXTURE_2D_ARRAY_, g_sssMaskTexture);
+        if (r_glBindSampler) r_glBindSampler(SSS_MASK_UNIT, 0);
+        g_units[SSS_MASK_UNIT].target = GL_TEXTURE_2D_ARRAY_;
+        g_units[SSS_MASK_UNIT].tex = g_sssMaskTexture;
+        g_units[SSS_MASK_UNIT].sampler = 0;
+        r_glActiveTexture(GL_TEXTURE0 + g_activeUnit);
+    }
     GLint emissionReady = r_glGetUniformLocation(g_curProg, "uHookEmissionReady");
     if (emissionReady >= 0) r_glUniform1i(emissionReady, g_emissionTexture != 0);
     if (g_emissionTexture) {
@@ -2475,6 +2523,9 @@ static void check_extras(GLuint prog, ProgRec *p)
     p->locDlssActive = r_glGetUniformLocation(prog, "uHookDlssActive");
     p->locDlssRR = r_glGetUniformLocation(prog, "uHookDlssRR");
     p->locMaterials = r_glGetUniformLocation(prog, "uHookMaterials");
+    p->locSSSMasks = r_glGetUniformLocation(prog, "uHookSSSMasks");
+    p->locSSSReady = r_glGetUniformLocation(prog, "uHookSSSReady");
+    if (p->locSSSMasks >= 0) { r_glUniform1i(p->locSSSMasks, SSS_MASK_UNIT); p->hasExtras = 1; }
     p->locMaterialLOD = r_glGetUniformLocation(prog, "uHookTextureLodBias");
     if (p->locMaterialLOD >= 0) p->hasExtras = 1;
     p->locNativeEmission = r_glGetUniformLocation(prog, "uHookEmission");
@@ -2854,11 +2905,11 @@ static DWORD WINAPI watcher_thread(LPVOID arg)
 // edits their values in include/AU_Settings.glsl, which the file watcher then hot-reloads.
 // Drawn as an overlay at SwapBuffers, after the game's own UI.
 
-#define MENU_MAX 160
+#define MENU_MAX 256
 #define MENU_TAB_MAX 24
 #define MENU_SETTINGS "include\\AU_Settings.glsl"
-enum { MO_HEADER, MO_BOOL, MO_ENUM, MO_RANGE, MO_PACK, MO_INFO, MO_ACTION };
-#define MENU_SELECTABLE(m) ((m)->kind != MO_HEADER && (m)->kind != MO_INFO)
+enum { MO_HEADER, MO_BOOL, MO_ENUM, MO_RANGE, MO_PACK, MO_INFO, MO_ACTION, MO_INTERNAL, MO_SECTION, MO_PROFILE };
+#define MENU_SELECTABLE(m) ((m)->kind != MO_HEADER && (m)->kind != MO_INFO && (m)->kind != MO_INTERNAL && (m)->kind != MO_SECTION)
 typedef struct {
     int kind;
     int tab;
@@ -2936,10 +2987,13 @@ static void menu_rebuild_rows(void)
     g_menuVisibleCount = 0;
     for (int index = 0; index < g_nMo; index++) {
         MenuOpt *option = &g_mo[index];
-        if (option->kind == MO_HEADER) continue;
+        if (option->kind == MO_HEADER || option->kind == MO_INTERNAL) continue;
         if (*g_menuSearch && !g_menuPresetNaming) {
             wchar_t identifier[64];
-            MultiByteToWideChar(CP_UTF8, 0, option->define, -1, identifier, 64);
+            if (option->kind == MO_PROFILE && option->value >= 0 && option->value < 12)
+                _snwprintf(identifier, 64, L"%ls %ls", option->value < 6 ? L"RTX" : L"Non-RTX", option->label);
+            else MultiByteToWideChar(CP_UTF8, 0, option->define, -1, identifier, 64);
+            identifier[63] = 0;
             if (!menu_contains(option->label, g_menuSearch) && !menu_contains(identifier, g_menuSearch)) continue;
         } else if (option->tab != g_menuTab) continue;
         g_menuVisible[g_menuVisibleCount++] = index;
@@ -3065,7 +3119,6 @@ static void menu_load(void)
         char *kind = f[2];
         if (!strcmp(m->define, "!PROFILE")) {
             menu_profiles_load(m);
-            g_nMo++;
             continue;
         }
         if (!strcmp(kind, "action")) {
@@ -3088,7 +3141,9 @@ static void menu_load(void)
             g_nMo++;
             continue;
         }
-        if (!strncmp(kind, "bool", 4)) {
+        if (!strcmp(kind, "internal")) {
+            m->kind = MO_INTERNAL;
+        } else if (!strncmp(kind, "bool", 4)) {
             m->kind = MO_BOOL;
             m->max = 1.0;
             m->step = 1.0;
@@ -3228,7 +3283,8 @@ static void menu_save(void)
     int changed = 0;
     for (int i = 0; i < g_nMo; i++) {
         MenuOpt *m = &g_mo[i];
-        if (m->kind == MO_HEADER || m->kind == MO_PACK || m->kind == MO_INFO || m->kind == MO_ACTION || !m->present) continue;
+        if (m->kind == MO_HEADER || m->kind == MO_PACK || m->kind == MO_INFO || m->kind == MO_ACTION
+            || m->kind == MO_SECTION || m->kind == MO_PROFILE || !m->present) continue;
         char *e = NULL;
         char *v = find_define_value(set, m->define, &e);
         if (!v) continue;
@@ -3270,13 +3326,15 @@ static void menu_reset_all(void)
     if (time - g_menuResetArmedAt < 0.5) return;
     for (int index = 0; index < g_nMo; index++) {
         MenuOpt *option = &g_mo[index];
-        if (!option->present || option->kind == MO_HEADER || option->kind == MO_INFO || option->kind == MO_ACTION) continue;
+        if (!option->present || option->kind == MO_HEADER || option->kind == MO_INFO || option->kind == MO_ACTION
+            || option->kind == MO_SECTION || option->kind == MO_PROFILE) continue;
         option->value = option->def;
         if (option->kind == MO_PACK) g_toggleOff = option->def < 0.5;
     }
     g_menuResetUntil = 0.0;
     g_menuWriteAt = 0.0;
     g_menuDragging = -1;
+    g_menuProfileChoice = -1;
     menu_save();
     InterlockedExchange(&g_reloadRequested, 1);
     _snwprintf(g_menuStatus, 96, L"All categories restored to defaults");
@@ -3306,11 +3364,18 @@ static void menu_change(int dir, int reset)
 {
     if (g_moSel < 0) return;
     MenuOpt *m = &g_mo[g_moSel];
+    if (m->kind == MO_PROFILE) {
+        if (dir > 0 && !reset) {
+            g_menuProfileChoice = (int)m->value;
+            menu_profile_apply();
+        }
+        return;
+    }
     if (m->kind == MO_ACTION && dir > 0 && !strncmp(m->define, "!PROFILE_", 9)) {
         menu_profile_action(m->define);
         return;
     }
-    if (!m->present || m->kind == MO_INFO || m->kind == MO_ACTION) return;
+    if (!m->present || !MENU_SELECTABLE(m) || m->kind == MO_ACTION) return;
     double v = m->value;
     if (reset) {
         v = m->def;
@@ -3330,11 +3395,8 @@ static void menu_change(int dir, int reset)
     }
     if (fabs(v - m->value) < 1e-9) return;
     m->value = v;
-    if (!strcmp(m->define, "!PROFILE")) {
-        g_menuProfileChoice = (int)v;
-        g_menuDirty = 1;
-        return;
-    }
+    g_menuProfileChoice = -1;
+    if (!strcmp(m->define, "AU_PATH_TRACING") && v > 0.5) menu_profile_set("AU_PRESET", 2);
     if (m->kind == MO_PACK) {
         g_toggleOff = v < 0.5;
         logf_("shaderpack %s (menu)", g_toggleOff ? "OFF" : "ON");
@@ -3374,6 +3436,7 @@ static void menu_pointer_range(int optionIndex)
     if (value > option->max) value = option->max;
     if (fabs(value - option->value) < 1e-9) return;
     option->value = value;
+    g_menuProfileChoice = -1;
     g_menuWriteAt = now_sec() + 0.35;
     _snwprintf(g_menuStatus, 96, L"Applying...");
     g_menuDirty = 1;
@@ -3418,7 +3481,10 @@ static void menu_pointer(int clicked)
         int resetTop = layout->height - layout->row * 31 / 58;
         int resetBottom = layout->height - layout->row * 7 / 58;
         if (pointerX > layout->width - layout->row * 3 && pointerX < layout->width - layout->pad
-            && pointerY >= resetTop && pointerY <= resetBottom) menu_change(0, 1);
+            && pointerY >= resetTop && pointerY <= resetBottom) {
+            if (g_moSel >= 0 && g_mo[g_moSel].kind == MO_PROFILE) menu_change(1, 0);
+            else menu_change(0, 1);
+        }
         return;
     }
     int row = (pointerY - layout->contentTop) / layout->row;
@@ -3429,6 +3495,14 @@ static void menu_pointer(int clicked)
     g_moSel = optionIndex;
     g_menuSearchFocus = 0;
     MenuOpt *option = &g_mo[optionIndex];
+    if (option->kind == MO_PROFILE) {
+        menu_change(1, 0);
+        return;
+    }
+    if (option->kind == MO_ACTION && !strcmp(option->define, "!PROFILE_SAVE")) {
+        menu_profile_action(option->define);
+        return;
+    }
     if (option->kind == MO_ACTION) {
         int buttonTop = layout->contentTop + row * layout->row + layout->row / 2;
         if (pointerX >= layout->controlX + layout->pad && pointerX <= layout->width - layout->pad * 2
@@ -3733,6 +3807,8 @@ static void menu_render(int screenWidth, int screenHeight)
     layout->title = (int)(60 * scale);
     layout->footer = (int)(104 * scale);
     layout->row = (int)(58 * scale);
+    if (g_menuTab < g_menuTabCount && !wcscmp(g_menuTabs[g_menuTab].label, L"Profiles") && !*g_menuSearch)
+        layout->row = (int)(38 * scale);
     layout->contentTop = layout->title + (int)(88 * scale);
     layout->rows = (layout->height - layout->footer - layout->contentTop) / layout->row;
     if (layout->rows < 1) layout->rows = 1;
@@ -3842,7 +3918,13 @@ static void menu_render(int screenWidth, int screenHeight)
     menu_text(dc, *g_menuSearch ? L"Search results" : g_menuTabs[g_menuTab].label, contentLeft + pad / 2, headingTop,
               contentRight - (int)(65 * scale), layout->contentTop - (int)(4 * scale), g_fBold, RGB(220, 236, 247), DT_LEFT);
     wchar_t count[32];
-    _snwprintf(count, 32, L"%d", g_menuVisibleCount);
+    int shownCount = g_menuVisibleCount;
+    if (!wcscmp(g_menuTabs[g_menuTab].label, L"Profiles")) {
+        shownCount = 0;
+        for (int index = 0; index < g_menuVisibleCount; index++)
+            if (g_mo[g_menuVisible[index]].kind == MO_PROFILE) shownCount++;
+    }
+    _snwprintf(count, 32, L"%d", shownCount);
     menu_text(dc, count, contentRight - (int)(65 * scale), headingTop, contentRight - pad / 2,
               layout->contentTop - (int)(4 * scale), g_fSmall, RGB(123, 150, 176), DT_RIGHT);
     for (int row = 0; row < layout->rows && g_moTop + row < g_menuVisibleCount; row++) {
@@ -3850,6 +3932,36 @@ static void menu_render(int screenWidth, int screenHeight)
         MenuOpt *option = &g_mo[optionIndex];
         int top = layout->contentTop + row * layout->row;
         int active = optionIndex == g_moSel;
+        if (option->kind == MO_ACTION && !strcmp(option->define, "!PROFILE_SAVE")) {
+            menu_round(dc, contentLeft, top + 2, contentRight, top + layout->row - 4, (int)(8 * scale), RGB(83, 69, 39));
+            menu_text(dc, g_menuPresetNaming ? L"Save name" : L"Save current settings as...", contentLeft + pad, top,
+                      contentRight - pad, top + layout->row, g_fSmall, RGB(246, 209, 105), DT_CENTER);
+            continue;
+        }
+        if (option->kind == MO_SECTION) {
+            menu_text(dc, option->label, contentLeft + pad, top, contentRight - pad, top + layout->row,
+                      g_fBold, RGB(153, 202, 201), DT_LEFT);
+            continue;
+        }
+        if (option->kind == MO_PROFILE) {
+            int chosen = (int)option->value == g_menuProfileChoice;
+            menu_round(dc, contentLeft, top + 2, contentRight, top + layout->row - 4, (int)(8 * scale),
+                       chosen ? RGB(30, 70, 62) : active ? RGB(29, 47, 61) : RGB(20, 30, 42));
+            if (active) menu_fill(dc, contentLeft + (int)(4 * scale), top + (int)(8 * scale), contentLeft + (int)(6 * scale),
+                                  top + layout->row - (int)(10 * scale), RGB(139, 235, 206));
+            int indicator = (int)(12 * scale);
+            int indicatorLeft = contentLeft + pad, indicatorTop = top + (layout->row - indicator) / 2;
+            menu_round(dc, indicatorLeft, indicatorTop, indicatorLeft + indicator, indicatorTop + indicator, indicator,
+                       chosen ? RGB(139, 235, 206) : RGB(65, 84, 99));
+            wchar_t profileLabel[96];
+            _snwprintf(profileLabel, 96, L"%ls%ls", *g_menuSearch && option->value >= 0 && option->value < 12 ? option->value < 6 ? L"RTX " : L"Non-RTX " : L"", option->label);
+            profileLabel[95] = 0;
+            menu_text(dc, profileLabel, indicatorLeft + indicator + pad, top, contentRight - (int)(74 * scale), top + layout->row,
+                      g_fText, chosen ? RGB(206, 252, 232) : RGB(220, 232, 244), DT_LEFT);
+            menu_text(dc, chosen ? L"Active" : L"Apply", contentRight - (int)(74 * scale), top, contentRight - pad, top + layout->row,
+                      g_fSmall, chosen ? RGB(139, 235, 206) : RGB(246, 209, 105), DT_RIGHT);
+            continue;
+        }
         int modified = option->present && MENU_SELECTABLE(option) && option->kind != MO_ACTION && fabs(option->value - option->def) > 1e-9;
         menu_round(dc, contentLeft, top + 2, contentRight, top + layout->row - 4, (int)(12 * scale),
                    active ? RGB(29, 47, 61) : RGB(20, 30, 42));
@@ -3937,7 +4049,9 @@ static void menu_render(int screenWidth, int screenHeight)
 #endif
     }
     wchar_t defaultText[96] = L"Auto-save enabled";
-    if (g_moSel >= 0 && MENU_SELECTABLE(&g_mo[g_moSel]) && g_mo[g_moSel].kind != MO_ACTION) {
+    if (g_moSel >= 0 && g_mo[g_moSel].kind == MO_PROFILE) {
+        _snwprintf(defaultText, 96, L"Click or press Right to apply");
+    } else if (g_moSel >= 0 && MENU_SELECTABLE(&g_mo[g_moSel]) && g_mo[g_moSel].kind != MO_ACTION) {
         MenuOpt defaultOption = g_mo[g_moSel];
         defaultOption.value = defaultOption.def;
         wchar_t defaultValue[64];
@@ -3948,7 +4062,7 @@ static void menu_render(int screenWidth, int screenHeight)
     menu_text(dc, defaultText, pad, height - (int)(30 * scale),
               width - layout->row * 3, height - 4, g_fSmall, RGB(246, 209, 105), DT_LEFT);
     menu_round(dc, width - layout->row * 3, height - (int)(31 * scale), width - pad, height - (int)(7 * scale), (int)(12 * scale), RGB(30, 47, 62));
-    menu_text(dc, L"Reset selected", width - layout->row * 3, height - (int)(31 * scale), width - pad, height - (int)(7 * scale),
+    menu_text(dc, g_moSel >= 0 && g_mo[g_moSel].kind == MO_PROFILE ? L"Apply profile" : L"Reset selected", width - layout->row * 3, height - (int)(31 * scale), width - pad, height - (int)(7 * scale),
               g_fSmall, RGB(164, 199, 218), DT_CENTER);
     int pointerX = (int)g_menuPointerX - layout->x, pointerY = (int)g_menuPointerY - layout->y;
 #ifdef _WIN32

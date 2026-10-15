@@ -295,6 +295,26 @@ public static class AuroraPrep
         File.WriteAllText(Path.Combine(pack, "programs", "ParticleFS.glsl"), s, Utf8);
     }
 
+    public static void MakeShadowChunk(string pack, string snip)
+    {
+        string vertex = Read(Path.Combine(pack, "original", "ZOnlyChunkVS.glsl"));
+        vertex = Rep(vertex, "flat out float fragAtlasPage;\n", "flat out float fragAtlasPage;\nflat out uint auSSSShadowSeed;\nflat out int auSSSShadowPass;\n");
+        vertex = Rep(vertex, "void main()\n{\n", "void main()\n{\n#if ALPHA_TEST\n"
+            + "    auSSSShadowSeed = uint(vertDoubleSidedAndBlockId & 32767) * 0x9e3779b9u ^ (vertNormalAndNodeId & 0xffffffu);\n"
+            + "#if SHADOW_VERSION\n"
+            + "    auSSSShadowPass = (vertTintColorAndShadingAndEffect & 31u) <= 15u && ((vertTintColorAndShadingAndEffect >> 6) & 3u) != 2u ? 1 : 0;\n"
+            + "#else\n    auSSSShadowPass = 0;\n#endif\n#endif\n");
+        string fragment = Read(Path.Combine(pack, "original", "ZOnlyChunkFS.glsl"));
+        fragment = Rep(fragment, "#version 410 core\n", "#version 410 core\n#include \"AU_Settings.glsl\"\n"
+            + "#if AU_SSS && AU_SSS_VOXEL == 2 && ALPHA_TEST\n"
+            + "uniform sampler2DArray uHookMaterials;\nflat in uint auSSSShadowSeed;\nflat in int auSSSShadowPass;\n"
+            + "#include \"AU_SSSMask.glsl\"\n#endif\n");
+        string opacity = "    float opacity = texture(uTexture, vec3(fragTexCoords, fragAtlasPage), MIP_LOD_BIAS).a;\n";
+        fragment = Rep(fragment, opacity, opacity + Read(Path.Combine(snip, "shadow-fragment.glsl")) + "\n");
+        File.WriteAllText(Path.Combine(pack, "programs", "ZOnlyChunkVS.glsl"), vertex, Utf8);
+        File.WriteAllText(Path.Combine(pack, "programs", "ZOnlyChunkFS.glsl"), fragment, Utf8);
+    }
+
     public static void MakeBatcherFS(string pack)
     {
         string source = Read(Path.Combine(pack, "original", "Batcher2DFS.glsl"));
@@ -387,6 +407,7 @@ if (-not $MapChunkOnly) {
         $n = [AuroraPrep]::BuildMaterials($assets, (Join-Path $pack 'materials.txt'))
         Write-Host "Block materials: $n textures"
         & (Join-Path $PSScriptRoot 'build_emitters.ps1') -Assets $assets -Output (Join-Path $pack 'emitters.txt')
+        & (Join-Path $PSScriptRoot 'build_sss.ps1') -Assets $assets -Output (Join-Path $pack 'sss-masks.bin') -Overrides (Join-Path $pack 'sss')
     } else {
         Write-Host 'Assets.zip not found next to the game: no block materials'
     }
@@ -399,6 +420,7 @@ Write-Host 'Generated shaderpack\programs\MapChunkVS.glsl'
 [AuroraPrep]::MakeBlockyModelFS($pack)
 Write-Host 'Generated shaderpack\programs\ParticleFS.glsl'
 [AuroraPrep]::MakeBatcherFS($pack)
+[AuroraPrep]::MakeShadowChunk($pack, (Join-Path $PSScriptRoot 'mapchunk'))
 Write-Host 'Generated shaderpack\programs\Batcher2DFS.glsl'
 foreach ($vs in 'BlockyModelVS', 'ParticleVS', 'SkyAndCloudsVS', 'BasicVS', 'BasicFogVS', 'BeamVS', 'TextVS') {
     [AuroraPrep]::MakeJitteredVS($pack, $vs)

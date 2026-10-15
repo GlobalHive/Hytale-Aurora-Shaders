@@ -4,6 +4,13 @@
         hasBloom = true;
         light = auSelfEmission * 2.0;
     }
+    vec2 auFoliageSSS = vec2(1.0, 0.0);
+#if AU_SSS && ALPHA_TEST
+    if (!hasBloom && shadingMode != SHADING_REFLECTIVE) {
+        auFoliageSSS = AU_FoliageMask(fragTexCoords, fragAtlasPages.x, vec2(textureSize(uTexture, 0).xy));
+        if (auFoliageSSS.y > 0.5) { hasSSAO = false; useCleanShadowBackfaces = false; }
+    }
+#endif
 #if AU_GENERATED_NORMALS
     // Generated normals: compare the texel's brightness
     // with neighbours a fraction of a texel away, so only texel edges bevel, with a dead zone
@@ -68,6 +75,13 @@
 #if !AU_MATERIALS
         if (auMatClass != 1.0 || auMatLevel != 6.0) { auMatClass = 0.0; auMatLevel = 0.0; }
 #endif
+    }
+#endif
+
+#if AU_SSS
+    if (auFoliageSSS.y > 0.5) {
+        auMatClass = 3.0;
+        auMatLevel = round(auFoliageSSS.x * 7.0);
     }
 #endif
 

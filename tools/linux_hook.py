@@ -124,6 +124,15 @@ def install(client, proxy, pack):
         settings = installed_pack / "include/AU_Settings.glsl"
         staged_settings = stage / "shaderpack/include/AU_Settings.glsl"
         previous_presets = installed_pack / "presets"
+        previous_sss = installed_pack / "sss"
+        if saved and previous_sss.is_dir() and not previous_sss.is_symlink():
+            shutil.copytree(previous_sss, stage / "shaderpack/sss", dirs_exist_ok=True)
+            assets = client.parent / "Assets.zip"
+            if assets.is_file():
+                from build_sss import build_masks
+                (stage / "shaderpack/sss-masks.bin").write_bytes(build_masks(assets, stage / "shaderpack/sss"))
+            elif (installed_pack / "sss-masks.bin").is_file():
+                shutil.copy2(installed_pack / "sss-masks.bin", stage / "shaderpack/sss-masks.bin")
         if saved and previous_presets.is_dir() and not previous_presets.is_symlink():
             shutil.copytree(previous_presets, stage / "shaderpack/presets", dirs_exist_ok=True)
         if staged_settings.is_file():

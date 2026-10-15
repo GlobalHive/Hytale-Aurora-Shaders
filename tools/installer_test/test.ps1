@@ -11,6 +11,8 @@ Copy-Item -LiteralPath $ClientExe -Destination (Join-Path $client 'HytaleClient.
 Copy-Item -LiteralPath (Join-Path $root 'install.ps1') -Destination $package
 Copy-Item -LiteralPath (Join-Path $root 'tools\prepare_shaders.ps1') -Destination (Join-Path $package 'tools')
 Copy-Item -LiteralPath (Join-Path $root 'tools\build_emitters.ps1') -Destination (Join-Path $package 'tools')
+Copy-Item -LiteralPath (Join-Path $root 'tools\build_sss.ps1') -Destination (Join-Path $package 'tools')
+Copy-Item -LiteralPath (Join-Path $root 'tools\sss_masks.cs') -Destination (Join-Path $package 'tools')
 Copy-Item -LiteralPath (Join-Path $root 'tools\mapchunk') -Destination (Join-Path $package 'tools') -Recurse
 $pack = Join-Path $package 'shaderpack'
 New-Item -ItemType Directory -Path $pack | Out-Null
@@ -26,6 +28,8 @@ Get-ChildItem -LiteralPath (Join-Path $root 'shaderpack') -File | Where-Object {
 New-Item -ItemType Directory -Path (Join-Path $foreign 'presets') | Out-Null
 $customPreset = "// Aurora preset: Cave`n#define AU_SCREEN_BRIGHTNESS 1.25`n"
 [IO.File]::WriteAllText((Join-Path $foreign 'presets\preset-00.glsl'), $customPreset)
+New-Item -ItemType Directory -Path (Join-Path $foreign 'sss\Blocks\Foliage\Leaves') -Force | Out-Null
+[IO.File]::WriteAllText((Join-Path $foreign 'sss\Blocks\Foliage\Leaves\Oak.png'), 'custom mask fixture')
 New-Item -ItemType Junction -Path (Join-Path $client 'shaderpack') -Target $foreign | Out-Null
 @{ Owner = 'Aurora Shaders'; InstalledHash = 'stale'; PreviousDll = '.aurora-missing-backup' } |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $client '.aurora-install.json')
@@ -34,6 +38,7 @@ New-Item -ItemType Junction -Path (Join-Path $client 'shaderpack') -Target $fore
 if ([IO.File]::ReadAllText((Join-Path $client 'opengl32.dll')) -ne 'new test proxy') { throw 'DLL was not replaced.' }
 if (-not (Test-Path -LiteralPath (Join-Path $foreign 'keep-me.txt'))) { throw 'Old junction target was modified.' }
 if ([IO.File]::ReadAllText((Join-Path $client 'shaderpack\presets\preset-00.glsl')) -ne $customPreset) { throw 'Custom preset was not preserved.' }
+if ([IO.File]::ReadAllText((Join-Path $client 'shaderpack\sss\Blocks\Foliage\Leaves\Oak.png')) -ne 'custom mask fixture') { throw 'Custom SSS mask was not preserved.' }
 $settings = [IO.File]::ReadAllText((Join-Path $client 'shaderpack\include\AU_Settings.glsl'))
 if ($settings -notmatch '#define AU_GI_DENOISER 1\s' -or $settings -notmatch '#define AU_GI_HISTORY_TAPS 9\s' -or
     $settings -notmatch '#define AU_SCREEN_BRIGHTNESS 1.25\s') { throw 'Settings preservation or legacy denoiser migration failed.' }

@@ -27,10 +27,13 @@ static char *shader_source(const char *name)
                       "#define USE_DEFERRED_SHADOW_BLURRED 1\n#define INPUT_NORMALS_IN_WS 1\n"
                       "#define CASCADE_COUNT 1\n#define NEAR 1\n#define DEFERRED 1\n"
                       "#define ALPHA_BLEND 0\n#define USE_SCENE_DATA_OVERRIDE 0\n#define ANIMATED 0\n");
-    str_cstr(&output, "#define MAX_NODES_COUNT 256\n#define FIRST_PERSON_VIEW 0\n");
+    str_cstr(&output, "#define MAX_NODES_COUNT 256\n#define FIRST_PERSON_VIEW 0\n#define ALPHA_TEST 0\n"
+                      "#define SHADOW_VERSION 0\n#define USE_COMPRESSED_POSITION 1\n#define USE_FOLIAGE_CULLING 0\n");
+    if (strstr(name, "ZOnlyChunk")) str_cstr(&output, "#define USE_BACKFACE_CULLING 0\n");
     str_cstr(&output, "#define EFFECT_WATER 4\n#define EFFECT_WATERENVIRONMENTCOLOR 5\n"
-                      "#define EFFECT_WATERENVIRONMENTTRANSITION 6\n#define EFFECT_WIND 1\n"
+                      "#define EFFECT_WATERENVIRONMENTTRANSITION 6\n"
                       "#define SHADING_FLAT 1\n#define SHADING_FULLBRIGHT 2\n#define SHADING_REFLECTIVE 3\n");
+    if (!strstr(name, "ZOnlyChunkVS")) str_cstr(&output, "#define EFFECT_WIND 1\n");
     expand(&output, original, 0);
     free(original);
     return output.p;
@@ -38,7 +41,7 @@ static char *shader_source(const char *name)
 
 static int check_source(const char *name, char *source)
 {
-    GLuint shader = r_glCreateShader(strstr(name, "MapChunkVS") ? GL_VERTEX_SHADER : GL_FRAGMENT_SHADER);
+    GLuint shader = r_glCreateShader(strstr(name, "VS") ? GL_VERTEX_SHADER : GL_FRAGMENT_SHADER);
     const GLchar *pointer = source;
     r_glShaderSource(shader, 1, &pointer, NULL);
     r_glCompileShader(shader);
@@ -54,6 +57,97 @@ static int check_source(const char *name, char *source)
     r_glDeleteShader(shader);
     free(source);
     return status != 0;
+}
+
+static int check_non_rtx_history(int lights, int spatial, int temporal, int tracing, int enabled)
+{
+    GLuint (APIENTRY *createProgram)(void) = (void *)real_wglGetProcAddress("glCreateProgram");
+    void (APIENTRY *deleteProgram)(GLuint) = (void *)real_wglGetProcAddress("glDeleteProgram");
+    void (APIENTRY *getProgramLog)(GLuint, GLsizei, GLsizei *, GLchar *) = (void *)real_wglGetProcAddress("glGetProgramInfoLog");
+    char *fragment = shader_source("DeferredFS");
+    fragment = override_number(fragment, "AU_PRESET", "1");
+    fragment = override_number(fragment, "AU_LOCAL_LIGHTS", lights ? "1" : "0");
+    fragment = override_number(fragment, "AU_GI_SPATIAL_FILTER", spatial ? "1" : "0");
+    fragment = override_number(fragment, "AU_GI_TEMPORAL_FILTER", temporal ? "1" : "0");
+    fragment = override_number(fragment, "AU_PATH_TRACING", tracing ? "1" : "0");
+    fragment = override_number(fragment, "AU_SSGI_DENOISE", enabled ? "1" : "0");
+    fragment = override_number(fragment, "AU_GI_DENOISER", "1");
+    const char *vertex = "#version 410 core\nout vec2 fragTexCoords;out vec3 fragFrustumRay;void main(){vec2 corner=vec2(float(gl_VertexID&1),float(gl_VertexID>>1));fragTexCoords=corner;fragFrustumRay=vec3(corner*2-1,-1);gl_Position=vec4(corner*2-1,0,1);}";
+    const char *sources[] = {vertex, fragment};
+    GLuint program = createProgram();
+    int valid = 1;
+    for (int stage = 0; stage < 2; stage++) {
+        GLuint shader = r_glCreateShader(stage ? GL_FRAGMENT_SHADER : GL_VERTEX_SHADER);
+        r_glShaderSource(shader, 1, &sources[stage], NULL); r_glCompileShader(shader);
+        GLint compiled = 0; r_glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+        if (!compiled) {
+            char message[8192] = {0}; r_glGetShaderInfoLog(shader, sizeof message, NULL, message);
+            fprintf(stderr, "FAIL Non-RTX history stage: %s\n", message);
+            valid = 0;
+        }
+        r_glAttachShader(program, shader); r_glDeleteShader(shader);
+    }
+    if (valid) {
+        r_glLinkProgram(program);
+        GLint linked = 0; r_glGetProgramiv(program, GL_LINK_STATUS, &linked);
+        if (!linked) {
+            char message[8192] = {0}; getProgramLog(program, sizeof message, NULL, message);
+            fprintf(stderr, "FAIL Non-RTX linked history: %s\n", message);
+            valid = 0;
+        } else {
+            int expected = lights && temporal && enabled;
+            int history = r_glGetUniformLocation(program, "auGIHist") >= 0;
+            int output = r_glGetUniformLocation(program, "auGIOutPos") >= 0;
+            if (history != expected || output != expected || r_glGetUniformLocation(program, "auGIOutLight") >= 0) {
+                fprintf(stderr, "FAIL Non-RTX local=%d spatial=%d temporal=%d PT=%d enabled=%d history=%d output=%d expected=%d\n",
+                    lights, spatial, temporal, tracing, enabled, history, output, expected);
+                valid = 0;
+            }
+        }
+    }
+    deleteProgram(program); free(fragment);
+    return valid;
+}
+
+static int check_shadow_pair(int method, int shadow, int alpha, int textures)
+{
+    GLuint (APIENTRY *createProgram)(void) = (void *)real_wglGetProcAddress("glCreateProgram");
+    void (APIENTRY *deleteProgram)(GLuint) = (void *)real_wglGetProcAddress("glDeleteProgram");
+    void (APIENTRY *getProgramLog)(GLuint, GLsizei, GLsizei *, GLchar *) = (void *)real_wglGetProcAddress("glGetProgramInfoLog");
+    GLuint program = createProgram();
+    const char *names[] = {"ZOnlyChunkVS", "ZOnlyChunkFS"};
+    char methodValue[8]; snprintf(methodValue, sizeof methodValue, "%d", method);
+    int valid = 1;
+    for (int stage = 0; stage < 2; stage++) {
+        char *source = shader_source(names[stage]);
+        source = override_number(source, "ALPHA_TEST", alpha ? "1" : "0");
+        if (!stage) source = override_number(source, "SHADOW_VERSION", shadow ? "1" : "0");
+        else {
+            source = override_number(source, "AU_SSS_VOXEL", methodValue);
+            source = override_number(source, "AU_SSS_TEXTURES", textures ? "1" : "0");
+        }
+        GLuint shader = r_glCreateShader(stage ? GL_FRAGMENT_SHADER : GL_VERTEX_SHADER);
+        const GLchar *pointer = source;
+        r_glShaderSource(shader, 1, &pointer, NULL); r_glCompileShader(shader);
+        GLint compiled = 0; r_glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+        if (!compiled) {
+            char message[8192] = {0}; r_glGetShaderInfoLog(shader, sizeof message, NULL, message);
+            fprintf(stderr, "FAIL %s method=%d shadow=%d alpha=%d masks=%d: %s\n", names[stage], method, shadow, alpha, textures, message);
+            valid = 0;
+        }
+        r_glAttachShader(program, shader); r_glDeleteShader(shader); free(source);
+    }
+    if (valid) {
+        r_glLinkProgram(program);
+        GLint linked = 0; r_glGetProgramiv(program, GL_LINK_STATUS, &linked);
+        if (!linked) {
+            char message[8192] = {0}; getProgramLog(program, sizeof message, NULL, message);
+            fprintf(stderr, "FAIL ZOnlyChunk linked stages: %s\n", message);
+            valid = 0;
+        }
+    }
+    deleteProgram(program);
+    return valid;
 }
 
 int main(int argumentCount, char **arguments)
@@ -104,6 +198,14 @@ int main(int argumentCount, char **arguments)
     GET_GL(glUniform1i);
     GET_GL(glUniform1f);
     int tested = 0, failures = 0;
+    for (int lights = 0; lights < 2; lights++)
+    for (int spatial = 0; spatial < 2; spatial++)
+    for (int temporal = 0; temporal < 2; temporal++)
+    for (int tracing = 0; tracing < 2; tracing++)
+    for (int enabled = 0; enabled < 2; enabled++) {
+        failures += !check_non_rtx_history(lights, spatial, temporal, tracing, enabled);
+        tested++;
+    }
     for (int preset = 1; preset <= 2; preset++)
     for (int tracing = 0; tracing < 2; tracing++)
     for (int lights = 0; lights < 2; lights++)
@@ -124,7 +226,7 @@ int main(int argumentCount, char **arguments)
         text = override_number(text, "AU_GI_HISTORY_TAPS", value);
         failures += !check_source("Original history taps", text); tested++;
     }
-    for (int method = 0; method < 2; method++)
+    for (int method = 0; method < 3; method++)
     for (int enabled = 0; enabled < 2; enabled++) {
         char *text = shader_source("DeferredFS");
         text = override_number(text, "AU_SSS", enabled ? "1" : "0");
@@ -146,6 +248,17 @@ int main(int argumentCount, char **arguments)
         text = override_number(text, "ALPHA_BLEND", blend ? "1" : "0");
         failures += !check_source("Forward native emission", text); tested++;
     }
+    for (int method = 0; method < 3; method++)
+    for (int textures = 0; textures < 2; textures++)
+    for (int deferred = 0; deferred < 2; deferred++) {
+        char methodValue[8]; snprintf(methodValue, sizeof methodValue, "%d", method);
+        char *text = shader_source("MapChunkFS");
+        text = override_number(text, "ALPHA_TEST", "1");
+        text = override_number(text, "DEFERRED", deferred ? "1" : "0");
+        text = override_number(text, "AU_SSS_VOXEL", methodValue);
+        text = override_number(text, "AU_SSS_TEXTURES", textures ? "1" : "0");
+        failures += !check_source("MapChunkFS foliage material masks", text); tested++;
+    }
     for (int animated = 0; animated < 2; animated++)
     for (int deferred = 0; deferred < 2; deferred++) {
         char *vertex = shader_source("MapChunkVS");
@@ -163,6 +276,34 @@ int main(int argumentCount, char **arguments)
         text = override_number(text, "DEFERRED", deferred ? "1" : "0");
         text = override_number(text, "FIRST_PERSON_VIEW", firstPerson ? "1" : "0");
         failures += !check_source("BlockyModelFS emitter variants", text); tested++;
+    }
+    for (int method = 0; method < 3; method++)
+    for (int shadow = 0; shadow < 2; shadow++)
+    for (int alpha = 0; alpha < 2; alpha++)
+    for (int textures = 0; textures < 2; textures++) {
+        failures += !check_shadow_pair(method, shadow, alpha, textures);
+        tested += 2;
+    }
+    menu_load();
+    const char *qualityPrograms[] = {"DeferredFS", "DeferredShadowFS", "CloudsFS", "MapChunkVS", "MapChunkFS", "PostEffectFS", "TemporalAAFS", "BlockyModelFS"};
+    for (int profile = 0; profile < AU_BUILTIN_PROFILES; profile++) {
+        menu_profile_builtin(profile);
+        for (int program = 0; program < 9; program++) {
+            const char *name = qualityPrograms[program < 8 ? program : 4];
+            char *source = shader_source(name);
+            for (int index = 0; index < g_nMo; index++) {
+                MenuOpt *option = &g_mo[index];
+                if (!option->present || strncmp(option->define, "AU_", 3)) continue;
+                char value[32]; format_value(option, option->value, value, sizeof(value));
+                source = override_number(source, option->define, value);
+            }
+            if (program == 8) {
+                source = override_number(source, "ALPHA_BLEND", "1");
+                source = override_number(source, "DEFERRED", "0");
+            }
+            char label[100]; snprintf(label, sizeof(label), "Quality profile %d %s%s", profile, name, program == 8 ? " forward" : "");
+            failures += !check_source(label, source); tested++;
+        }
     }
     printf("GPU GLSL: %d variants, %d failures\n", tested, failures);
     return failures ? 1 : 0;

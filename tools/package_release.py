@@ -6,16 +6,19 @@ import zipfile
 
 def package(stage, destination):
     files = sorted(path for path in stage.rglob("*") if path.is_file())
-    forbidden = {".git", "third_party", "original", "presets", "__pycache__", "backups"}
+    forbidden = {".git", "third_party", "original", "__pycache__", "backups"}
     for path in files:
         relative = path.relative_to(stage)
-        if path.is_symlink() or forbidden.intersection(relative.parts):
+        if (path.is_symlink() or forbidden.intersection(relative.parts)
+                or "presets" in relative.parts and relative.as_posix() != "shaderpack/presets/default.glsl"):
             raise ValueError(f"Private/generated path in release: {relative}")
-        if path.name in {"install.config", "hook.log", "shot.bmp", "materials.txt", "emitters.txt", "emitters.json", "index.txt"}:
+        if path.name in {"install.config", "hook.log", "shot.bmp", "materials.txt", "emitters.txt", "emitters.json", "index.txt", "sss-masks.bin"}:
             raise ValueError(f"Private/generated file in release: {relative}")
         if path.suffix == ".sh" and b"\r" in path.read_bytes():
             raise ValueError(f"Linux script contains Windows line endings: {relative}")
     defaults = (stage / "shaderpack/include/AU_Settings.glsl").read_text(encoding="utf-8-sig")
+    if not (stage / "shaderpack/presets/default.glsl").is_file():
+        raise ValueError("Missing frozen Default profile")
     for name, expected in {"AU_PRESET": 2, "AU_DLSS": 0, "AU_GI_DENOISER": 1, "AU_PATH_TRACING": 0}.items():
         match = re.search(rf"^#define\s+{name}\s+(\d+)\b", defaults, re.MULTILINE)
         if not match or int(match[1]) != expected:

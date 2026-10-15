@@ -39,6 +39,7 @@ layout(r32ui) uniform coherent uimage2D auLights;
 #define AU_LIGHT_CACHE_SECONDS 1.0
 #endif
 #define AU_LIGHT_CACHE_MILLISECONDS uint(AU_LIGHT_CACHE_SECONDS * 1000.0)
+#define AU_LIGHT_VISIBILITY_MILLISECONDS min(AU_LIGHT_CACHE_MILLISECONDS, 100u)
 #ifndef AU_COMMON
 uniform float uHookTime;
 #endif
@@ -100,7 +101,7 @@ void AU_PublishFineEmitter(ivec3 block)
     }
 }
 
-void AU_RecordEmitterAt(vec3 worldPosition, vec3 radiance, bool fineSource)
+void AU_RecordEmitterCached(vec3 worldPosition, vec3 radiance, bool fineSource, bool observedSource)
 {
 #if AU_LOCAL_LIGHTS || AU_PT_LIGHTS
     ivec3 block = ivec3(floor(worldPosition));
@@ -121,25 +122,41 @@ void AU_RecordEmitterAt(vec3 worldPosition, vec3 radiance, bool fineSource)
     uint selectedIndex = AU_PT_MAX_LIGHTS;
     uint selectedKey = 0u;
     bool matching = false;
+    bool reusable = false;
+    float selectedPriority = -1.0;
+    vec3 cameraDelta = vec3(block) + 0.5 - CameraPosition;
+    float distanceSquared = dot(cameraDelta, cameraDelta);
     ivec3 base = ivec3(floor(CameraPosition)) - AU_VOX_HALF;
+    uint stride = (key >> 11) | 1u;
     for (uint probe = 0u; probe < 16u; probe++) {
-        uint index = (key + probe) & (AU_PT_MAX_LIGHTS - 1u);
+        uint index = ((key >> 1) + probe * stride) & (AU_PT_MAX_LIGHTS - 1u);
         uint previous = imageAtomicAdd(auLights, ivec2(int(index), 3), 0u);
         if ((previous & 0x80000000u) != 0u) {
             if ((previous & 0x7fffffffu) == key) return;
             continue;
         }
-        if (previous != key && selectedIndex < AU_PT_MAX_LIGHTS) continue;
+        if (previous != key && reusable) continue;
         uint oldStamp = imageLoad(auLights, ivec2(int(index), 2)).r;
         uint oldPosition = imageLoad(auLights, ivec2(1 + 2 * int(index), 0)).r;
         uint metadata = imageLoad(auLights, ivec2(int(index), 4)).r;
-        matching = previous == key && (oldPosition & 0x7fffffu) == packedCell && (metadata & 63u) == tag;
+        bool sameSource = previous == key && (oldPosition & 0x7fffffu) == packedCell && (metadata & 63u) == tag;
         uint age = clock - (oldStamp - 1u);
         ivec3 oldBlock = base + ((ivec3(oldPosition & 255u, (oldPosition >> 8) & 127u, (oldPosition >> 15) & 255u) - base) & AU_VOX_MASK);
         bool occupied = previous != 0u && oldStamp != 0u && age < AU_LIGHT_CACHE_MILLISECONDS && (metadata & 63u) == AU_VoxTag(oldBlock);
-        if (!matching && occupied) continue;
+        float priority = 1e20;
+        if (!sameSource && occupied) {
+            bool visible = (metadata & 64u) != 0u && ((clock - (metadata >> 16)) & 65535u) < AU_LIGHT_VISIBILITY_MILLISECONDS;
+            vec3 oldDelta = vec3(oldBlock) + 0.5 - CameraPosition;
+            float oldDistanceSquared = dot(oldDelta, oldDelta);
+            if ((!observedSource && visible) || (observedSource == visible && oldDistanceSquared <= distanceSquared * 1.25 + 1.0)) continue;
+            priority = oldDistanceSquared + (visible ? 0.0 : 1e8);
+        }
+        if (!sameSource && priority <= selectedPriority) continue;
         selectedIndex = index;
         selectedKey = previous;
+        matching = sameSource;
+        reusable = !occupied;
+        selectedPriority = priority;
         if (matching) break;
     }
     if (selectedIndex >= AU_PT_MAX_LIGHTS) return;
@@ -151,14 +168,32 @@ void AU_RecordEmitterAt(vec3 worldPosition, vec3 radiance, bool fineSource)
         - 0.5 * min(oldRadiance.r, min(oldRadiance.g, oldRadiance.b));
     bool expired = oldStamp == 0u || clock - (oldStamp - 1u) >= AU_LIGHT_CACHE_MILLISECONDS;
     bool improve = !matching || expired || (fineSource ? quality > oldQuality + 0.01 : oldStamp != stamp);
-    if (matching && !improve && oldStamp == stamp) return;
+    uint metadata = imageLoad(auLights, ivec2(slot, 4)).r;
+    bool visibilityChanged = observedSource && ((metadata & 64u) == 0u || (metadata >> 16) != (clock & 65535u));
+    if (matching && !improve && !visibilityChanged && oldStamp == stamp) return;
     uint observed = imageAtomicCompSwap(auLights, ivec2(slot, 3), selectedKey, key | 0x80000000u);
     if (observed != selectedKey) return;
+    if (!matching) {
+        uint latestMetadata = imageLoad(auLights, ivec2(slot, 4)).r;
+        uint latestPosition = imageLoad(auLights, ivec2(1 + 2 * slot, 0)).r;
+        uint latestStamp = imageLoad(auLights, ivec2(slot, 2)).r;
+        ivec3 latestBlock = base + ((ivec3(latestPosition & 255u, (latestPosition >> 8) & 127u, (latestPosition >> 15) & 255u) - base) & AU_VOX_MASK);
+        bool occupied = selectedKey != 0u && latestStamp != 0u && clock - (latestStamp - 1u) < AU_LIGHT_CACHE_MILLISECONDS
+            && (latestMetadata & 63u) == AU_VoxTag(latestBlock);
+        bool visible = (latestMetadata & 64u) != 0u && ((clock - (latestMetadata >> 16)) & 65535u) < AU_LIGHT_VISIBILITY_MILLISECONDS;
+        vec3 latestDelta = vec3(latestBlock) + 0.5 - CameraPosition;
+        if (occupied && ((!observedSource && visible) || (observedSource == visible && dot(latestDelta, latestDelta) <= distanceSquared * 1.25 + 1.0))) {
+            imageAtomicExchange(auLights, ivec2(slot, 3), selectedKey);
+            return;
+        }
+    }
     if (improve) {
         imageStore(auLights, ivec2(1 + 2 * slot, 0), uvec4(packedCell | (offset << 23)));
         imageStore(auLights, ivec2(2 + 2 * slot, 0), uvec4(packUnorm4x8(vec4(radiance, 0.0)) & 0xffffffu));
-        imageStore(auLights, ivec2(slot, 4), uvec4(tag | (hue << 8)));
     }
+    metadata = matching ? imageLoad(auLights, ivec2(slot, 4)).r : tag | (hue << 8);
+    if (observedSource) metadata = (metadata & 65535u) | 64u | ((clock & 65535u) << 16);
+    imageStore(auLights, ivec2(slot, 4), uvec4(metadata));
     imageStore(auLights, ivec2(slot, 2), uvec4(stamp));
     memoryBarrier();
     imageAtomicExchange(auLights, ivec2(slot, 3), key);
@@ -167,9 +202,14 @@ void AU_RecordEmitterAt(vec3 worldPosition, vec3 radiance, bool fineSource)
 #endif
 }
 
+void AU_RecordEmitterAt(vec3 worldPosition, vec3 radiance, bool fineSource)
+{
+    AU_RecordEmitterCached(worldPosition, radiance, fineSource, true);
+}
+
 void AU_RecordEmitter(ivec3 block, vec3 radiance)
 {
-    AU_RecordEmitterAt(vec3(block) + 0.5, radiance, false);
+    AU_RecordEmitterCached(vec3(block) + 0.5, radiance, false, false);
 }
 
 // Raw cell of block b, or 0 (unknown) when the cell belongs to another wrap.
@@ -370,12 +410,12 @@ vec3 AU_ResolveLocalLight(AU_LocalLightSample sampleData, vec3 origin, float ran
     return sampleData.energy * visibility * AU_LOCAL_LIGHT_STRENGTH;
 }
 
-void AU_BuildLocalLightTile()
+void AU_BuildLocalLightTileWord(int word, int tile, bool expandedTiles)
 {
-    int word = int(gl_FragCoord.x);
-    int tile = int(gl_FragCoord.y);
-    ivec3 tileCell = ivec3(tile & 3, (tile >> 2) & 3, tile >> 4);
+    ivec3 tileCell = expandedTiles ? ivec3(tile & 15, (tile >> 4) & 7, tile >> 7)
+                                 : ivec3(tile & 3, (tile >> 2) & 3, tile >> 4);
     vec3 tileCenter = vec3(tileCell) * 16.0 + 8.0;
+    vec3 tilePeriod = expandedTiles ? vec3(AU_VOX_SIZE) : vec3(64.0);
     int row = 0;
     uint lightCount = min(imageLoad(auLights, ivec2(0, row)).r, AU_PT_MAX_LIGHTS);
     uint mask = 0u;
@@ -387,11 +427,23 @@ void AU_BuildLocalLightTile()
         if (tile == 0) imageStore(auLights, ivec2(1024 + int(index), 4), uvec4(floatBitsToUint(weight)));
         if (imageLoad(auLights, ivec2(2 + 2 * int(index), row)).r == 0u || weight <= 0.0) continue;
         vec3 center = AU_EmitterPosition(ivec3(cell & 255u, (cell >> 8) & 127u, (cell >> 15) & 255u), cell);
-        vec3 distanceToTile = max(abs(mod(center - tileCenter + 32.0, 64.0) - 32.0) - 8.0, 0.0);
+        vec3 distanceToTile = max(abs(mod(center - tileCenter + tilePeriod * 0.5, tilePeriod) - tilePeriod * 0.5) - 8.0, 0.0);
         if (dot(distanceToTile, distanceToTile) <= pow2(AU_LOCAL_LIGHT_RANGE + AU_LOCAL_LIGHT_SOFTNESS))
             mask |= 1u << uint(bit);
     }
-    imageStore(auLights, ivec2(1 + tile * 32 + word, 1 - row), uvec4(mask));
+    int address = tile * 32 + word;
+    ivec2 maskAddress = expandedTiles ? ivec2(address & 2047, 5 + (address >> 11)) : ivec2(1 + address, 1);
+    imageStore(auLights, maskAddress, uvec4(mask));
+    ivec2 wordsAddress = ivec2(expandedTiles ? tile : 1024 + tile, expandedTiles ? 1 : 2);
+    if (mask != 0u) imageAtomicOr(auLights, wordsAddress, 1u << uint(word));
+    else imageAtomicAnd(auLights, wordsAddress, ~(1u << uint(word)));
+}
+
+void AU_BuildLocalLightTile(int tileRows)
+{
+    bool expandedTiles = uHookLocalLightTiles >= 2;
+    for (int tile = int(gl_FragCoord.y); tile < (expandedTiles ? 2048 : 64); tile += max(tileRows, 1))
+        AU_BuildLocalLightTileWord(int(gl_FragCoord.x), tile, expandedTiles);
 }
 
 vec3 AU_LocalLightingOriginal(vec3 playerPos, vec3 normal, bool flatShading, vec2 randomValue)
@@ -401,8 +453,12 @@ vec3 AU_LocalLightingOriginal(vec3 playerPos, vec3 normal, bool flatShading, vec
     if (lightCount == 0u) return vec3(0.0);
     ivec3 base = ivec3(floor(CameraPosition)) - AU_VOX_HALF;
     vec3 origin = playerPos + CameraPosition + normal * 0.04;
-    ivec3 tileCell = ivec3(floor(origin / 16.0)) & ivec3(3);
-    int tile = tileCell.x | (tileCell.y << 2) | (tileCell.z << 4);
+    bool expandedTiles = uHookLocalLightTiles >= 2;
+    ivec3 tileCell = ivec3(floor(origin / 16.0)) & (expandedTiles ? ivec3(15, 7, 15) : ivec3(3));
+    int tile = expandedTiles ? tileCell.x | (tileCell.y << 4) | (tileCell.z << 7)
+                             : tileCell.x | (tileCell.y << 2) | (tileCell.z << 4);
+    uint activeWords = imageLoad(auLights, ivec2(expandedTiles ? tile : 1024 + tile, expandedTiles ? 1 : 2)).r;
+    if (activeWords == 0u) return vec3(0.0);
     float sampleAngle = randomValue.y * 6.2831853;
     float sampleHeight = randomValue.x * 2.0 - 1.0;
     float sampleRadius = sqrt(max(1.0 - sampleHeight * sampleHeight, 0.0));
@@ -410,8 +466,12 @@ vec3 AU_LocalLightingOriginal(vec3 playerPos, vec3 normal, bool flatShading, vec
     AU_LocalLightSample sampleData;
     sampleData.energy = vec3(0.0);
     sampleData.indices = uvec3(0xffffffffu);
-    for (int word = 0; word < int((lightCount + 31u) / 32u); word++) {
-        uint mask = imageLoad(auLights, ivec2(1 + tile * 32 + word, 1 - row)).r;
+    while (activeWords != 0u) {
+        int word = findLSB(activeWords);
+        activeWords &= activeWords - 1u;
+        int address = tile * 32 + word;
+        ivec2 maskAddress = expandedTiles ? ivec2(address & 2047, 5 + (address >> 11)) : ivec2(1 + address, 1);
+        uint mask = imageLoad(auLights, maskAddress).r;
         while (mask != 0u) {
             int bit = findLSB(mask);
             mask &= mask - 1u;
@@ -427,6 +487,7 @@ vec3 AU_LocalLightingOriginal(vec3 playerPos, vec3 normal, bool flatShading, vec
             if (distanceSquared >= pow2(AU_LOCAL_LIGHT_RANGE) || distanceSquared < 0.0001) continue;
             float distanceToLight = sqrt(distanceSquared);
             float facing = flatShading ? 0.7 : max(dot(normal, delta / distanceToLight), 0.0);
+            if (facing <= 0.0) continue;
             float attenuation = pow2(max(1.0 - distanceToLight / AU_LOCAL_LIGHT_RANGE, 0.0));
             attenuation /= ((packedCell >> 23) & 31u) != 0u ? 0.0625 + distanceSquared : 1.0 + 0.08 * distanceSquared;
             if (((packedCell >> 23) & 31u) != 0u) attenuation *= AU_EMISSIVE_LIGHT_STRENGTH;

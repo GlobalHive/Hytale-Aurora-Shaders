@@ -136,6 +136,25 @@ def make_batcher_fs(source):
             + source[position:].replace('gl_FragCoord', 'auUIFragmentCoord'))
 
 
+def make_shadow_chunk_vs(source):
+    declaration = "flat out float fragAtlasPage;\n"
+    source = replace(source, declaration, declaration + "flat out uint auSSSShadowSeed;\nflat out int auSSSShadowPass;\n")
+    return replace(source, "void main()\n{\n", "void main()\n{\n#if ALPHA_TEST\n"
+                   "    auSSSShadowSeed = uint(vertDoubleSidedAndBlockId & 32767) * 0x9e3779b9u ^ (vertNormalAndNodeId & 0xffffffu);\n"
+                   "#if SHADOW_VERSION\n"
+                   "    auSSSShadowPass = (vertTintColorAndShadingAndEffect & 31u) <= 15u && ((vertTintColorAndShadingAndEffect >> 6) & 3u) != 2u ? 1 : 0;\n"
+                   "#else\n    auSSSShadowPass = 0;\n#endif\n#endif\n")
+
+
+def make_shadow_chunk_fs(source):
+    source = replace(source, "#version 410 core\n", '#version 410 core\n#include "AU_Settings.glsl"\n'
+                     '#if AU_SSS && AU_SSS_VOXEL == 2 && ALPHA_TEST\n'
+                     'uniform sampler2DArray uHookMaterials;\nflat in uint auSSSShadowSeed;\nflat in int auSSSShadowPass;\n'
+                     '#include "AU_SSSMask.glsl"\n#endif\n')
+    return replace(source, "    float opacity = texture(uTexture, vec3(fragTexCoords, fragAtlasPage), MIP_LOD_BIAS).a;\n",
+                   "    float opacity = texture(uTexture, vec3(fragTexCoords, fragAtlasPage), MIP_LOD_BIAS).a;\n" + snippet("shadow-fragment.glsl"))
+
+
 def make_map_chunk(source):
     s = replace(source, "#endif // !DEFERRED\n\n#if USE_OVERLAY",
                 "#endif // !DEFERRED\n\n" + snippet("includes.glsl") + "\n#if USE_OVERLAY")
@@ -257,6 +276,8 @@ def prepare(executable, pack, assets=None):
         "ParticleFS.glsl": make_particle_fs(sources["ParticleFS.glsl"]),
         "BlockyModelFS.glsl": make_blocky_model_fs(sources["BlockyModelFS.glsl"]),
         "Batcher2DFS.glsl": make_batcher_fs(sources["Batcher2DFS.glsl"]),
+        "ZOnlyChunkVS.glsl": make_shadow_chunk_vs(sources["ZOnlyChunkVS.glsl"]),
+        "ZOnlyChunkFS.glsl": make_shadow_chunk_fs(sources["ZOnlyChunkFS.glsl"]),
     }
     for name in ("BlockyModelVS", "ParticleVS", "SkyAndCloudsVS", "BasicVS", "BasicFogVS", "BeamVS", "TextVS"):
         generated[name + ".glsl"] = make_jittered_vs(sources[name + ".glsl"])
@@ -271,15 +292,19 @@ def prepare(executable, pack, assets=None):
         records, report = build_emitters(assets)
         outputs["emitters.txt"] = "\n".join(sorted(records)) + "\n"
         outputs["emitters.json"] = json.dumps(report, indent=2) + "\n"
+        from build_sss import build_masks
+        outputs["sss-masks.bin"] = build_masks(assets, pack / "sss")
     else:
         outputs["emitters.txt"] = ""
         outputs["emitters.json"] = "[]\n"
+        outputs["sss-masks.bin"] = b"AUSSS001" + struct.pack("<I", 0)
     outputs.update(("original/" + name, value) for name, value in sources.items())
     outputs.update(("programs/" + name, value) for name, value in generated.items())
     for name, value in outputs.items():
         dest = pack / name
         dest.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=dest.parent, delete=False) as temp:
+        options = {"mode": "wb"} if isinstance(value, bytes) else {"mode": "w", "encoding": "utf-8"}
+        with tempfile.NamedTemporaryFile(dir=dest.parent, delete=False, **options) as temp:
             temp.write(value)
         Path(temp.name).replace(dest)
     print(f"Prepared {len(sources)} original shaders, {len(generated)} overrides and {len(index.splitlines())} index entries in {pack}")

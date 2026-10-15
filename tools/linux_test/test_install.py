@@ -48,11 +48,15 @@ class LinuxInstallTests(unittest.TestCase):
             presets.mkdir()
             custom = "// Aurora preset: Cave\n#define AU_SCREEN_BRIGHTNESS 1.5\n"
             (presets / "preset-00.glsl").write_text(custom)
+            masks = installed / "sss/Blocks/Foliage/Leaves"
+            masks.mkdir(parents=True)
+            (masks / "Oak.png").write_bytes(b"custom mask fixture")
             linux_hook.install(client, proxy, pack)
             self.assertIn("AU_SCREEN_BRIGHTNESS 1.5", settings.read_text())
             self.assertIn("AU_LIGHT_CACHE_SECONDS 1.0", settings.read_text())
             self.assertIn("AU_DLSS 0", settings.read_text())
             self.assertEqual((presets / "preset-00.glsl").read_text(), custom)
+            self.assertEqual((masks / "Oak.png").read_bytes(), b"custom mask fixture")
             linux_hook.uninstall(client)
             self.assertEqual(library.read_bytes(), original)
             self.assertTrue(settings.is_file())
