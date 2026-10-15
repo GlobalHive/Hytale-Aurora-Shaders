@@ -19,8 +19,6 @@ https://github.com/user-attachments/assets/9c0842a6-0442-40e9-8760-67f695989e0c
 
 <img width="3840" height="2160" alt="HytaleClient_1Ct0iumhDG" src="https://github.com/user-attachments/assets/605dfb67-8cc8-475a-9dc9-0d5d6c546140" />
 
-
-
 <img width="3840" height="2160" alt="HytaleClient_yiDS4pwOJz" src="https://github.com/user-attachments/assets/3d899ec1-089d-4af7-8fac-14bec9981215" />
 
 <img width="3840" height="2160" alt="HytaleClient_9uBVvnw0u2" src="https://github.com/user-attachments/assets/fa8cc289-cdb0-4e77-b53e-8d5332a578e1" />
@@ -31,10 +29,7 @@ https://github.com/user-attachments/assets/9c0842a6-0442-40e9-8760-67f695989e0c
 
 <img width="3840" height="2160" alt="image" src="https://github.com/user-attachments/assets/6c50f4f3-098d-4eac-86d0-67ac4d0e60f9" />
 
-<img width="3840" height="2160" alt="image" src="https://github.com/user-attachments/assets/e63f95ea-0f36-4845-ae8d-54bf9d7eab6c" />
-
-<img width="3840" height="2160" alt="HytaleClient_6pkC82u4UM" src="https://github.com/user-attachments/assets/d9393e42-6a7d-472e-a9d8-2f95b171dfb6" />
-
+<img width="3840" height="2160" alt="HytaleClient_pmXZrodYOq" src="https://github.com/user-attachments/assets/d1f9550a-67e7-4a15-9620-515b5e6832af" />
 
 # Aurora Shaders for Hytale
 
