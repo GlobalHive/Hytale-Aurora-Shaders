@@ -1,3 +1,5 @@
 * text=auto
 *.raw binary
 *.bat text eol=crlf
+*.sh text eol=lf
+*.py text eol=lf

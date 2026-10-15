@@ -29,7 +29,60 @@ a rotating star sky, lens flare and a filmic tonemap - with an in-game options m
 
 > **Not tested online, use at your own discretion.**
 
+## What's new in 1.2.0
+
+- RTX defaults, built-in profiles and named custom presets.
+- Configurable Original denoising and NVIDIA DLSS Ray Reconstruction.
+- Live DLSS resolution, Quality+/Quality++, sharpness and HDR fixes.
+- Texture-coloured local lights, glowing ores and foliage/ice transmission.
+- Cleaner installation, updates and uninstall; native Linux support.
+
+See [CHANGELOG.md](CHANGELOG.md) for the short release notes.
+
 ## Install
+
+### Ubuntu-based Linux
+
+The native Linux build targets **x86_64 Ubuntu 22.04 or newer**, including Ubuntu-based
+distributions such as Linux Mint and Pop!_OS. It uses the Linux Hytale client and its SDL3
+OpenGL renderer. Both native launcher installations and the official Flatpak are detected.
+
+Close Hytale, then install the build dependencies and automatic hook from this folder:
+
+```bash
+sudo apt update
+sudo apt install build-essential pkg-config libcairo2-dev fonts-dejavu-core python3 python3-pil
+./install.sh
+```
+
+**Start Hytale through your normal launcher or desktop shortcut.** Aurora loads automatically;
+`launch.sh` is now just an optional shortcut to the normal launcher.
+
+The installer builds `build/libaurora-sdl.so` and installs it as the game's `Client/libSDL3.so`.
+The original SDL library is preserved unchanged as `Client/libSDL3.aurora-original.so`.
+The proxy forwards SDL calls and intercepts shader loading and presentation. Hytale's client
+executable is unchanged, and no Flatpak overrides or environment variables are required.
+
+Shaders and settings are copied into `Client/.aurora/shaderpack`, inside the game's own folder,
+so the normal Flatpak launcher can read them. Changes made through the menu are saved there.
+Reinstalling preserves the installed settings while refreshing the pack. Keep this source
+folder for reinstalling after game updates; it is no longer needed to launch the game.
+
+- **After a game update:** close Hytale and run `./install.sh` again. If an update replaces
+  the whole Client folder, restore any custom settings from your own backup.
+- **Custom game location:** `./install.sh --client-dir "/path/to/Client"`.
+- **Custom native launcher:** add `--launcher "/path/to/hytale-launcher"`.
+- **Both versions installed:** select `--backend flatpak` or `--backend native`.
+- **Rebuild:** `./install.sh --build`.
+- **Uninstall:** `./install.sh --uninstall` restores the original SDL library. Installed
+  settings are kept in `Client/.aurora/shaderpack`. If the game already replaced SDL during
+  an update, uninstall keeps that newer library.
+
+**DLSS and its render-scale integration are Windows-only** and are hidden in the Linux menu.
+Linux uses the pack's temporal anti-aliasing. Linux builds, shader generation and installer
+fixtures have been checked; native Linux gameplay has not yet been verified.
+
+### Windows
 
 1. Download the latest release zip from the [Releases](../../releases) page and extract it
    somewhere permanent (the game loads the pack from this folder, so don't delete it).
@@ -68,10 +121,12 @@ especially the RTX preset; see [Performance](#performance).
 
 Changes apply instantly; default values and slider markers are yellow, including On/Off switches.
 Click the search box while holding Alt to search by setting label or define; Backspace edits
-the search text only. Tab, Enter and Space do not navigate or change the menu.
+the search text only. Tab, Enter and Space do not navigate or change settings.
+Enter only confirms text entry when naming a saved preset.
 Changed values are mint, and the selected option's default is always shown in the footer. Settings are saved in
 `shaderpack/include/AU_Settings.glsl`, which you can also edit by hand while the game runs (saving
-the file reloads the shaders).
+the file reloads the shaders). On Linux, edit the installed copy at
+`Client/.aurora/shaderpack/include/AU_Settings.glsl`.
 
 The compact left-side menu leaves the centre of the game visible and does not capture movement
 or camera input unless Alt is held. Keyboard shortcuts remain available without Alt;
@@ -85,6 +140,25 @@ Ore blink strength and speed control a coloured glow pulse; zero strength restor
 **Ore animation** selects blinking plus the soft glint, the original Hytale glint without
 blinking, or entirely steady glow. None of these choices disables the base coloured glow.
 
+Linux currently uses the keyboard controls; Alt-mouse editing and input capture are Windows features.
+
+### Profiles
+
+Open the **Profiles** tab, choose a saved profile, then select **Apply profile**.
+All built-in profiles use the **RTX** renderer, now the default.
+
+| Profile | Denoiser | DLSS resolution | Path tracing |
+|---|---|---|---|
+| **Default** | Original | Off | Off |
+| **DLSS Preset** | NVIDIA Ray Reconstruction | 77% Quality+ | Off |
+| **Path Tracing** | NVIDIA Ray Reconstruction | 77% Quality+ | On |
+
+**Save current settings as...** lets you name and save up to 16 custom presets. Hold Alt to type
+a name, then press Enter or click **Save name**. Presets are stored in `shaderpack/presets/`
+and retained during updates. On Linux, use the keyboard to enter the name; NVIDIA profiles
+require the Windows build and a supported RTX GPU. Applying a built-in profile resets other
+shader-menu settings to their defaults; saving a custom preset keeps your current settings.
+
 ## Menu options
 
 ### General
@@ -92,7 +166,7 @@ blinking, or entirely steady glow. None of these choices disables the base colou
 | Option | What it does |
 |---|---|
 | **Shaders** | Turns the whole pack on or off (same as the Pause key). |
-| **Preset** | **Standard**, or **RTX**: adds bounce light and ray-traced ambient occlusion (see the RTX section), shadows that get softer the further they fall from what casts them, wet-looking reflective surfaces in rain, and more samples for shadows, light shafts and clouds. Costs noticeably more GPU time. |
+| **Preset** | **RTX** is the default: bounce light, ray-traced ambient occlusion, contact-hardening shadows and richer material lighting. **Standard (Deprecated)** keeps the older, lighter renderer available. |
 | **Brightness** | Overall brightness of shaded areas and nights, like Minecraft's brightness slider: low is moody, high is bright. |
 | **Cave lighting %** | The minimum light in places the sun and sky can't reach - caves, deep interiors. Lower makes caves darker. |
 
@@ -191,10 +265,18 @@ These only apply with the **RTX** preset.
 ## Performance
 
 The biggest costs, roughly in order: the **RTX** preset (try fewer **Bounce rays** first),
-**Volumetric clouds**, **Light shafts**, and **Shader water** reflections. The Standard preset
+**Volumetric clouds**, **Light shafts**, and **Shader water** reflections. Standard (Deprecated)
 runs much lighter than RTX.
 
 ## Build it yourself
+
+On Linux, `./build.sh` builds `build/libaurora-sdl.so` (automatic loading) and
+`build/libaurora.so` (optional manual preloading) with the system C compiler. It requires
+`build-essential`, `pkg-config` and `libcairo2-dev`; shader preparation additionally uses
+`python3` and `python3-pil`. Build on the target distribution rather than copying a shared
+library built against a newer glibc onto an older Ubuntu release.
+
+On Windows:
 
 The release includes a prebuilt `opengl32.dll`. If you would rather not run a DLL you did not
 build, double-click **`Build From Source.bat`** instead of `Install.bat`: it compiles the DLL
@@ -206,13 +288,22 @@ installs.
 
 ## How it works
 
-Hytale compiles its OpenGL shaders from source embedded in `HytaleClient.exe` and has no shader
-loader. `opengl32.dll` in the game folder is loaded instead of the Windows one; it forwards every
+Hytale compiles its OpenGL shaders from source embedded in its client executable and has no
+shader loader. On Windows, `opengl32.dll` in the game folder is loaded instead of the Windows one; it forwards every
 call to the real `opengl32.dll`, and when the game compiles a shader it recognises (by
 `shaderpack/index.txt`) and the pack has a replacement for in `shaderpack/programs/`, it compiles
 that instead. Edited shader files are recompiled live. The in-game menu is drawn by the same DLL.
 
-Hytale's own shader sources are not redistributed: `tools/prepare_shaders.ps1` extracts them from
+On Linux, Hytale loads the installed SDL3 proxy from its own Client folder. The proxy depends
+on the original SDL library beside it, so ordinary SDL exports continue to resolve, while
+Aurora handles OpenGL function lookup and buffer presentation. The shader engine and menu model
+are shared with Windows; POSIX timing,
+inotify and Cairo provide Linux file watching and panel drawing. SDL3 provides the
+[OpenGL function lookup](https://wiki.libsdl.org/SDL3/SDL_GL_GetProcAddress) and
+[window presentation](https://wiki.libsdl.org/SDL3/SDL_GL_SwapWindow) interfaces.
+
+Hytale's own shader sources are not redistributed: `tools/prepare_shaders.ps1` (Windows) or
+`tools/prepare_shaders.py` (Linux) extracts them from
 the installed game into `shaderpack/original/` during install, because the pack's shaders include
 parts of them.
 
@@ -229,8 +320,8 @@ disabled independently. Spatial-only filtering needs no history or current-frame
 Temporal history uses four textures (about 169 MiB at 1440p or 380 MiB at 4K). Local lighting
 shares this history without extra denoiser buffers. Original culls local lights into a 64-cell
 spatial bitmask in the unused light-list row. This 2,048-pixel preparation draw avoids sparse
-whole-scene light sampling without another full-screen pass, extra textures, or extra shadow rays.
-NVIDIA Ray Reconstruction retains its independent sampling path. Lite and Full and their extra filtering passes
+whole-scene light sampling without another full-screen pass or extra textures.
+NVIDIA Ray Reconstruction shares that spatial light culling. Lite and Full and their extra filtering passes
 have been removed. The block textures themselves are never filtered by the denoiser.
 
 History lookup uses Hytale's reprojection matrix. Held-item history stays in view space and
@@ -307,7 +398,7 @@ surfaces outside the grid retain the surface approximation, rather than claiming
 **Quality+ (77%)** and **Quality++ (85%)** are Aurora's custom render ratios using NVIDIA's
 Quality mode; they are not additional NVIDIA model presets.
 
-**DLSS Frame Generation** uses NVIDIA Streamline, Reflex and an input-transparent child
+**DLSS Frame Generation (Windows, experimental)** uses NVIDIA Streamline, Reflex and an input-transparent child
 presentation surface. OpenGL keeps the game window; Vulkan presents generated frames on
 the child surface to avoid mixing both swapchains on one window. SR/RR and Frame Generation
 share one Vulkan device when used together, with shared inputs and GPU synchronization. It is off by default
@@ -317,29 +408,34 @@ RTX 5080 test verified 112 actual NVIDIA presents for 56 rendered frames at 2x. 
 validation remains necessary, especially HUD edges, transparent effects and moving models:
 the current motion vectors include camera motion, but not independent object animation.
 Install build dependencies and signed production runtimes with `tools\prepare_streamline.ps1`.
-DLSS 5 Neural Rendering is also not implemented: NVIDIA's public renderer sample requires
-the separate beta NGX SDK with `nvsdk_ngx_helpers_dlssnr_vk.h`, which is not in the SDK here.
-The downloaded official Streamline 2.14.1 package has neither an NR plugin nor an NR header.
-Ray Reconstruction is not relabelled as Neural Rendering.
+Frame Generation is not part of the built-in profiles; leave it off if it causes instability.
 
 ## Troubleshooting
 
+- **Linux looks like vanilla:** close Hytale and run `./install.sh`, then start it normally.
+  Check `Client/.aurora/shaderpack/hook.log` for `automatic proxy`. Run `./install.sh` again
+  after game updates. `./launch.sh --print-command` shows the optional launcher command.
+- **Linux build dependencies missing:** install the Ubuntu packages listed above. The installer
+  does not install system packages or download a compiler for you.
+- **Flatpak reports a missing library or glibc version:** rebuild with `./install.sh --build` on
+  the machine where you play and ensure the Hytale Flatpak runtime is up to date.
 - **Looks like vanilla:** press Pause once (the shaders may be toggled off), and check that
   `opengl32.dll` sits next to `HytaleClient.exe`. After a game update, run `Install.bat` again.
 - **Something renders wrong after a game update:** a shader that fails to compile falls back to
   the game's own; the compiler log is in `shaderpack/errors/`, and `shaderpack/hook.log` records
-  what the DLL did. Please open an issue with those files.
+  what the hook did. On Linux these files are under `Client/.aurora/shaderpack`.
+  Please open an issue with those files.
 - **Antivirus warning:** some antivirus tools flag DLLs that load next to a game. Use
   `Build From Source.bat` to build the DLL from the source yourself.
 
-## Known Issue
+## Known Issues
 
 - **When Sunrise hits for few seconds there is flicker on the opposite side from where the sun is.**
+- **Disable native TAA in Hytale's Graphics settings to avoid shaking and double temporal filtering.**
+
 
 ## Credits and license
 
 Aurora Shaders is a modified pack based on Complementary Shaders by Complementary Development
 (https://www.complementary.dev/). It is distributed under the Complementary License Agreement,
 included unchanged in [LICENSE.txt](LICENSE.txt).
-
-Shaders have been assisted by AI/Claude.

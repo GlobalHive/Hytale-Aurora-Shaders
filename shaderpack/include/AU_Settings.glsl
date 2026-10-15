@@ -5,14 +5,14 @@
 #define AU_SETTINGS
 
 // ---- Preset --------------------------------------------------------------------------
-// 1 = Standard
-// 2 = RTX: + screen-space global illumination, glossy reflections on all solid surfaces,
+// 1 = Standard (Deprecated)
+// 2 = RTX: + screen-space global illumination, material-specific reflections,
 //          more shadow / light shaft / cloud samples
 #define AU_PRESET 2
 
 // ---- General -------------------------------------------------------------------------
 #define AU_SUN_MAX_ELEVATION 0.92   // sin(max sun elevation) of Hytale's sun path, maps time-of-day factors
-#define AU_SCREEN_BRIGHTNESS 1.00    // Minecraft "brightness" slider equivalent (0 = moody, 1 = bright)
+#define AU_SCREEN_BRIGHTNESS 1.0    // Minecraft "brightness" slider equivalent (0 = moody, 1 = bright)
 #define AU_TWILIGHT_SHIFT 0.10      // keeps daylight up longer to fit Hytale's long dusk
 #define AU_SUNSET_SHIFT 0.0         // sun height (sin) offset for the sunset colour palette
 
@@ -24,7 +24,7 @@
 #define AU_BLOCKLIGHT_STRENGTH 1.0
 #define AU_BLOCKLIGHT_RANGE 1.75       // Hytale glow -> Minecraft lightmap scale
 #define AU_BLOCKLIGHT_HYTALE_HUE 1.0 // 0 = warm torch light, 1 = Hytale's per-light colours
-#define AU_EMISSION_STRENGTH 3.00
+#define AU_EMISSION_STRENGTH 3.0
 #define AU_EMISSIVE_MAX 1.6           // brightest a glowing ore texel gets (keeps its colour; the glow is bloom)
 #define AU_EMISSIVE_BLOOM 4.0        // extra bloom for emissive blocks (flames, potions, lava)
 #define AU_ORE_GLOW 1                 // ore specks glow (1), 2 = debug: every REFLECTIVE block glows
@@ -103,7 +103,7 @@
 #define AU_CLOUD_ALT2 340.0          // second layer (set AU_CLOUD_LAYERS 1 to disable)
 #define AU_CLOUD_LAYERS 2
 #define AU_CLOUD_AMOUNT 1.0
-#define AU_CLOUD_SPEED 1.00
+#define AU_CLOUD_SPEED 1.0
 #if AU_PRESET >= 2
 #define AU_CLOUD_STEP 14.0
 #else
@@ -123,7 +123,7 @@
 #define AU_LIGHTSHAFT_STRENGTH 1.0
 #define AU_LIGHTSHAFT_HAZE 0.4         // open-air haze (beams through trees / windows are separate)
 #define AU_LIGHTSHAFT_DISTANCE 192.0
-#define AU_LIGHTSHAFT_SCENE_AWARE 1.00  // stronger shafts in caves / forests (0 = off)
+#define AU_LIGHTSHAFT_SCENE_AWARE 1.0  // stronger shafts in caves / forests (0 = off)
 #define AU_LIGHTSHAFT_NOON_I 1.0
 #define AU_LIGHTSHAFT_SUNSET_I 0.5    // low-sun haze (the low sun's light colour is strong; 1.0 drowned the land)
 #define AU_LIGHTSHAFT_NIGHT_I 0.35     // moonlight haze (1.0 washes Hytale nights out)
@@ -137,7 +137,7 @@
 #define AU_GLASS_REFLECT 0.8
 #define AU_WATER_FOG_MULT 1.0
 #define AU_WATER_SSR_STEPS 48
-#define AU_WATER_REFRACTION 2.00       // refraction strength
+#define AU_WATER_REFRACTION 2.0       // refraction strength
 #define AU_WATER_FOAM 0.5              // shoreline foam
 #define AU_WATER_CAUSTICS 1          // Unbound caustics on sunlit surfaces while the camera is under water
 #define AU_CAUSTICS_STRENGTH 1.4
@@ -212,11 +212,11 @@
 #define AU_KEEP_HYTALE_GRADING 0.6   // how much of Hytale's per-biome colour filter/saturation to keep
 #define AU_VIGNETTE 1
 #define AU_LENSFLARE 1                // lens flare (sun and moon)
-#define AU_LENSFLARE_I 2.50             // lens flare strength
+#define AU_LENSFLARE_I 2.5             // lens flare strength
 #define AU_SUN_GLARE 1.0              // soft lens glare around the visible sun
 #define AU_TAA 1                      // reprojected TAA (cleans up dithered shafts / shadows / GI)
 #define AU_DLSS 0                     // NVIDIA DLSS instead of the TAA (hook/aud_dlss.c; RTX GPUs)
-#define AU_RENDER_SCALE 100
+#define AU_RENDER_SCALE 0
 #define AU_DLSS_PRESET 0              // hook: DLSS model, 0 NVIDIA's default, 1 sharpest (K / RR E), 2 less ghosting (J / RR D)
 #define AU_DLSS_RR_PRESET 0
 #define AU_DLSS_SHARPNESS 0.2

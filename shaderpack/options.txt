@@ -6,10 +6,15 @@
 @ General
 !TAA_INFO | REMINDER/WARNING: | info | 0 | REMINDER/WARNING: Disable TAA in Hytale Graphics settings. It can cause shaking and ghosting. Aurora TAA and NVIDIA DLSS settings are separate.
 !PACK | Shaders | bool
-AU_PRESET | Preset | enum 1:Standard 2:RTX | 2
+AU_PRESET | Preset | enum 1:Standard_(Deprecated) 2:RTX | 2
 AU_SCREEN_BRIGHTNESS | Brightness | range 0.0 2.0 0.05 | 1.0
 AU_CAVE_LIGHTING | Cave lighting % | range 0.0 500.0 25.0 | 250.0
 !RESET_ALL | Reset all categories | action | 0 | Restores every shader option to its shipped default. Click once to arm, then click again to confirm. Arrow keys cannot activate this button.
+
+@ Profiles
+!PROFILE | Saved profile | enum | -1 | Choose a profile, then Apply profile. Default uses Original denoising without DLSS or path tracing. NVIDIA profiles require a supported RTX GPU.
+!PROFILE_APPLY | Apply selected profile | action | 0 | Applies the selected profile. Built-in profiles start from shipped defaults. Custom profiles restore saved menu settings.
+!PROFILE_SAVE | Save current settings as... | action | 0 | Enter a name in the field above while holding Alt, then press Enter or click Save name. Existing profiles are never overwritten.
 
 @ Lighting
 AU_SSAO_STRENGTH | Ambient occlusion | range 0.0 3.0 0.05 | 1.25

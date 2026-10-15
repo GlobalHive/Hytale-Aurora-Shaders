@@ -23,6 +23,9 @@ Get-ChildItem -LiteralPath (Join-Path $root 'shaderpack') -File | Where-Object {
 [IO.File]::WriteAllText((Join-Path $client 'opengl32.dll'), 'changed old proxy')
 [IO.File]::WriteAllText((Join-Path $foreign 'keep-me.txt'), 'do not remove the junction target')
 [IO.File]::WriteAllText((Join-Path $foreign 'include\AU_Settings.glsl'), "#define AU_GI_DENOISER 2`n#define AU_GI_RESOLUTION 1`n#define AU_GI_HISTORY_TAPS 4`n#define AU_SCREEN_BRIGHTNESS 1.25`n")
+New-Item -ItemType Directory -Path (Join-Path $foreign 'presets') | Out-Null
+$customPreset = "// Aurora preset: Cave`n#define AU_SCREEN_BRIGHTNESS 1.25`n"
+[IO.File]::WriteAllText((Join-Path $foreign 'presets\preset-00.glsl'), $customPreset)
 New-Item -ItemType Junction -Path (Join-Path $client 'shaderpack') -Target $foreign | Out-Null
 @{ Owner = 'Aurora Shaders'; InstalledHash = 'stale'; PreviousDll = '.aurora-missing-backup' } |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $client '.aurora-install.json')
@@ -30,6 +33,7 @@ New-Item -ItemType Junction -Path (Join-Path $client 'shaderpack') -Target $fore
 & (Join-Path $package 'install.ps1') -ClientDir $client -Update -NonInteractive
 if ([IO.File]::ReadAllText((Join-Path $client 'opengl32.dll')) -ne 'new test proxy') { throw 'DLL was not replaced.' }
 if (-not (Test-Path -LiteralPath (Join-Path $foreign 'keep-me.txt'))) { throw 'Old junction target was modified.' }
+if ([IO.File]::ReadAllText((Join-Path $client 'shaderpack\presets\preset-00.glsl')) -ne $customPreset) { throw 'Custom preset was not preserved.' }
 $settings = [IO.File]::ReadAllText((Join-Path $client 'shaderpack\include\AU_Settings.glsl'))
 if ($settings -notmatch '#define AU_GI_DENOISER 1\s' -or $settings -notmatch '#define AU_GI_HISTORY_TAPS 9\s' -or
     $settings -notmatch '#define AU_SCREEN_BRIGHTNESS 1.25\s') { throw 'Settings preservation or legacy denoiser migration failed.' }

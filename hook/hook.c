@@ -1,9 +1,15 @@
-// opengl32.dll proxy for Hytale: forwards everything to the system opengl32.dll and
+// OpenGL shader hook for Hytale: Windows opengl32.dll proxy / Linux SDL3 interposer.
+// The Windows proxy forwards everything to the system opengl32.dll and
 // intercepts shader compilation so the "shaderpack" folder next to this DLL can replace
 // the game's embedded GLSL. Programs are relinked live whenever a file in
 // shaderpack/programs or shaderpack/include changes; uniform locations are virtualised
 // so the game's cached locations stay valid across relinks.
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "platform_linux.h"
+#endif
+#include <wctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,6 +18,13 @@
 #include <math.h>
 #include <wctype.h>
 #include <stddef.h>
+
+#ifdef _WIN32
+#define AU_GL_EXPORT __declspec(dllexport)
+#else
+// Linux uses SDL's proc lookup; don't interpose GL calls internal to the driver.
+#define AU_GL_EXPORT static
+#endif
 
 typedef unsigned int GLuint;
 typedef int GLint;
@@ -34,7 +47,9 @@ typedef char GLchar;
 
 int stubs_resolve(HMODULE real);
 
+#ifdef _WIN32
 static HMODULE g_real;
+#endif
 static wchar_t g_packDir[MAX_PATH];
 static CRITICAL_SECTION g_lock;
 static FILE *g_log;
@@ -61,7 +76,14 @@ static void logf_(const char *fmt, ...)
 
 static void pack_path(wchar_t *out, const char *rel)
 {
+#ifdef _WIN32
     _snwprintf(out, MAX_PATH, L"%s\\%hs", g_packDir, rel);
+#else
+    wchar_t wide[MAX_PATH];
+    au_to_wide(wide, MAX_PATH, rel);
+    for (wchar_t *p = wide; *p; p++) if (*p == L'\\') *p = L'/';
+    swprintf(out, MAX_PATH, L"%ls/%ls", g_packDir, wide);
+#endif
     out[MAX_PATH - 1] = 0;
 }
 
@@ -307,6 +329,10 @@ static void expand(Str *out, const char *text, int depth)
                     str_cstr(out, name);
                     str_cstr(out, "\n");
                     expand(out, body, depth + 1);
+#if !AU_HAS_DLSS
+                    if (!strcmp(name, "AU_Settings.glsl"))
+                        str_cstr(out, "\n#undef AU_DLSS\n#define AU_DLSS 0\n#undef AU_DLSS_RR\n#define AU_DLSS_RR 0\n");
+#endif
                     str_cstr(out, "\n// END ");
                     str_cstr(out, name);
                     str_cstr(out, "\n");
@@ -739,7 +765,7 @@ static void APIENTRY hook_glUniformBlockBinding(GLuint prog, GLuint index, GLuin
     found = 0;
     for (int i = 0; i < g_nKnownBlocks; i++) if (!strcmp(g_knownBlocks[i].name, name)) found = 1;
     if (!found && g_nKnownBlocks < 16 && name[0]) {
-        snprintf(g_knownBlocks[g_nKnownBlocks].name, 64, "%s", name);
+        snprintf(g_knownBlocks[g_nKnownBlocks].name, 64, "%.63s", name);
         g_knownBlocks[g_nKnownBlocks].binding = binding;
         g_nKnownBlocks++;
         logf_("uniform block %s -> binding %u", name, binding);
@@ -980,7 +1006,7 @@ static void APIENTRY hook_glActiveTexture(GLenum t)
     r_glActiveTexture(t);
 }
 
-__declspec(dllexport) void APIENTRY glBindTexture(GLenum target, GLuint tex)
+AU_GL_EXPORT void APIENTRY glBindTexture(GLenum target, GLuint tex)
 {
     if (g_activeUnit < MAX_UNITS) { g_units[g_activeUnit].target = target; g_units[g_activeUnit].tex = tex; }
     r_glBindTexture(target, tex);
@@ -1074,7 +1100,9 @@ static int g_temporalFrame = -1, g_temporalValid;
 static float g_temporalScene[152], g_temporalPreviousScene[152];
 static void framegen_before_ui(ProgRec *program);
 static void framegen_after_scene(ProgRec *program);
+#if AU_HAS_DLSS
 static int g_dlssPresentedFrame = -100;   // last frame DLSS's output reached the window
+#endif
 static int g_postPresent;                 // the frame is on the window: UI follows, no jitter
 
 // Terrain program in use (materials): the atlas is bound by draw time, not at glUseProgram.
@@ -1084,7 +1112,7 @@ typedef struct { GLint viewport[4], scissor[4]; int active, fragmentLocation; } 
 static RenderUIState render_ui_begin(void);
 static void render_ui_end(RenderUIState state);
 
-__declspec(dllexport) void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsizei count)
+AU_GL_EXPORT void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsizei count)
 {
     ProgRec *program = g_curProg ? prog_rec(g_curProg, 0) : NULL;
     if (program) temporal_prepare(program);
@@ -1100,7 +1128,7 @@ __declspec(dllexport) void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsiz
     framegen_after_scene(program);
 }
 
-__declspec(dllexport) void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices)
+AU_GL_EXPORT void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices)
 {
     ProgRec *program = g_curProg ? prog_rec(g_curProg, 0) : NULL;
     if (program) temporal_prepare(program);
@@ -1878,7 +1906,7 @@ static void vox_use(ProgRec *p)
     r_glBindImageTexture(VOX_UNIT_LIGHTS, g_voxLights, 0, 0, 0, GL_READ_WRITE, GL_R32UI);
     if (strcmp(g_voxLastUser, p->pname)) {
         r_glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
-        strncpy(g_voxLastUser, p->pname, sizeof(g_voxLastUser) - 1);
+        snprintf(g_voxLastUser, sizeof(g_voxLastUser), "%s", p->pname);
     }
 }
 
@@ -2595,7 +2623,7 @@ static void profile_use(const char *name)
     if (!qc) qc = (PFN_glQueryCounter)real_wglGetProcAddress("glQueryCounter");
     if (g_profState == 2 && g_profN < PROF_MAX && qc) {
         qc(g_profQ[g_profN], GL_TIMESTAMP);
-        snprintf(g_profName[g_profN], 48, "%s", name && name[0] ? name : "(other)");
+        snprintf(g_profName[g_profN], 48, "%.47s", name && name[0] ? name : "(other)");
         g_profN++;
     }
 }
@@ -2619,7 +2647,7 @@ static void profile_collect(void)
         total += d;
         int k = 0;
         while (k < nn && strcmp(names[k], g_profName[i])) k++;
-        if (k == nn && nn < 128) { snprintf(names[nn], 48, "%s", g_profName[i]); ms[nn] = 0; counts[nn] = 0; nn++; }
+        if (k == nn && nn < 128) { snprintf(names[nn], 48, "%.47s", g_profName[i]); ms[nn] = 0; counts[nn] = 0; nn++; }
         if (k < 128) { ms[k] += d; counts[k]++; }
     }
     logf_("PROFILE frame GPU %.2f ms over %d passes:", total, g_profN - 1);
@@ -2774,6 +2802,7 @@ static void APIENTRY hook_glUseProgram(GLuint prog)
     LeaveCriticalSection(&g_lock);
 }
 
+#ifdef _WIN32
 static int is_game_foreground(void)
 {
     DWORD pid = 0;
@@ -2819,6 +2848,8 @@ static DWORD WINAPI watcher_thread(LPVOID arg)
 }
 
 // ----------------------------------------------------------------------------------------
+#endif // _WIN32 watcher
+
 // In-game options menu (Home key). Lists the #defines named in shaderpack/options.txt and
 // edits their values in include/AU_Settings.glsl, which the file watcher then hot-reloads.
 // Drawn as an overlay at SwapBuffers, after the game's own UI.
@@ -2836,8 +2867,8 @@ typedef struct {
     wchar_t help[192];
     double min, max, step, def, value;
     int nEnum;
-    double enumVal[8];
-    wchar_t enumLabel[8][24];
+    double enumVal[24];
+    wchar_t enumLabel[24][64];
     int decimals, isFloat, present;
 } MenuOpt;
 
@@ -2863,15 +2894,23 @@ static MenuLayout g_menuLayout;
 static volatile LONG g_menuOpen;
 static volatile LONG g_menuTAAWarningPending;
 static int g_menuMouseMode;
+static int g_menuPresetNaming, g_menuProfileChoice = -1;
+static void menu_profiles_load(MenuOpt *option);
+static void menu_profile_action(const char *name);
+static void menu_profile_finish(void);
 static int g_menuSDLReady;
 static volatile LONG g_menuKeyEdges;
+#ifdef _WIN32
 static const int g_menuKeys[] = {VK_HOME, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_PRIOR, VK_NEXT, VK_ESCAPE};
+#endif
 static int g_menuDirty = 1;
 static double g_menuWriteAt;
 static wchar_t g_menuStatus[96];
 static CRITICAL_SECTION g_menuLock;
+#ifdef _WIN32
 static HWND g_gameHwnd;
 static WNDPROC g_prevWndProc;
+#endif
 
 static int menu_contains(const wchar_t *text, const wchar_t *query)
 {
@@ -2898,7 +2937,7 @@ static void menu_rebuild_rows(void)
     for (int index = 0; index < g_nMo; index++) {
         MenuOpt *option = &g_mo[index];
         if (option->kind == MO_HEADER) continue;
-        if (*g_menuSearch) {
+        if (*g_menuSearch && !g_menuPresetNaming) {
             wchar_t identifier[64];
             MultiByteToWideChar(CP_UTF8, 0, option->define, -1, identifier, 64);
             if (!menu_contains(option->label, g_menuSearch) && !menu_contains(identifier, g_menuSearch)) continue;
@@ -2922,6 +2961,7 @@ static void menu_activate_tab(int tab)
     }
     g_menuTab = tab;
     g_menuSearch[0] = 0;
+    g_menuPresetNaming = 0;
     g_menuSearchFocus = 0;
     g_menuDragging = -1;
     g_moSel = g_menuTabs[tab].selected;
@@ -2946,7 +2986,11 @@ static char *menu_trim(char *s)
 
 static void to_wide(wchar_t *out, int cap, const char *s)
 {
+#ifdef _WIN32
     if (!MultiByteToWideChar(CP_UTF8, 0, s, -1, out, cap)) out[0] = 0;
+#else
+    au_to_wide(out, (size_t)cap, s);
+#endif
     out[cap - 1] = 0;
 }
 
@@ -3014,9 +3058,17 @@ static void menu_load(void)
         if (g_menuTabCount > 0) g_menuTabs[m->tab].count++;
         if (nf >= 5) to_wide(m->help, 192, f[4]);
         snprintf(m->define, sizeof(m->define), "%s", f[0]);
+#ifndef _WIN32
+        if (!strncmp(m->define, "AU_DLSS", 7) || !strcmp(m->define, "!DLSS_INFO") || !strcmp(m->define, "AU_RENDER_SCALE")) continue;
+#endif
         to_wide(m->label, 64, f[1]);
         char *kind = f[2];
-        if (!strcmp(m->define, "!RESET_ALL")) {
+        if (!strcmp(m->define, "!PROFILE")) {
+            menu_profiles_load(m);
+            g_nMo++;
+            continue;
+        }
+        if (!strcmp(kind, "action")) {
             m->kind = MO_ACTION;
             m->present = 1;
             g_nMo++;
@@ -3043,12 +3095,12 @@ static void menu_load(void)
         } else if (!strncmp(kind, "enum", 4)) {
             m->kind = MO_ENUM;
             char *s3 = NULL;
-            for (char *t = strtok_s(kind + 4, " ", &s3); t && m->nEnum < 8; t = strtok_s(NULL, " ", &s3)) {
+            for (char *t = strtok_s(kind + 4, " ", &s3); t && m->nEnum < 24; t = strtok_s(NULL, " ", &s3)) {
                 char *c = strchr(t, ':');
                 if (!c) continue;
                 *c = 0;
                 m->enumVal[m->nEnum] = atof(t);
-                to_wide(m->enumLabel[m->nEnum], 24, c + 1);
+                to_wide(m->enumLabel[m->nEnum], 64, c + 1);
                 for (wchar_t *w = m->enumLabel[m->nEnum]; *w; w++) if (*w == L'_') *w = L' ';
                 m->nEnum++;
             }
@@ -3103,6 +3155,16 @@ static void format_value(const MenuOpt *m, double v, char *out, size_t cap)
 static void display_value(const MenuOpt *m, wchar_t *out, int cap)
 {
     if (m->kind == MO_ACTION) {
+        if (!strcmp(m->define, "!PROFILE_APPLY")) {
+            _snwprintf(out, cap, L"Apply profile");
+            out[cap - 1] = 0;
+            return;
+        }
+        if (!strcmp(m->define, "!PROFILE_SAVE")) {
+            _snwprintf(out, cap, L"%ls", g_menuPresetNaming ? L"Save name" : L"Save preset...");
+            out[cap - 1] = 0;
+            return;
+        }
         _snwprintf(out, cap, L"%ls", now_sec() < g_menuResetUntil ? L"Confirm reset" : L"Reset all");
         out[cap - 1] = 0;
         return;
@@ -3221,6 +3283,8 @@ static void menu_reset_all(void)
     g_menuDirty = 1;
 }
 
+#include "profiles.h"
+
 static void menu_move(int dir)
 {
     int selected = menu_visible_index(g_moSel);
@@ -3242,6 +3306,10 @@ static void menu_change(int dir, int reset)
 {
     if (g_moSel < 0) return;
     MenuOpt *m = &g_mo[g_moSel];
+    if (m->kind == MO_ACTION && dir > 0 && !strncmp(m->define, "!PROFILE_", 9)) {
+        menu_profile_action(m->define);
+        return;
+    }
     if (!m->present || m->kind == MO_INFO || m->kind == MO_ACTION) return;
     double v = m->value;
     if (reset) {
@@ -3262,6 +3330,11 @@ static void menu_change(int dir, int reset)
     }
     if (fabs(v - m->value) < 1e-9) return;
     m->value = v;
+    if (!strcmp(m->define, "!PROFILE")) {
+        g_menuProfileChoice = (int)v;
+        g_menuDirty = 1;
+        return;
+    }
     if (m->kind == MO_PACK) {
         g_toggleOff = v < 0.5;
         logf_("shaderpack %s (menu)", g_toggleOff ? "OFF" : "ON");
@@ -3359,7 +3432,10 @@ static void menu_pointer(int clicked)
     if (option->kind == MO_ACTION) {
         int buttonTop = layout->contentTop + row * layout->row + layout->row / 2;
         if (pointerX >= layout->controlX + layout->pad && pointerX <= layout->width - layout->pad * 2
-            && pointerY >= buttonTop && pointerY <= buttonTop + layout->row / 2 - layout->row * 8 / 58) menu_reset_all();
+            && pointerY >= buttonTop && pointerY <= buttonTop + layout->row / 2 - layout->row * 8 / 58) {
+            if (!strncmp(option->define, "!PROFILE_", 9)) menu_profile_action(option->define);
+            else menu_reset_all();
+        }
         return;
     }
     if (option->kind == MO_RANGE && pointerY < layout->contentTop + row * layout->row + layout->row / 2) return;
@@ -3377,12 +3453,14 @@ static void menu_pointer(int clicked)
     }
 }
 
+#ifdef _WIN32
 static int menu_edit_mode(int foreground, SHORT altState)
 {
     return g_menuOpen && foreground && (altState & 0x8000) != 0;
 }
 
 #include "menu_sdl.h"
+#endif
 
 static RenderUIState render_ui_begin(void)
 {
@@ -3422,6 +3500,7 @@ static void render_ui_end(RenderUIState state)
     if (state.fragmentLocation >= 0) r_glUniform2f(state.fragmentLocation, 1.0f, 1.0f);
 }
 
+#ifdef _WIN32
 static LRESULT CALLBACK menu_wndproc(HWND window, UINT message, WPARAM parameter, LPARAM data)
 {
     if ((message == WM_KEYDOWN || message == WM_SYSKEYDOWN) && !(data & ((LPARAM)1 << 30)))
@@ -3481,19 +3560,25 @@ static LRESULT CALLBACK menu_wndproc(HWND window, UINT message, WPARAM parameter
         }
         if (message == WM_RBUTTONDOWN || message == WM_RBUTTONUP || message == WM_MBUTTONDOWN || message == WM_MBUTTONUP) return 0;
         if (message == WM_SETCURSOR) { SetCursor(NULL); return 1; }
+        if ((message == WM_KEYDOWN || message == WM_SYSKEYDOWN) && parameter == VK_RETURN && g_menuPresetNaming) {
+            EnterCriticalSection(&g_menuLock);
+            menu_profile_finish();
+            LeaveCriticalSection(&g_menuLock);
+            return 0;
+        }
         if (message == WM_CHAR || message == WM_SYSCHAR) {
             EnterCriticalSection(&g_menuLock);
             if (g_menuSearchFocus && parameter == 8 && *g_menuSearch) {
                 g_menuSearch[wcslen(g_menuSearch) - 1] = 0;
                 g_moTop = 0;
-                menu_rebuild_rows();
+                if (!g_menuPresetNaming) menu_rebuild_rows();
             } else if (g_menuSearchFocus && parameter >= 32 && parameter < 65536) {
                 size_t length = wcslen(g_menuSearch);
                 if (length < 63) {
                     g_menuSearch[length] = (wchar_t)parameter;
                     g_menuSearch[length + 1] = 0;
                     g_moTop = 0;
-                    menu_rebuild_rows();
+                    if (!g_menuPresetNaming) menu_rebuild_rows();
                 }
             }
             LeaveCriticalSection(&g_menuLock);
@@ -3574,7 +3659,7 @@ static DWORD WINAPI menu_input_thread(LPVOID argument)
                 case VK_RIGHT: if (!g_menuSearchFocus && (!repeat || sliding)) menu_change(1, 0); break;
                 case VK_PRIOR: menu_section(-1); break;
                 case VK_NEXT: menu_section(1); break;
-                case VK_ESCAPE: g_menuOpen = 0; g_menuDragging = -1; break;
+                case VK_ESCAPE: menu_profile_cancel(); g_menuOpen = 0; g_menuDragging = -1; break;
                 }
             }
             LeaveCriticalSection(&g_menuLock);
@@ -3583,7 +3668,11 @@ static DWORD WINAPI menu_input_thread(LPVOID argument)
     return 0;
 }
 
-// ---- Panel (GDI into a top-down 32-bit DIB) ----
+#endif // _WIN32 input
+
+// ---- Panel (GDI on Windows, Cairo on Linux, top-down BGRA pixels) ----
+
+#ifdef _WIN32
 
 static HDC g_ovDC;
 static HBITMAP g_ovBmp;
@@ -3625,6 +3714,10 @@ static void menu_round(HDC dc, int left, int top, int right, int bottom, int rad
     DeleteObject(brush);
 }
 
+#else
+#include "linux_panel.h"
+#endif
+
 static void menu_render(int screenWidth, int screenHeight)
 {
     double scale = screenHeight / 1080.0;
@@ -3657,6 +3750,7 @@ static void menu_render(int screenWidth, int screenHeight)
     if (g_moTop < 0) g_moTop = 0;
     int width = layout->width, height = layout->height, pad = layout->pad;
     if (width <= 0 || height <= 0) return;
+#ifdef _WIN32
     if (!g_ovDC) g_ovDC = CreateCompatibleDC(NULL);
     if (width != g_ovW || height != g_ovH || !g_ovBmp) {
         static HBITMAP baseBitmap;
@@ -3695,6 +3789,17 @@ static void menu_render(int screenWidth, int screenHeight)
     }
     HDC dc = g_ovDC;
     SetBkMode(dc, TRANSPARENT);
+#else
+    if (!linux_panel_resize(width * 2, height * 2)) return;
+    cairo_identity_matrix(g_ovDC);
+    cairo_scale(g_ovDC, 2.0, 2.0);
+    g_ovTexW = width * 2;
+    g_ovTexH = height * 2;
+    g_fText = (LinuxFont){17 * scale, 0};
+    g_fBold = (LinuxFont){17 * scale, 1};
+    g_fSmall = (LinuxFont){14 * scale, 0};
+    cairo_t *dc = g_ovDC;
+#endif
     menu_fill(dc, 0, 0, width, height, RGB(13, 20, 29));
     menu_fill(dc, 0, layout->title, layout->rail, height - layout->footer, RGB(10, 16, 24));
     for (int stripe = 0; stripe < layout->title; stripe++)
@@ -3727,7 +3832,9 @@ static void menu_render(int screenWidth, int screenHeight)
     menu_round(dc, contentLeft, searchTop, contentRight, searchBottom, (int)(14 * scale),
                g_menuSearchFocus ? RGB(31, 60, 68) : RGB(23, 34, 47));
     wchar_t query[96];
-    _snwprintf(query, 96, L"%ls%ls", *g_menuSearch ? g_menuSearch : L"Search settings...", g_menuSearchFocus ? L" |" : L"");
+    _snwprintf(query, 96, L"%ls%ls%ls", g_menuPresetNaming ? L"Name: " : L"",
+              *g_menuSearch ? g_menuSearch : g_menuPresetNaming ? L"Type preset name..." : L"Search settings...",
+              g_menuSearchFocus ? L" |" : L"");
     query[95] = 0;
     menu_text(dc, query, contentLeft + pad, searchTop, contentRight - pad, searchBottom, g_fSmall,
               *g_menuSearch ? RGB(232, 243, 248) : RGB(124, 151, 177), DT_LEFT);
@@ -3819,10 +3926,15 @@ static void menu_render(int screenWidth, int screenHeight)
         if (option->help[0]) _snwprintf(help, 256, L"%ls", option->help);
         else _snwprintf(help, 256, L"%hs", option->define);
         help[255] = 0;
+#ifdef _WIN32
         RECT helpRect = {pad, footerTop + (int)(30 * scale), width - pad, footerTop + (int)(69 * scale)};
         SelectObject(dc, g_fSmall);
         SetTextColor(dc, RGB(160, 181, 199));
         DrawTextW(dc, help, -1, &helpRect, DT_WORDBREAK | DT_END_ELLIPSIS | DT_NOPREFIX);
+#else
+        menu_text(dc, help, pad, footerTop + (int)(30 * scale), width - pad,
+                  footerTop + (int)(69 * scale), g_fSmall, RGB(160, 181, 199), DT_LEFT);
+#endif
     }
     wchar_t defaultText[96] = L"Auto-save enabled";
     if (g_moSel >= 0 && MENU_SELECTABLE(&g_mo[g_moSel]) && g_mo[g_moSel].kind != MO_ACTION) {
@@ -3839,6 +3951,7 @@ static void menu_render(int screenWidth, int screenHeight)
     menu_text(dc, L"Reset selected", width - layout->row * 3, height - (int)(31 * scale), width - pad, height - (int)(7 * scale),
               g_fSmall, RGB(164, 199, 218), DT_CENTER);
     int pointerX = (int)g_menuPointerX - layout->x, pointerY = (int)g_menuPointerY - layout->y;
+#ifdef _WIN32
     POINT pointer[3] = {{pointerX, pointerY}, {pointerX + (int)(5 * scale), pointerY + (int)(18 * scale)},
                         {pointerX + (int)(12 * scale), pointerY + (int)(12 * scale)}};
     HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(WHITE_BRUSH));
@@ -3847,6 +3960,9 @@ static void menu_render(int screenWidth, int screenHeight)
     SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
     GdiFlush();
+#else
+    cairo_surface_flush(g_ovBmp);
+#endif
     width = g_ovTexW;
     height = g_ovTexH;
     int radius = (int)(24 * scale);
@@ -4099,6 +4215,7 @@ static void menu_draw(int sw, int sh)
     for (int i = 0; i < 7; i++) { if (capOn[i]) ov.Enable(caps[i]); else ov.Disable(caps[i]); }
 }
 
+#ifdef _WIN32
 static void menu_frame(HDC hdc)
 {
     menu_sdl_install();
@@ -4128,98 +4245,12 @@ static void menu_frame(HDC hdc)
     LeaveCriticalSection(&g_menuLock);
 }
 
-// Screenshot for testing: creating shaderpack/_shot makes the next frame (before the menu
-// overlay) be saved as shaderpack/shot.bmp, box-filtered down to at most 1600 pixels wide.
-// Reads the back buffer, so it works where desktop capture of the game window does not.
-#define GL_READ_FRAMEBUFFER 0x8CA8
-#define GL_READ_FRAMEBUFFER_BINDING 0x8CAA
-#define GL_PIXEL_PACK_BUFFER 0x88EB
-#define GL_PIXEL_PACK_BUFFER_BINDING 0x88ED
-#define GL_READ_BUFFER 0x0C02
-#define GL_PACK_ALIGNMENT 0x0D05
-#define GL_BACK 0x0405
-typedef void (APIENTRY *PFN_glReadPixels)(GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void *);
-typedef void (APIENTRY *PFN_glReadBuffer)(GLenum);
-typedef void (APIENTRY *PFN_glBindFramebuffer)(GLenum, GLuint);
-
-static void shot_frame(HDC hdc)
-{
-    static int counter;
-    if (++counter % 10 || !pack_flag("_shot")) return;
-    wchar_t flag[MAX_PATH];
-    pack_path(flag, "_shot");
-    DeleteFileW(flag);
-    PFN_glReadPixels readPx = (PFN_glReadPixels)GetProcAddress(g_real, "glReadPixels");
-    PFN_glReadBuffer readBuf = (PFN_glReadBuffer)GetProcAddress(g_real, "glReadBuffer");
-    PFN_glPixelStorei pst = (PFN_glPixelStorei)GetProcAddress(g_real, "glPixelStorei");
-    PFN_glBindFramebuffer bindFb = (PFN_glBindFramebuffer)real_wglGetProcAddress("glBindFramebuffer");
-    PFN_glBindBuffer bindBuf = (PFN_glBindBuffer)real_wglGetProcAddress("glBindBuffer");
-    RECT rc;
-    if (!readPx || !readBuf || !pst || !bindFb || !bindBuf || !GetClientRect(WindowFromDC(hdc), &rc)) return;
-    int w = rc.right - rc.left, h = rc.bottom - rc.top;
-    if (w <= 0 || h <= 0) return;
-    unsigned char *px = (unsigned char *)malloc((size_t)w * h * 4);
-    if (!px) return;
-    GLint prevFb = 0, prevPbo = 0, prevBuf = 0, prevAlign = 4;
-    r_glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevFb);
-    r_glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &prevPbo);
-    r_glGetIntegerv(GL_READ_BUFFER, &prevBuf);
-    r_glGetIntegerv(GL_PACK_ALIGNMENT, &prevAlign);
-    bindFb(GL_READ_FRAMEBUFFER, 0);
-    bindBuf(GL_PIXEL_PACK_BUFFER, 0);
-    readBuf(GL_BACK);
-    pst(GL_PACK_ALIGNMENT, 1);
-    readPx(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
-    pst(GL_PACK_ALIGNMENT, prevAlign);
-    readBuf((GLenum)prevBuf);
-    bindBuf(GL_PIXEL_PACK_BUFFER, (GLuint)prevPbo);
-    bindFb(GL_READ_FRAMEBUFFER, (GLuint)prevFb);
-
-    int f = (w + 1599) / 1600;
-    int ow = w / f, oh = h / f, stride = (ow * 3 + 3) & ~3;
-    unsigned char *out = (unsigned char *)calloc((size_t)stride * oh, 1);
-    if (out) {
-        for (int y = 0; y < oh; y++)
-            for (int x = 0; x < ow; x++) {
-                unsigned sum[3] = {0, 0, 0};
-                for (int j = 0; j < f; j++)
-                    for (int i = 0; i < f; i++) {
-                        const unsigned char *s = px + (((size_t)(y * f + j) * w) + x * f + i) * 4;
-                        sum[0] += s[2]; sum[1] += s[1]; sum[2] += s[0];
-                    }
-                unsigned char *d = out + (size_t)y * stride + x * 3;
-                for (int c = 0; c < 3; c++) d[c] = (unsigned char)(sum[c] / (unsigned)(f * f));
-            }
-        // GL rows run bottom-up like a BMP's.
-        BITMAPFILEHEADER fh = {0};
-        BITMAPINFOHEADER ih = {0};
-        fh.bfType = 0x4D42;
-        fh.bfOffBits = sizeof(fh) + sizeof(ih);
-        fh.bfSize = fh.bfOffBits + (DWORD)(stride * oh);
-        ih.biSize = sizeof(ih);
-        ih.biWidth = ow;
-        ih.biHeight = oh;
-        ih.biPlanes = 1;
-        ih.biBitCount = 24;
-        Str bmp = {0};
-        str_add(&bmp, (const char *)&fh, sizeof(fh));
-        str_add(&bmp, (const char *)&ih, sizeof(ih));
-        str_add(&bmp, (const char *)out, (size_t)stride * oh);
-        write_file("shot.bmp", bmp.p, bmp.n);
-        free(bmp.p);
-        free(out);
-        logf_("screenshot %dx%d -> shot.bmp (%dx%d)", w, h, ow, oh);
-    }
-    free(px);
-}
-
 typedef BOOL (WINAPI *PFN_wglSwapBuffers)(HDC);
 static PFN_wglSwapBuffers r_wglSwapBuffers;
 
 __declspec(dllexport) BOOL WINAPI wglSwapBuffers(HDC hdc)
 {
     g_postPresent = 0;
-    shot_frame(hdc);
     menu_frame(hdc);
     int generated = framegen_swap();
     g_frame++;
@@ -4227,9 +4258,10 @@ __declspec(dllexport) BOOL WINAPI wglSwapBuffers(HDC hdc)
     return r_wglSwapBuffers(hdc);
 }
 
-// ----------------------------------------------------------------------------------------
+#endif // _WIN32 presentation
 
-__declspec(dllexport) PROC WINAPI wglGetProcAddress(LPCSTR name)
+// Shared dispatch for WGL and SDL3.
+static PROC hook_get_proc(const char *name)
 {
     PROC p = real_wglGetProcAddress(name);
     if (!p || !name) return p;
@@ -4244,14 +4276,20 @@ __declspec(dllexport) PROC WINAPI wglGetProcAddress(LPCSTR name)
     HOOK(glBufferData) HOOK(glBufferSubData)
     HOOK(glMapBufferRange) HOOK(glUnmapBuffer)
 #undef HOOK
-    if (!strcmp(name, "glBindTexture")) return (PROC)glBindTexture;
-    if (!strcmp(name, "glDrawArrays")) return (PROC)glDrawArrays;
-    if (!strcmp(name, "glDrawElements")) return (PROC)glDrawElements;
+    if (!strcmp(name, "glBindTexture")) { r_glBindTexture = (PFN_glBindTexture)p; return (PROC)glBindTexture; }
+    if (!strcmp(name, "glDrawArrays")) { r_glDrawArrays = (PFN_glDrawArrays)p; return (PROC)glDrawArrays; }
+    if (!strcmp(name, "glDrawElements")) { r_glDrawElements = (PFN_glDrawElements)p; return (PROC)glDrawElements; }
     if (!strcmp(name, "glGetFramebufferAttachmentParameteriv"))
         r_glGetFramebufferAttachmentParameteriv = (PFN_glGetFramebufferAttachmentParameteriv)p;
     return p;
 }
 
+#ifdef _WIN32
+
+__declspec(dllexport) PROC WINAPI wglGetProcAddress(LPCSTR name)
+{
+    return hook_get_proc(name);
+}
 
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
 {
@@ -4302,3 +4340,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
     }
     return TRUE;
 }
+
+#else
+#include "linux_runtime.h"
+#endif

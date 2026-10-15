@@ -1,0 +1,4 @@
+SDL3_0.0.0 {
+    global: SDL_GL_GetProcAddress; SDL_GL_SwapWindow;
+    local: *;
+};

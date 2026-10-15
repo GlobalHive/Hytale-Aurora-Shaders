@@ -243,6 +243,15 @@ try {
     }
     if ($owned -and $packMoved -and -not $linkedHere) {
         Restore-Settings (Join-Path $rollbackPack 'include\AU_Settings.glsl') (Join-Path $link 'include\AU_Settings.glsl')
+        $previousPresets = Join-Path $rollbackPack 'presets'
+        if (Test-Path -LiteralPath $previousPresets -PathType Container) {
+            $presetDestination = Join-Path $link 'presets'
+            New-Item -ItemType Directory -Path $presetDestination -Force | Out-Null
+            foreach ($preset in Get-ChildItem -LiteralPath $previousPresets -File -Filter 'preset-*.glsl') {
+                $destination = Join-Path $presetDestination $preset.Name
+                if (-not (Test-Path -LiteralPath $destination)) { Copy-Item -LiteralPath $preset.FullName -Destination $destination }
+            }
+        }
     }
     Copy-Item -LiteralPath $source -Destination $dll -Force
     $hash = (Get-FileHash -LiteralPath $source).Hash
