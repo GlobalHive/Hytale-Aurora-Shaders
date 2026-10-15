@@ -21,7 +21,7 @@ vec2 AU_ProjectToScreen(vec3 positionFromCameraWS)
 // made every ray "hit" on its first step, so GI and reflections never found anything.
 float AU_SceneLinAt(sampler2D depthTex, vec2 uv)
 {
-    float d = texture(depthTex, uv).r;
+    float d = textureLod(depthTex, uv, 0.0).r;
     if (d >= 1.0) return -1.0;
 #if USE_LINEAR_Z
     return d * FarClip;
@@ -66,12 +66,17 @@ vec3 AU_GIHitLight(vec2 uv);
 // moving): the rays are stratified over the hemisphere (cosine rings x golden-angle spiral,
 // rotated per pixel and frame) instead of a correlated random sequence, occlusion fades with the
 // hit distance instead of switching per ray, and the radiance comes from a blurred mip, clamped.
-vec3 AU_GetSSGI(sampler2D depthTex, vec3 playerPos, vec3 normal, float dither, out float occlusion)
+vec3 AU_GetSSGI(sampler2D depthTex, vec3 playerPos, vec3 normal, vec3 geometricNormal, float dither, out float occlusion)
 {
     const int rays = AU_RTX_GI_RAYS;
     const int steps = 8;
     float radius = AU_RTX_GI_RADIUS * (1.0 + length(playerPos) * 0.02);
+#if AU_SSGI_SELF_HIT_FIX
+    vec3 planeNormal = dot(geometricNormal, normal) < 0.0 ? -geometricNormal : geometricNormal;
+    vec3 origin = playerPos + planeNormal * 0.05;
+#else
     vec3 origin = playerPos + normal * 0.05;
+#endif
     // Blue noise (two channels independent of dither) for the stratum jitter and rotation.
     vec2 pn = GetDither2(gl_FragCoord.xy);
     float jitter = pn.x;
@@ -82,6 +87,10 @@ vec3 AU_GetSSGI(sampler2D depthTex, vec3 playerPos, vec3 normal, float dither, o
         float u1 = (float(r) + jitter) / float(rays);
         float u2 = fract(float(r) * 0.618034 + rot);
         vec3 dir = AU_HemisphereDir(normal, u1, u2);
+#if AU_SSGI_SELF_HIT_FIX
+        float belowSurface = min(dot(dir, planeNormal) - 0.01, 0.0);
+        dir = normalize(dir - planeNormal * belowSurface);
+#endif
         for (int s = 1; s <= steps; s++) {
             float t = radius * pow(float(s) / float(steps), 1.6);
             vec3 p = origin + dir * t;
@@ -90,6 +99,10 @@ vec3 AU_GetSSGI(sampler2D depthTex, vec3 playerPos, vec3 normal, float dither, o
             float lin1 = AU_SceneLinAt(depthTex, uv);
             float lin2 = AU_LinOf(p);
             if (lin1 > 0.0 && lin2 > lin1) {
+#if AU_SSGI_SELF_HIT_FIX
+                vec3 scenePosition = p * (lin1 / max(lin2, 0.0001));
+                if (abs(dot(scenePosition - playerPos, planeNormal)) < 0.03) continue;
+#endif
                 // Thickness check; ignore the first-person hand / held item (it is in the depth buffer).
                 if (lin1 > AU_NEAR_IGNORE && lin2 - lin1 < radius * 0.75) {
                     float near = 1.0 - t / radius;

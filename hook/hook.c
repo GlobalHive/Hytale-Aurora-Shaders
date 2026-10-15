@@ -10,6 +10,8 @@
 #include <stdint.h>
 #include <stdarg.h>
 #include <math.h>
+#include <wctype.h>
+#include <stddef.h>
 
 typedef unsigned int GLuint;
 typedef int GLint;
@@ -425,9 +427,17 @@ typedef struct {
     GLint ctexLoc[8];
     GLint fwdLoc[16];
     GLint locFrame, locTime, locWetness;
+    GLint locPreviousVP, locPreviousCamera, locSceneJitter, locPreviousJitter, locGeometryJitter, locPreviousGeometryJitter, locHistoryValid;
+    GLint locCurrentProjection;
+    GLint locGICompact, locGISourceSize, locGIPreviousInverse, locGIPreviousDepth;
     GLint locVoxGeo, locVoxCol;
-    GLint locJitter;
+    GLint locNativeEmission;
+    GLint locMaterialLOD;
+    GLint locJitter, locUIFragmentScale;
     int usesGI;
+    int giDenoise, giTemporal, giLegacy;
+    int giCompact, giLights;
+    GLint locPTPass, locLocalLightTiles;
     int usesDlss;
     GLint locDlssActive, locDlssRR;
     GLint locMaterials;      // uHookMaterials (terrain): per-tile block materials
@@ -1013,6 +1023,8 @@ static int is_share_src(ProgRec *p)
     return p->shareSrc;
 }
 
+static void temporal_prepare(ProgRec *program);
+
 // Shares are captured at draw time: by the next glUseProgram the game has often re-bound the
 // unit for the following pass (the shadow map's unit holds the scene depth by then).
 static void share_draw_capture(void)
@@ -1035,56 +1047,95 @@ static PFN_glDrawArraysInstanced r_glDrawArraysInstanced;
 static PFN_glDrawElementsInstanced r_glDrawElementsInstanced;
 
 static GLuint g_giProg;   // program that wants the GI history bound at its draw (see gi_bind)
-static void gi_bind(void);
+static void gi_bind(int temporal, int raw, int divisor, int compact, int lights);
+static void profile_use(const char *name);
+static void gi_release(void);
+static void gi_draw(GLenum mode, GLint first, GLsizei count);
 static GLuint g_dlssProg; // the program writing the DLSS inputs (PostEffectFS, see dlss_draw)
+static int g_dlssState, g_dlssRR;
 static int g_dlssPending; // inputs written this frame, DLSS runs at the present (dlss_present)
 static void dlss_draw(GLenum mode, GLint first, GLsizei count);
 static int dlss_present(void);
 static int dlss_present_rect(int x, int y, int w, int h, const char *how);
 static float g_jitterNdc[2], g_jitterPx[2], g_jitterNextPx[2];   // see jitter_next_frame
+static float g_sceneJitter[2];
 // Hook-side settings (AU_Settings.glsl, read at every reload): DLSS jitter on/off and the signs
 // of the jitter / motion handed to DLSS (axis conventions).
 static double g_setDlssJitter = 1, g_setJitterSX = 1, g_setJitterSY = 1, g_setMotionSX = 1, g_setMotionSY = 1;
 static double g_setDlssDebug = 0;   // 1 = show DLSS's colour input, 2 = reset every frame, 3 depth, 4 motion
 static double g_setDlssMode = 1;    // AU_DLSS: 1 = Super Resolution, 2 = Ray Reconstruction
 static double g_setDlssPreset = 0;  // AU_DLSS_PRESET: 0 NVIDIA's default model, 1 sharpest, 2 less ghosting
+static double g_setDlssRRPreset = 0;
+static double g_setDlssSharpness = 0.2;
+static int g_setRenderScale, g_setDlssEnabled;
+static int g_setFrameGen;
+static int g_setVoxelColors;
+static int g_temporalFrame = -1, g_temporalValid;
+static float g_temporalScene[152], g_temporalPreviousScene[152];
+static void framegen_before_ui(ProgRec *program);
+static void framegen_after_scene(ProgRec *program);
 static int g_dlssPresentedFrame = -100;   // last frame DLSS's output reached the window
 static int g_postPresent;                 // the frame is on the window: UI follows, no jitter
 
 // Terrain program in use (materials): the atlas is bound by draw time, not at glUseProgram.
 static ProgRec *g_matProgRec;
 static void materials_draw_check(void);
+typedef struct { GLint viewport[4], scissor[4]; int active, fragmentLocation; } RenderUIState;
+static RenderUIState render_ui_begin(void);
+static void render_ui_end(RenderUIState state);
 
 __declspec(dllexport) void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsizei count)
 {
+    ProgRec *program = g_curProg ? prog_rec(g_curProg, 0) : NULL;
+    if (program) temporal_prepare(program);
     share_draw_capture();
     if (g_matProgRec) materials_draw_check();
-    if (g_giProg && g_giProg == g_curProg) gi_bind();
+    if (g_giProg && g_giProg == g_curProg) { gi_draw(mode, first, count); return; }
     if (g_dlssProg && g_dlssProg == g_curProg) { dlss_draw(mode, first, count); return; }
     if (g_dlssPending && dlss_present()) return;
+    framegen_before_ui(program);
+    RenderUIState ui = render_ui_begin();
     r_glDrawArrays(mode, first, count);
+    render_ui_end(ui);
+    framegen_after_scene(program);
 }
 
 __declspec(dllexport) void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices)
 {
+    ProgRec *program = g_curProg ? prog_rec(g_curProg, 0) : NULL;
+    if (program) temporal_prepare(program);
     share_draw_capture();
     if (g_matProgRec) materials_draw_check();
     if (g_dlssPending && dlss_present()) return;
+    framegen_before_ui(program);
+    RenderUIState ui = render_ui_begin();
     r_glDrawElements(mode, count, type, indices);
+    render_ui_end(ui);
+    framegen_after_scene(program);
 }
 
 static void APIENTRY hook_glDrawArraysInstanced(GLenum mode, GLint first, GLsizei count, GLsizei inst)
 {
+    ProgRec *program = g_curProg ? prog_rec(g_curProg, 0) : NULL;
+    if (program) temporal_prepare(program);
     share_draw_capture();
     if (g_matProgRec) materials_draw_check();
+    framegen_before_ui(program);
+    RenderUIState ui = render_ui_begin();
     r_glDrawArraysInstanced(mode, first, count, inst);
+    render_ui_end(ui);
 }
 
 static void APIENTRY hook_glDrawElementsInstanced(GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei inst)
 {
+    ProgRec *program = g_curProg ? prog_rec(g_curProg, 0) : NULL;
+    if (program) temporal_prepare(program);
     share_draw_capture();
     if (g_matProgRec) materials_draw_check();
+    framegen_before_ui(program);
+    RenderUIState ui = render_ui_begin();
     r_glDrawElementsInstanced(mode, count, type, indices, inst);
+    render_ui_end(ui);
 }
 
 static void apply_shares(GLuint prog, ProgRec *p)
@@ -1265,7 +1316,8 @@ static void ensure_textures(void)
 #define VOX_UNIT_GEO 6
 #define VOX_UNIT_COL 7
 #define VOX_UNIT_LIGHTS 3
-#define VOX_LIGHTS_W 2049   // per frame parity row: count, then 2 texels per light (1024 lights)
+#define VOX_LIGHTS_W 2049
+#define VOX_LIGHTS_H 5
 
 typedef void (APIENTRY *PFN_glTexImage3D)(GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *);
 typedef void (APIENTRY *PFN_glBindImageTexture)(GLuint, GLuint, GLint, GLboolean, GLint, GLenum, GLenum);
@@ -1275,7 +1327,7 @@ typedef GLenum (APIENTRY *PFN_glGetError)(void);
 static PFN_glBindImageTexture r_glBindImageTexture;
 static PFN_glMemoryBarrier r_glMemoryBarrier;
 static GLuint g_voxTex[2];
-static GLuint g_voxLights;        // R32UI 2049x2: the emissive blocks found this frame (MapChunkVS)
+static GLuint g_voxLights;
 static int g_voxState;            // 0 not created yet, 1 ready, -1 unavailable
 static char g_voxLastUser[64];    // pname of the last program that used the grid
 
@@ -1297,8 +1349,8 @@ static void vox_create(void)
     r_glGetIntegerv(GL_TEXTURE_BINDING_3D, &prevTex);
     r_glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, &prevPbo);
     if (prevPbo) bindBuf(GL_PIXEL_UNPACK_BUFFER, 0);
-    gen(2, g_voxTex);
-    for (int i = 0; i < 2; i++) {
+    gen(g_setVoxelColors ? 2 : 1, g_voxTex);
+    for (int i = 0; i < (g_setVoxelColors ? 2 : 1); i++) {
         r_glBindTexture(GL_TEXTURE_3D, g_voxTex[i]);
         par(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         par(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -1315,7 +1367,7 @@ static void vox_create(void)
     par(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     par(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     par(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
-    img2d(GL_TEXTURE_2D, 0, GL_R32UI, VOX_LIGHTS_W, 2, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, zero);
+    img2d(GL_TEXTURE_2D, 0, GL_R32UI, VOX_LIGHTS_W, VOX_LIGHTS_H, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, zero);
     r_glBindTexture(GL_TEXTURE_2D, (GLuint)prev2d);
     if (prevPbo) bindBuf(GL_PIXEL_UNPACK_BUFFER, (GLuint)prevPbo);
     free(zero);
@@ -1334,7 +1386,8 @@ static void vox_clear(void)
     if (!clr) clr = (PFN_glClearTexImage)real_wglGetProcAddress("glClearTexImage");
     if (!clr) return;
     clr(g_voxTex[0], 0, GL_RED_INTEGER, GL_UNSIGNED_INT, NULL);
-    clr(g_voxTex[1], 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    if (g_voxTex[1]) clr(g_voxTex[1], 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    if (g_voxLights) clr(g_voxLights, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, NULL);
 }
 
 // Temporal accumulation for the path tracer (DeferredFS): two ping-pong sets of
@@ -1354,58 +1407,164 @@ static void vox_clear(void)
 #define GI_TEX_RAD 21
 #define GI_TEX_POS 22
 #define GI_TEX_LIGHT 20
+#define GI_TEX_RAW_RAD 17
+#define GI_TEX_RAW_POS 19
+#define GI_TEX_RAW_LIGHT 31
 static int g_frame;            // counted at PostEffectFS (defined with the uniform forwarding)
 static GLuint g_giTex[2][3];   // [frame parity][0 radiance, 1 position, 2 block light]
+static GLuint g_giRawTex[3];
 static int g_giW, g_giH;
 
-static void gi_bind(void)
+static int g_giTemporal;
+static int g_giRaw, g_setGIHalf;
+static int g_giCompact, g_giLights;
+
+static void gi_release(void)
+{
+    if (!g_giTex[0][0] && !g_giRawTex[0]) return;
+    PFN_glDeleteTextures del = (PFN_glDeleteTextures)GetProcAddress(g_real, "glDeleteTextures");
+    static const GLuint units[6] = {GI_TEX_RAD, GI_TEX_POS, GI_TEX_LIGHT,
+                                   GI_TEX_RAW_RAD, GI_TEX_RAW_POS, GI_TEX_RAW_LIGHT};
+    for (int index = 0; index < 6; index++) {
+        GLuint unit = units[index];
+        r_glActiveTexture(GL_TEXTURE0 + unit);
+        r_glBindTexture(GL_TEXTURE_2D, 0);
+        if (r_glBindSampler) r_glBindSampler(unit, 0);
+        g_units[unit].target = GL_TEXTURE_2D;
+        g_units[unit].tex = 0;
+        g_units[unit].sampler = 0;
+    }
+    r_glActiveTexture(GL_TEXTURE0 + g_activeUnit);
+    if (r_glBindImageTexture) {
+        r_glBindImageTexture(GI_IMG_RAD, 0, 0, 0, 0, GL_READ_WRITE, GL_RGBA16F);
+        r_glBindImageTexture(GI_IMG_POS, 0, 0, 0, 0, GL_READ_WRITE, GL_RGBA32F);
+        r_glBindImageTexture(GI_IMG_LIGHT, 0, 0, 0, 0, GL_READ_WRITE, GL_RGBA16F);
+    }
+    if (g_giTex[0][0]) del(6, &g_giTex[0][0]);
+    if (g_giRawTex[0]) del(3, g_giRawTex);
+    memset(g_giTex, 0, sizeof(g_giTex));
+    memset(g_giRawTex, 0, sizeof(g_giRawTex));
+    g_giW = g_giH = g_giTemporal = g_giRaw = g_giCompact = g_giLights = 0;
+    logf_("GI denoiser buffers released");
+}
+
+static void gi_bind(int temporal, int raw, int divisor, int compact, int lights)
 {
     typedef void (APIENTRY *PFN_glClearTexImage)(GLuint, GLint, GLenum, GLenum, const void *);
     static PFN_glClearTexImage clr;
-    if (g_voxState != 1) return;
-    GLint vp[4] = {0};
-    r_glGetIntegerv(GL_VIEWPORT, vp);
-    if (vp[2] <= 0 || vp[3] <= 0) return;
-    if (vp[2] != g_giW || vp[3] != g_giH) {
+    if (!r_glBindImageTexture) r_glBindImageTexture = (PFN_glBindImageTexture)real_wglGetProcAddress("glBindImageTexture");
+    if (!r_glMemoryBarrier) r_glMemoryBarrier = (PFN_glMemoryBarrier)real_wglGetProcAddress("glMemoryBarrier");
+    if (!r_glBindImageTexture || !r_glMemoryBarrier) return;
+    GLint viewport[4] = {0};
+    r_glGetIntegerv(GL_VIEWPORT, viewport);
+    if (viewport[2] <= 0 || viewport[3] <= 0) return;
+    int width = (viewport[2] + divisor - 1) / divisor, height = (viewport[3] + divisor - 1) / divisor;
+    if (width != g_giW || height != g_giH || temporal != g_giTemporal || raw != g_giRaw || compact != g_giCompact || lights != g_giLights) {
+        gi_release();
         PFN_glGenTextures gen = (PFN_glGenTextures)GetProcAddress(g_real, "glGenTextures");
-        PFN_glDeleteTextures del = (PFN_glDeleteTextures)GetProcAddress(g_real, "glDeleteTextures");
         PFN_glTexImage2D img = (PFN_glTexImage2D)GetProcAddress(g_real, "glTexImage2D");
         PFN_glTexParameteri par = (PFN_glTexParameteri)GetProcAddress(g_real, "glTexParameteri");
         if (!clr) clr = (PFN_glClearTexImage)real_wglGetProcAddress("glClearTexImage");
-        if (g_giTex[0][0]) del(6, &g_giTex[0][0]);
-        gen(6, &g_giTex[0][0]);
-        GLint prevTex = 0;
-        r_glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTex);
-        for (int f = 0; f < 2; f++)
-            for (int k = 0; k < 3; k++) {
-                r_glBindTexture(GL_TEXTURE_2D, g_giTex[f][k]);
-                par(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-                par(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-                par(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
-                img(GL_TEXTURE_2D, 0, k == 1 ? GL_RGBA32F : GL_RGBA16F, vp[2], vp[3], 0, GL_RGBA, GL_FLOAT, NULL);
-                if (clr) clr(g_giTex[f][k], 0, GL_RGBA, GL_FLOAT, NULL);
-            }
-        r_glBindTexture(GL_TEXTURE_2D, (GLuint)prevTex);
-        g_giW = vp[2];
-        g_giH = vp[3];
-        logf_("path tracer history %dx%d", g_giW, g_giH);
+        GLint previousTexture = 0;
+        r_glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture);
+        for (int index = 0; index < (temporal ? 9 : 3); index++) {
+            if (index < 3 && !raw) continue;
+            int channel = index % 3;
+            if (channel == 2 && !lights) continue;
+            GLuint *handle = index < 3 ? &g_giRawTex[channel] : &g_giTex[(index - 3) / 3][channel];
+            gen(1, handle);
+            GLuint texture = *handle;
+            r_glBindTexture(GL_TEXTURE_2D, texture);
+            par(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            par(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            par(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+            GLenum format = channel == 1 && compact ? 0x8230 : channel == 1 ? GL_RGBA32F : GL_RGBA16F;
+            GLenum components = channel == 1 && compact ? 0x8227 : GL_RGBA;
+            img(GL_TEXTURE_2D, 0, format, width, height, 0, components, GL_FLOAT, NULL);
+            if (clr) clr(texture, 0, components, GL_FLOAT, NULL);
+        }
+        r_glBindTexture(GL_TEXTURE_2D, (GLuint)previousTexture);
+        g_giW = width;
+        g_giH = height;
+        g_giTemporal = temporal;
+        g_giRaw = raw;
+        g_giCompact = compact;
+        g_giLights = lights;
+        int channels = lights ? 3 : 2;
+        int bytes = 8 + (compact ? 8 : 16) + (lights ? 8 : 0);
+        logf_("GI denoiser %dx%d: raw=%d history=%d compact=%d memory=%.1f MiB", g_giW, g_giH, raw ? channels : 0, temporal ? channels * 2 : 0, compact,
+              (double)g_giW * g_giH * bytes * (raw + temporal * 2) / 1048576.0);
     }
-    int cur = g_frame & 1;
-    r_glBindImageTexture(GI_IMG_RAD, g_giTex[cur][0], 0, 0, 0, GL_READ_WRITE, GL_RGBA16F);
-    r_glBindImageTexture(GI_IMG_POS, g_giTex[cur][1], 0, 0, 0, GL_READ_WRITE, GL_RGBA32F);
-    r_glBindImageTexture(GI_IMG_LIGHT, g_giTex[cur][2], 0, 0, 0, GL_READ_WRITE, GL_RGBA16F);
-    for (int k = 0; k < 3; k++) {
-        GLuint unit = k == 0 ? GI_TEX_RAD : (k == 1 ? GI_TEX_POS : GI_TEX_LIGHT);
+    if (!temporal) return;
+    int current = g_frame & 1;
+    r_glBindImageTexture(GI_IMG_RAD, g_giTex[current][0], 0, 0, 0, GL_READ_WRITE, GL_RGBA16F);
+    r_glBindImageTexture(GI_IMG_POS, g_giTex[current][1], 0, 0, 0, GL_READ_WRITE, compact ? 0x8230 : GL_RGBA32F);
+    r_glBindImageTexture(GI_IMG_LIGHT, g_giTex[current][2], 0, 0, 0, GL_READ_WRITE, GL_RGBA16F);
+    static const GLuint historyUnits[3] = {GI_TEX_RAD, GI_TEX_POS, GI_TEX_LIGHT};
+    for (int channel = 0; channel < 3; channel++) {
+        GLuint unit = historyUnits[channel];
         r_glActiveTexture(GL_TEXTURE0 + unit);
-        r_glBindTexture(GL_TEXTURE_2D, g_giTex[cur ^ 1][k]);
+        r_glBindTexture(GL_TEXTURE_2D, g_giTex[current ^ 1][channel]);
         if (r_glBindSampler) r_glBindSampler(unit, 0);
         g_units[unit].target = GL_TEXTURE_2D;
-        g_units[unit].tex = g_giTex[cur ^ 1][k];
+        g_units[unit].tex = g_giTex[current ^ 1][channel];
         g_units[unit].sampler = 0;
     }
     r_glActiveTexture(GL_TEXTURE0 + g_activeUnit);
 }
 
+static void gi_draw(GLenum mode, GLint first, GLsizei count)
+{
+    ProgRec *program = prog_rec(g_curProg, 0);
+    if (!program || program->locPTPass < 0 || (program->locVoxGeo >= 0 && g_voxState != 1)) {
+        r_glDrawArrays(mode, first, count);
+        return;
+    }
+    int useHistory = program->giTemporal;
+    int rayReconstruction = 0;
+#if AU_HAS_DLSS
+    if (g_setDlssEnabled && g_setDlssMode == 2 && g_dlssState == 1 && g_dlssRR
+        && g_frame - g_dlssPresentedFrame <= 2) { useHistory = 0; rayReconstruction = 1; }
+#endif
+    if (useHistory) gi_bind(1, 0, 1, 0, program->giLights);
+    else gi_release();
+    if (useHistory && !g_giTex[0][0]) useHistory = 0;
+    if (program->locVoxCol >= 0) {
+        profile_use("GI voxel feed");
+        r_glUniform1i(program->locPTPass, 1);
+        r_glDrawArrays(mode, first, count);
+        r_glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+    }
+    if (program->locLocalLightTiles >= 0) {
+        static void (APIENTRY *setViewport)(GLint, GLint, GLsizei, GLsizei);
+        static GLboolean (APIENTRY *isEnabled)(GLenum);
+        static void (APIENTRY *enable)(GLenum), (APIENTRY *disable)(GLenum);
+        if (!setViewport) {
+            setViewport = (void *)GetProcAddress(g_real, "glViewport");
+            isEnabled = (void *)GetProcAddress(g_real, "glIsEnabled");
+            enable = (void *)GetProcAddress(g_real, "glEnable");
+            disable = (void *)GetProcAddress(g_real, "glDisable");
+        }
+        GLint viewport[4];
+        r_glGetIntegerv(GL_VIEWPORT, viewport);
+        GLboolean scissor = isEnabled(0x0c11);
+        if (scissor) disable(0x0c11);
+        profile_use("GI local light culling");
+        r_glUniform1i(program->locPTPass, 2);
+        setViewport(0, 0, 32, 64);
+        r_glDrawArrays(mode, first, count);
+        r_glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+        setViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+        if (scissor) enable(0x0c11);
+        r_glUniform1i(program->locLocalLightTiles, 1);
+    }
+    profile_use(useHistory ? "GI Original + lighting" : "GI lighting");
+    r_glUniform1i(program->locPTPass, rayReconstruction ? 5 : useHistory ? 3 : 4);
+    r_glDrawArrays(mode, first, count);
+    if (useHistory) r_glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+    r_glUniform1i(program->locPTPass, 0);
+    if (program->locLocalLightTiles >= 0) r_glUniform1i(program->locLocalLightTiles, 0);
+}
 // ----------------------------------------------------------------------------------------
 // Block materials. Hytale's terrain has no material data, so the hook reads its block atlas
 // (the texture array MapChunkFS samples as uTexture) once, fingerprints every 32x32 tile and
@@ -1446,9 +1605,23 @@ static GLuint g_matTex, g_matAtlas;
 static int g_matTries;
 static LARGE_INTEGER g_matNextTry;
 static LARGE_INTEGER g_freq;           // (defined with the frame timer below)
+#include "emissions.h"
+static FILETIME g_materialsStamp, g_emissionsStamp;
+
+static FILETIME material_file_stamp(const char *relative)
+{
+    wchar_t path[MAX_PATH];
+    WIN32_FILE_ATTRIBUTE_DATA data;
+    FILETIME missing = {0};
+    pack_path(path, relative);
+    return GetFileAttributesExW(path, GetFileExInfoStandard, &data) ? data.ftLastWriteTime : missing;
+}
 
 static void materials_load(void)
 {
+    emissions_load();
+    g_materialsStamp = material_file_stamp("materials.txt");
+    g_emissionsStamp = material_file_stamp("emitters.txt");
     g_nMat = 0;
     char *txt = read_file("materials.txt", NULL);
     if (!txt) { logf_("materials: no materials.txt, blocks stay plain"); return; }
@@ -1473,6 +1646,10 @@ static void materials_load(void)
 // Hot reload: read materials.txt again and rebuild the map at the next terrain draw.
 static void materials_reset(void)
 {
+    FILETIME materials = material_file_stamp("materials.txt");
+    FILETIME emissions = material_file_stamp("emitters.txt");
+    if (g_nMat >= 0 && CompareFileTime(&materials, &g_materialsStamp) == 0
+        && CompareFileTime(&emissions, &g_emissionsStamp) == 0) return;
     free(g_matKey);
     free(g_matVal);
     g_matKey = NULL;
@@ -1533,14 +1710,22 @@ static void materials_build(GLuint atlas)
     int tx = w / 32, ty = h / 32;
     unsigned char *px = (tx > 0 && ty > 0 && d > 0) ? (unsigned char *)malloc((size_t)w * h * d * 4) : NULL;
     unsigned char *map = px ? (unsigned char *)calloc((size_t)tx * ty * d, 2) : NULL;
+    unsigned char *emissionMap = px ? calloc((size_t)tx * ty * d * EMISSION_VARIANTS * 2, 4) : NULL;
     int found = 0, flipped = 0;
     if (map) {
         GLint packBuf = 0, packAlign = 4;
+        const GLenum packParameters[5] = {0x0d02, 0x806c, 0x0d04, 0x0d03, 0x806b};
+        GLint packValues[5];
+        for (int parameter = 0; parameter < 5; parameter++) {
+            r_glGetIntegerv(packParameters[parameter], &packValues[parameter]);
+            pixelStore(packParameters[parameter], 0);
+        }
         r_glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING_, &packBuf);
         r_glGetIntegerv(GL_PACK_ALIGNMENT_, &packAlign);
         if (packBuf) bindBuffer(GL_PIXEL_PACK_BUFFER_, 0);
         pixelStore(GL_PACK_ALIGNMENT_, 4);
         getImage(GL_TEXTURE_2D_ARRAY_, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        for (int parameter = 0; parameter < 5; parameter++) pixelStore(packParameters[parameter], packValues[parameter]);
         pixelStore(GL_PACK_ALIGNMENT_, packAlign);
         if (packBuf) bindBuffer(GL_PIXEL_PACK_BUFFER_, (GLuint)packBuf);
         // Same fingerprint as BuildMaterials: FNV-1a over RGBA, top row first, transparent
@@ -1563,6 +1748,7 @@ static void materials_build(GLuint atlas)
                         }
                     int m = materials_find(hf);
                     if (m < 0 && (m = materials_find(hr)) >= 0) flipped++;
+                    emissions_tile(hf, hr, emissionMap, tx, ty, l, i, j);
                     if (m < 0) continue;
                     unsigned char *o = map + (((size_t)l * ty + j) * tx + i) * 2;
                     o[0] = g_matVal[m][0];
@@ -1581,6 +1767,15 @@ static void materials_build(GLuint atlas)
         pixelStore(GL_UNPACK_ROW_LENGTH_, 0);
         pixelStore(GL_UNPACK_IMAGE_HEIGHT_, 0);
         texImage3D(GL_TEXTURE_2D_ARRAY_, 0, GL_RG8_, tx, ty, d, 0, GL_RG_, GL_UNSIGNED_BYTE, map);
+        if (emissionMap) {
+            if (!g_emissionTexture) genTextures(1, &g_emissionTexture);
+            r_glBindTexture(GL_TEXTURE_2D_ARRAY_, g_emissionTexture);
+            texImage3D(GL_TEXTURE_2D_ARRAY_, 0, GL_RGBA8, tx, ty, d * EMISSION_VARIANTS * 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, emissionMap);
+            texParam(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            texParam(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            texParam(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_MAX_LEVEL, 0);
+            r_glBindTexture(GL_TEXTURE_2D_ARRAY_, g_matTex);
+        }
         pixelStore(GL_UNPACK_ALIGNMENT_, unpackAlign);
         pixelStore(GL_UNPACK_ROW_LENGTH_, unpackRow);
         pixelStore(GL_UNPACK_IMAGE_HEIGHT_, unpackImgH);
@@ -1592,6 +1787,7 @@ static void materials_build(GLuint atlas)
     }
     free(px);
     free(map);
+    free(emissionMap);
     logf_("materials: atlas %u is %dx%dx%d (format 0x%x), %d of %d tiles recognised%s", atlas, w, h, d, fmt,
           found, tx * ty * d, flipped ? " (rows bottom-up)" : "");
     // Too few: the atlas may still be filling up (or the game changed); look again later.
@@ -1631,6 +1827,17 @@ static void materials_draw_check(void)
 static void materials_use(ProgRec *p)
 {
     g_matProgRec = p;
+    GLint emissionReady = r_glGetUniformLocation(g_curProg, "uHookEmissionReady");
+    if (emissionReady >= 0) r_glUniform1i(emissionReady, g_emissionTexture != 0);
+    if (g_emissionTexture) {
+        r_glActiveTexture(GL_TEXTURE0 + EMISSION_UNIT);
+        r_glBindTexture(GL_TEXTURE_2D_ARRAY_, g_emissionTexture);
+        if (r_glBindSampler) r_glBindSampler(EMISSION_UNIT, 0);
+        g_units[EMISSION_UNIT].target = GL_TEXTURE_2D_ARRAY_;
+        g_units[EMISSION_UNIT].tex = g_emissionTexture;
+        g_units[EMISSION_UNIT].sampler = 0;
+        r_glActiveTexture(GL_TEXTURE0 + g_activeUnit);
+    }
     if (!g_matTex) return;
     r_glActiveTexture(GL_TEXTURE0 + MAT_UNIT);
     r_glBindTexture(GL_TEXTURE_2D_ARRAY_, g_matTex);
@@ -1645,6 +1852,27 @@ static void vox_use(ProgRec *p)
 {
     if (!g_voxState) vox_create();
     if (g_voxState != 1) return;
+    if (p->locVoxCol >= 0 && !g_voxTex[1]) {
+        PFN_glTexImage3D image = (PFN_glTexImage3D)real_wglGetProcAddress("glTexImage3D");
+        PFN_glBindBuffer bindBuffer = (PFN_glBindBuffer)real_wglGetProcAddress("glBindBuffer");
+        PFN_glGenTextures generate = (PFN_glGenTextures)GetProcAddress(g_real, "glGenTextures");
+        PFN_glTexParameteri parameter = (PFN_glTexParameteri)GetProcAddress(g_real, "glTexParameteri");
+        void *zero = calloc((size_t)VOX_X * VOX_Y * VOX_Z, 4);
+        if (!image || !bindBuffer || !generate || !parameter || !zero) { free(zero); return; }
+        GLint previousTexture = 0, previousBuffer = 0;
+        r_glGetIntegerv(GL_TEXTURE_BINDING_3D, &previousTexture);
+        r_glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, &previousBuffer);
+        if (previousBuffer) bindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+        generate(1, &g_voxTex[1]);
+        r_glBindTexture(GL_TEXTURE_3D, g_voxTex[1]);
+        parameter(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        parameter(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        parameter(GL_TEXTURE_3D, GL_TEXTURE_MAX_LEVEL, 0);
+        image(GL_TEXTURE_3D, 0, GL_RGBA8, VOX_X, VOX_Y, VOX_Z, 0, GL_RGBA, GL_UNSIGNED_BYTE, zero);
+        r_glBindTexture(GL_TEXTURE_3D, (GLuint)previousTexture);
+        if (previousBuffer) bindBuffer(GL_PIXEL_UNPACK_BUFFER, (GLuint)previousBuffer);
+        free(zero);
+    }
     r_glBindImageTexture(VOX_UNIT_GEO, g_voxTex[0], 0, 1, 0, GL_READ_WRITE, GL_R32UI);
     r_glBindImageTexture(VOX_UNIT_COL, g_voxTex[1], 0, 1, 0, GL_READ_WRITE, GL_RGBA8);
     r_glBindImageTexture(VOX_UNIT_LIGHTS, g_voxLights, 0, 0, 0, GL_READ_WRITE, GL_R32UI);
@@ -1662,6 +1890,9 @@ static void vox_use(ProgRec *p)
 
 #if AU_HAS_DLSS
 #include "aud_dlss.h"
+#if AU_HAS_FRAMEGEN
+#include "aud_framegen.h"
+#endif
 #define GL_WRITE_ONLY 0x88B9
 #define GL_R32F 0x822E
 #define GL_RG16F 0x822F
@@ -1686,6 +1917,7 @@ typedef GLboolean (APIENTRY *PFN_dlIsEnabled)(GLenum);
 typedef void (APIENTRY *PFN_dlEnable)(GLenum);
 static int g_dlssState;          // 0 not tried, 1 ready, -1 unavailable
 static int g_dlssW, g_dlssH, g_dlssReset;
+static int g_dlssNativeW, g_dlssNativeH;
 static int g_dlssRR;              // the configured feature is Ray Reconstruction
 static int g_dlssPreset;          // the configured model preset (NGX value, 0 = default)
 static GLuint g_dlssReadFbo;
@@ -1734,18 +1966,141 @@ static int dlss_ready(void)
         dl.IsEnabled = (PFN_dlIsEnabled)dlss_getproc("glIsEnabled");
         dl.Enable = (PFN_dlEnable)dlss_getproc("glEnable");
         dl.Disable = (PFN_dlEnable)dlss_getproc("glDisable");
+        int available;
+#if AU_HAS_FRAMEGEN
+        AudVulkanContext context;
+        available = afg_vulkan_context(&context) ? aud_init_shared(logf_, dlss_getproc, dir, dir, &context) : aud_init(logf_, dlss_getproc, dir, dir);
+#else
+        available = aud_init(logf_, dlss_getproc, dir, dir);
+#endif
         if (r_glBindImageTexture && r_glMemoryBarrier && dl.Blit && dl.GenFb && dl.BindFb && dl.FbTex &&
-            dl.IsEnabled && dl.Enable && dl.Disable && aud_init(logf_, dlss_getproc, dir, dir))
+            dl.IsEnabled && dl.Enable && dl.Disable && available)
             g_dlssState = 1;
         logf_("dlss: %s", g_dlssState == 1 ? "ready" : "unavailable, the game upscales as usual");
     }
     return g_dlssState == 1;
 }
 
+static int render_physical_size(int *width, int *height)
+{
+    HDC (WINAPI *currentDC)(void) = (HDC (WINAPI *)(void))GetProcAddress(g_real, "wglGetCurrentDC");
+    HWND window = currentDC ? WindowFromDC(currentDC()) : NULL;
+    RECT client;
+    if (!window || !GetClientRect(window, &client) || client.right <= 0 || client.bottom <= 0) return 0;
+    *width = client.right;
+    *height = client.bottom;
+    return 1;
+}
+
+#include "dlss_sharpen.h"
+#include "dlss_resolve.h"
+
+#if AU_HAS_FRAMEGEN
+#include "aud_framegen.h"
+static int g_framegenState;
+static int g_framegenCaptured = -1;
+static void framegen_shutdown(void)
+{
+    AudVulkanContext context;
+    if (afg_vulkan_context(&context)) {
+        afg_wait(); aud_shutdown();
+        g_dlssState = 0;
+        g_dlssW = g_dlssH = g_dlssOW = g_dlssOH = g_dlssNativeW = g_dlssNativeH = 0;
+    }
+    afg_shutdown();
+}
+static int framegen_prepare(int width, int height)
+{
+    if (!g_setFrameGen || g_temporalFrame != g_frame) return 0;
+    HDC (WINAPI *currentDC)(void) = (HDC (WINAPI *)(void))GetProcAddress(g_real, "wglGetCurrentDC");
+    HWND window = currentDC ? WindowFromDC(currentDC()) : NULL;
+    if (g_framegenState == 0) {
+        AudVulkanContext context;
+        if (!afg_vulkan_context(&context)) {
+            aud_shutdown(); g_dlssState = 0;
+            g_dlssW = g_dlssH = g_dlssOW = g_dlssOH = g_dlssNativeW = g_dlssNativeH = 0;
+        }
+        wchar_t directory[MAX_PATH]; pack_path(directory, "streamline");
+        g_framegenState = afg_init(logf_, dlss_getproc, directory, window) ? 1 : -1;
+        if (g_framegenState < 0) { logf_("framegen: %s", afg_status()); framegen_shutdown(); }
+    }
+    int outputWidth, outputHeight;
+    if (g_framegenState != 1 || !render_physical_size(&outputWidth, &outputHeight)) return 0;
+    if (!afg_configure(width, height, outputWidth, outputHeight)) {
+        logf_("framegen: %s; falling back to OpenGL", afg_status());
+        framegen_shutdown(); g_framegenState = -1;
+        return 0;
+    }
+    return 1;
+}
+
+static void framegen_inputs(GLuint depth, GLuint motion, int linearDepth)
+{
+    if (g_framegenState != 1 || !g_setFrameGen) return;
+    r_glMemoryBarrier(0xffffffffu);
+    if (afg_capture_inputs(depth, motion, linearDepth, g_temporalScene + 48)) g_framegenCaptured = g_frame;
+}
+
+static void framegen_before_ui(ProgRec *program)
+{
+    if (g_framegenCaptured != g_frame || !g_setFrameGen || !program || strcmp(program->pname, "Batcher2DFS")) return;
+    GLint framebuffer = -1;
+    r_glGetIntegerv(0x8ca6, &framebuffer);
+    if (framebuffer == 0) afg_capture_hudless();
+}
+
+static void framegen_after_scene(ProgRec *program)
+{
+    if (g_framegenCaptured != g_frame || !g_setFrameGen || !program
+        || (strcmp(program->pname, "PostEffectFS") && strcmp(program->pname, "TemporalAAFS") && strcmp(program->pname, "BasicFS"))) return;
+    GLint framebuffer = -1;
+    r_glGetIntegerv(0x8ca6, &framebuffer);
+    if (framebuffer == 0) afg_capture_hudless();
+}
+
+static int framegen_swap(void)
+{
+    if (!g_setFrameGen || g_temporalFrame != g_frame || g_framegenCaptured != g_frame) {
+        if (g_framegenState == 1 && g_framegenCaptured >= 0) { afg_stop(); g_framegenCaptured = -1; }
+        return 0;
+    }
+    int presented = afg_present((unsigned)g_frame, g_temporalScene, g_temporalPreviousScene, g_sceneJitter, !g_temporalValid, g_setFrameGen);
+    if (!presented && strstr(afg_status(), "failed")) {
+        framegen_shutdown(); g_framegenState = -1; g_framegenCaptured = -1;
+    }
+    return presented;
+}
+#else
+static void framegen_before_ui(ProgRec *program) { (void)program; }
+static void framegen_after_scene(ProgRec *program) { (void)program; }
+static int framegen_swap(void) { return 0; }
+#endif
+
 // PostEffectFS: writes the DLSS inputs at render size (image units 2-4).
 static void dlss_draw(GLenum mode, GLint first, GLsizei count)
 {
-    if (!dlss_ready()) {
+#if AU_HAS_FRAMEGEN
+    GLint inputViewport[4];
+    r_glGetIntegerv(GL_VIEWPORT, inputViewport);
+    int framegen = framegen_prepare(inputViewport[2], inputViewport[3]);
+    if (!g_setDlssEnabled) {
+        ProgRec *program = prog_rec(g_curProg, 0);
+        if (!r_glBindImageTexture) r_glBindImageTexture = (PFN_glBindImageTexture)dlss_getproc("glBindImageTexture");
+        if (!r_glMemoryBarrier) r_glMemoryBarrier = (PFN_glMemoryBarrier)dlss_getproc("glMemoryBarrier");
+        if (framegen && r_glBindImageTexture && r_glMemoryBarrier) {
+            r_glBindImageTexture(2, afg_texture(AFG_COLOR), 0, 0, 0, GL_WRITE_ONLY, GL_RGBA16F);
+            r_glBindImageTexture(3, afg_texture(AFG_DEPTH), 0, 0, 0, GL_WRITE_ONLY, GL_R32F);
+            r_glBindImageTexture(4, afg_texture(AFG_MOTION), 0, 0, 0, GL_WRITE_ONLY, GL_RG16F);
+        } else framegen = 0;
+        if (program && program->locDlssActive >= 0) r_glUniform1i(program->locDlssActive, framegen);
+        if (program && program->locDlssRR >= 0) r_glUniform1i(program->locDlssRR, 0);
+        r_glDrawArrays(mode, first, count);
+        if (framegen) framegen_inputs(afg_texture(AFG_DEPTH), afg_texture(AFG_MOTION), 0);
+        framegen_after_scene(program);
+        return;
+    }
+#endif
+    if (!g_setDlssEnabled || !dlss_ready()) {
         ProgRec *pp = prog_rec(g_curProg, 0);
         if (pp && pp->locDlssActive >= 0) r_glUniform1i(pp->locDlssActive, 0);
         r_glDrawArrays(mode, first, count);
@@ -1761,31 +2116,40 @@ static void dlss_draw(GLenum mode, GLint first, GLsizei count)
     if (direct) {
         g_presentW = vp[2];
         g_presentH = vp[3];
+        render_physical_size(&g_presentW, &g_presentH);
     }
     int rr = g_setDlssMode == 2 && aud_rr_available();
+    int renderWidth = vp[2], renderHeight = vp[3];
+    if (renderWidth < 32) renderWidth = 32;
+    if (renderHeight < 32) renderHeight = 32;
     // Model presets: sharpest = transformer K (Super Resolution) / E (Ray Reconstruction),
     // less ghosting = J / D.
-    int pick = (int)g_setDlssPreset;
+    int pick = (int)(rr ? g_setDlssRRPreset : g_setDlssPreset);
     int preset = pick == 1 ? (rr ? 5 : 11) : pick == 2 ? (rr ? 4 : 10) : 0;
-    if (g_presentW > 0 && (vp[2] != g_dlssW || vp[3] != g_dlssH || g_presentW != g_dlssOW || g_presentH != g_dlssOH ||
+    if (g_presentW > 0 && (renderWidth != g_dlssW || renderHeight != g_dlssH || vp[2] != g_dlssNativeW || vp[3] != g_dlssNativeH || g_presentW != g_dlssOW || g_presentH != g_dlssOH ||
                            rr != g_dlssRR || preset != g_dlssPreset)) {
-        int q = dlss_quality(vp[2], g_presentW);
+        int q = dlss_quality(renderWidth, g_presentW);
         g_dlssRR = rr;
         g_dlssPreset = preset;
-        if (!aud_configure(vp[2], vp[3], g_presentW, g_presentH, q, 0, rr, preset)) {
+#if AU_HAS_FRAMEGEN
+        afg_wait();
+#endif
+        if (!aud_configure(renderWidth, renderHeight, g_presentW, g_presentH, q, 1, rr, preset)) {
             g_dlssState = -1;
             r_glDrawArrays(mode, first, count);
             return;
         }
-        g_dlssW = vp[2];
-        g_dlssH = vp[3];
+        g_dlssW = renderWidth;
+        g_dlssH = renderHeight;
+        g_dlssNativeW = vp[2];
+        g_dlssNativeH = vp[3];
         g_dlssOW = g_presentW;
         g_dlssOH = g_presentH;
         g_dlssReset = 2;
     }
     // Units 2-4 hold the path tracer's history between its passes: they must get the DLSS
     // textures or nothing (writes to an empty unit are dropped), never stay as they are.
-    int active = g_dlssOW > 0 && vp[2] == g_dlssW && vp[3] == g_dlssH;
+    int active = g_dlssOW > 0 && vp[2] == g_dlssNativeW && vp[3] == g_dlssNativeH;
     r_glBindImageTexture(DLSS_IMG_COLOR, active ? aud_texture(AUD_TEX_COLOR) : 0, 0, 0, 0, GL_WRITE_ONLY, GL_RGBA16F);
     r_glBindImageTexture(DLSS_IMG_DEPTH, active ? aud_texture(AUD_TEX_DEPTH) : 0, 0, 0, 0, GL_WRITE_ONLY, GL_R32F);
     r_glBindImageTexture(DLSS_IMG_MOTION, active ? aud_texture(AUD_TEX_MOTION) : 0, 0, 0, 0, GL_WRITE_ONLY, GL_RG16F);
@@ -1796,9 +2160,30 @@ static void dlss_draw(GLenum mode, GLint first, GLsizei count)
     }
 
     ProgRec *pp = prog_rec(g_curProg, 0);
+    DLSSMaskState maskState = {0};
+    if (active) {
+        maskState = dlss_mask_begin();
+        if (!maskState.valid) {
+            if (pp && pp->locDlssActive >= 0) r_glUniform1i(pp->locDlssActive, 0);
+            r_glDrawArrays(mode, first, count);
+            return;
+        }
+    }
     if (pp && pp->locDlssActive >= 0) r_glUniform1i(pp->locDlssActive, active);
     if (pp && pp->locDlssRR >= 0) r_glUniform1i(pp->locDlssRR, active && g_dlssRR);
+    if (active) {
+        GLint vertexArray = 0;
+        r_glGetIntegerv(0x85b5, &vertexArray);
+        g_dlssInputVAO = (GLuint)vertexArray;
+        g_dlssInputMode = mode;
+        g_dlssInputFirst = first;
+        g_dlssInputCount = count;
+    }
     r_glDrawArrays(mode, first, count);
+    dlss_mask_end(maskState);
+#if AU_HAS_FRAMEGEN
+    if (framegen && active) framegen_inputs(aud_texture(AUD_TEX_DEPTH), aud_texture(AUD_TEX_MOTION), g_dlssRR);
+#endif
     if (direct) {
         g_dlssPending = 1;
         if (active) dlss_present_rect(vp[0], vp[1], vp[2], vp[3], "PostEffectFS (straight into the window)");
@@ -1813,6 +2198,7 @@ static void dlss_draw(GLenum mode, GLint first, GLsizei count)
 // by DLSS's output. Returns 1 when it did.
 static int dlss_present_rect(int x, int y, int w, int h, const char *how)
 {
+    if (render_physical_size(&w, &h)) x = y = 0;
     g_dlssPending = 0;
     g_postPresent = 1;
     g_presentW = w;
@@ -1825,6 +2211,8 @@ static int dlss_present_rect(int x, int y, int w, int h, const char *how)
     if (g_dlssState != 1 || g_dlssOW != w || g_dlssOH != h) return 0;
     GLint vp[4] = {x, y, w, h};
     r_glMemoryBarrier(0xFFFFFFFFu);
+    g_jitterPx[0] = g_sceneJitter[0] * g_dlssW * 0.5f;
+    g_jitterPx[1] = g_sceneJitter[1] * g_dlssH * 0.5f;
     if (!aud_evaluate(g_jitterPx[0] * (float)g_setJitterSX, g_jitterPx[1] * (float)g_setJitterSY,
                       (float)g_setMotionSX, (float)g_setMotionSY, g_dlssReset > 0 || g_setDlssDebug == 2)) return 0;
     if (g_dlssReset > 0) g_dlssReset--;
@@ -1837,9 +2225,13 @@ static int dlss_present_rect(int x, int y, int w, int h, const char *how)
     dl.FbTex(GL_READ_FRAMEBUFFER_, GL_COLOR_ATTACHMENT0_, GL_TEXTURE_2D, aud_texture(g_setDlssDebug == 1 ? AUD_TEX_COLOR : g_setDlssDebug == 3 ? AUD_TEX_DEPTH : g_setDlssDebug == 4 ? AUD_TEX_MOTION : AUD_TEX_OUTPUT), 0);
     GLboolean scissor = dl.IsEnabled(GL_SCISSOR_TEST);
     if (scissor) dl.Disable(GL_SCISSOR_TEST);
-    dl.Blit(0, 0, g_dlssOW, g_dlssOH, vp[0], vp[1], vp[0] + vp[2], vp[1] + vp[3], GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    if (g_setDlssDebug != 0 || !dlss_resolve(aud_texture(AUD_TEX_OUTPUT), vp))
+        dl.Blit(0, 0, g_dlssOW, g_dlssOH, vp[0], vp[1], vp[0] + vp[2], vp[1] + vp[3], GL_COLOR_BUFFER_BIT, GL_NEAREST);
     if (scissor) dl.Enable(GL_SCISSOR_TEST);
     dl.BindFb(GL_READ_FRAMEBUFFER_, (GLuint)readFb);
+#if AU_HAS_FRAMEGEN
+    if (g_setFrameGen && g_framegenCaptured == g_frame) afg_capture_hudless();
+#endif
     return 1;
 }
 
@@ -1866,6 +2258,9 @@ static int dlss_present_blit(GLint x0, GLint y0, GLint x1, GLint y1)
 }
 #else
 static void dlss_draw(GLenum mode, GLint first, GLsizei count) { r_glDrawArrays(mode, first, count); }
+static void framegen_before_ui(ProgRec *program) { (void)program; }
+static void framegen_after_scene(ProgRec *program) { (void)program; }
+static int framegen_swap(void) { return 0; }
 static int dlss_present(void) { g_dlssPending = 0; return 0; }
 static int dlss_present_blit(GLint x0, GLint y0, GLint x1, GLint y1) { (void)x0; (void)y0; (void)x1; (void)y1; return 0; }
 #endif
@@ -1876,6 +2271,13 @@ static void APIENTRY hook_glBlitFramebuffer(GLint sx0, GLint sy0, GLint sx1, GLi
 {
     if (g_dlssPending && (mask & 0x4000u /*GL_COLOR_BUFFER_BIT*/) && dlss_present_blit(dx0, dy0, dx1, dy1)) return;
     r_glBlitFramebuffer(sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, mask, filter);
+#if AU_HAS_FRAMEGEN
+    if (g_setFrameGen && g_framegenCaptured == g_frame && (mask & 0x4000u)) {
+        GLint framebuffer = -1;
+        r_glGetIntegerv(0x8ca6, &framebuffer);
+        if (framebuffer == 0) afg_capture_hudless();
+    }
+#endif
 }
 
 // Camera jitter for DLSS: a Halton(2,3) sub-pixel offset per frame, added to gl_Position by
@@ -1891,11 +2293,12 @@ static float halton(int i, int base)
 
 static void jitter_next_frame(void)
 {
-    g_jitterPx[0] = g_jitterNextPx[0];
-    g_jitterPx[1] = g_jitterNextPx[1];
 #if AU_HAS_DLSS
     if (g_setDlssJitter != 0 && g_dlssState == 1 && g_dlssProg && g_dlssW > 0 && g_frame - g_dlssPresentedFrame <= 2) {
-        int i = 1 + g_frame % 32;
+            int phases = g_dlssW > 0 && g_dlssH > 0 ? (int)ceilf(8.0f * ((float)g_dlssOW / g_dlssW) * ((float)g_dlssOH / g_dlssH)) : 8;
+            if (phases < 8) phases = 8;
+            if (phases > 128) phases = 128;
+            int i = 1 + g_frame % phases;
         g_jitterNextPx[0] = halton(i, 2) - 0.5f;
         g_jitterNextPx[1] = halton(i, 3) - 0.5f;
         g_jitterNdc[0] = 2.0f * g_jitterNextPx[0] / (float)g_dlssW;
@@ -1906,6 +2309,8 @@ static void jitter_next_frame(void)
     g_jitterNextPx[0] = g_jitterNextPx[1] = 0.0f;
     g_jitterNdc[0] = g_jitterNdc[1] = 0.0f;
 }
+
+#include "temporal.h"
 
 // ----------------------------------------------------------------------------------------
 // Uniform forwarding (shaderpack/forward.txt):  <SourceProgram> <srcUniform> <DestProgram|*> <dstUniform>
@@ -1989,6 +2394,23 @@ static void check_extras(GLuint prog, ProgRec *p)
     p->locWetness = r_glGetUniformLocation(prog, "uHookWetness");
     if (p->locFrame >= 0 || p->locTime >= 0 || p->locWetness >= 0) p->hasExtras = 1;
     p->locJitter = r_glGetUniformLocation(prog, "uHookJitter");
+    p->locUIFragmentScale = r_glGetUniformLocation(prog, "uHookUIFragmentScale");
+    if (p->locUIFragmentScale >= 0) { r_glUniform2f(p->locUIFragmentScale, 1.0f, 1.0f); p->hasExtras = 1; }
+    p->locPreviousVP = r_glGetUniformLocation(prog, "uHookPreviousViewProjection");
+    p->locCurrentProjection = r_glGetUniformLocation(prog, "uHookCurrentProjection");
+    p->locGICompact = r_glGetUniformLocation(prog, "uHookGICompact");
+    p->locGISourceSize = r_glGetUniformLocation(prog, "uHookGISourceSize");
+    p->locGIPreviousInverse = r_glGetUniformLocation(prog, "uHookGIPreviousInverseProjection");
+    p->locGIPreviousDepth = r_glGetUniformLocation(prog, "uHookGIPreviousDepth");
+    p->giCompact = p->locGICompact >= 0;
+    if (p->giCompact) { r_glUniform1i(p->locGICompact, 1); p->hasExtras = 1; }
+    p->locPreviousCamera = r_glGetUniformLocation(prog, "uHookPreviousCamera");
+    p->locSceneJitter = r_glGetUniformLocation(prog, "uHookSceneJitter");
+    p->locPreviousJitter = r_glGetUniformLocation(prog, "uHookPreviousJitter");
+    p->locGeometryJitter = r_glGetUniformLocation(prog, "uHookGeometryJitter");
+    p->locPreviousGeometryJitter = r_glGetUniformLocation(prog, "uHookPreviousGeometryJitter");
+    p->locHistoryValid = r_glGetUniformLocation(prog, "uHookHistoryValid");
+    if (p->locPreviousVP >= 0 || p->locSceneJitter >= 0 || p->locHistoryValid >= 0) p->hasExtras = 1;
     if (p->locJitter >= 0) p->hasExtras = 1;
     p->locVoxGeo = r_glGetUniformLocation(prog, "auVoxGeo");
     p->locVoxCol = r_glGetUniformLocation(prog, "auVoxCol");
@@ -1997,23 +2419,40 @@ static void check_extras(GLuint prog, ProgRec *p)
     GLint locLights = r_glGetUniformLocation(prog, "auLights");
     if (locLights >= 0) r_glUniform1i(locLights, VOX_UNIT_LIGHTS);
     if (p->locVoxGeo >= 0 || p->locVoxCol >= 0) p->hasExtras = 1;
-    static const struct { const char *name; GLint unit; } giUni[6] = {
+    static const struct { const char *name; GLint unit; } giUni[9] = {
         {"auGIOut", GI_IMG_RAD}, {"auGIOutPos", GI_IMG_POS}, {"auGIOutLight", GI_IMG_LIGHT},
-        {"auGIHist", GI_TEX_RAD}, {"auGIHistPos", GI_TEX_POS}, {"auGIHistLight", GI_TEX_LIGHT}};
+        {"auGIHist", GI_TEX_RAD}, {"auGIHistPos", GI_TEX_POS}, {"auGIHistLight", GI_TEX_LIGHT},
+        {"auGIRaw", GI_TEX_RAW_RAD}, {"auGIRawPos", GI_TEX_RAW_POS}, {"auGIRawLight", GI_TEX_RAW_LIGHT}};
     p->usesGI = 0;
-    for (int i = 0; i < 6; i++) {
+    p->locPTPass = r_glGetUniformLocation(prog, "uHookPTPass");
+    p->locLocalLightTiles = r_glGetUniformLocation(prog, "uHookLocalLightTiles");
+    p->giDenoise = r_glGetUniformLocation(prog, "auGIRaw") >= 0;
+    p->giTemporal = r_glGetUniformLocation(prog, "auGIHist") >= 0;
+    p->giLegacy = p->giTemporal && !p->giDenoise;
+    p->giLights = r_glGetUniformLocation(prog, "auGIOutLight") >= 0;
+    if (p->locPTPass >= 0) { p->usesGI = 1; p->hasExtras = 1; }
+    for (int i = 0; i < 9; i++) {
         GLint loc = r_glGetUniformLocation(prog, giUni[i].name);
         if (loc >= 0) { r_glUniform1i(loc, giUni[i].unit); p->usesGI = 1; p->hasExtras = 1; }
     }
-    static const struct { const char *name; GLint unit; } dlssUni[6] = {
+    if (!p->usesGI && g_giProg == prog) { g_giProg = 0; gi_release(); }
+    if (!strcmp(p->pname, "DeferredFS"))
+        logf_("GI pipeline: voxel=%d denoise=%d temporal=%d fullscreen draws=%d local-light cull=%d",
+              p->locVoxGeo >= 0, p->giDenoise, p->giTemporal,
+              1 + (p->locVoxCol >= 0), p->locLocalLightTiles >= 0);
+    static const struct { const char *name; GLint unit; } dlssUni[7] = {
         {"auDlssColor", 2}, {"auDlssDepth", 3}, {"auDlssMotion", 4},
-        {"auDlssAlbedo", 5}, {"auDlssSpecular", 6}, {"auDlssNormals", 7}};
+        {"auDlssAlbedo", 5}, {"auDlssSpecular", 6}, {"auDlssNormals", 7}, {"auDlssResponsive", 0}};
     p->usesDlss = 0;
     p->locDlssActive = r_glGetUniformLocation(prog, "uHookDlssActive");
     p->locDlssRR = r_glGetUniformLocation(prog, "uHookDlssRR");
     p->locMaterials = r_glGetUniformLocation(prog, "uHookMaterials");
+    p->locMaterialLOD = r_glGetUniformLocation(prog, "uHookTextureLodBias");
+    if (p->locMaterialLOD >= 0) p->hasExtras = 1;
+    p->locNativeEmission = r_glGetUniformLocation(prog, "uHookEmission");
+    if (p->locNativeEmission >= 0) { r_glUniform1i(p->locNativeEmission, EMISSION_UNIT); p->hasExtras = 1; }
     if (p->locMaterials >= 0) { r_glUniform1i(p->locMaterials, MAT_UNIT); p->hasExtras = 1; }
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 7; i++) {
         GLint loc = r_glGetUniformLocation(prog, dlssUni[i].name);
         if (loc >= 0) { r_glUniform1i(loc, dlssUni[i].unit); p->usesDlss = 1; p->hasExtras = 1; }
     }
@@ -2081,9 +2520,16 @@ static void apply_extras(ProgRec *p)
         }
     }
     if (p->locVoxGeo >= 0 || p->locVoxCol >= 0) vox_use(p);
-    if (p->locMaterials >= 0) materials_use(p);
+    if (p->locMaterialLOD >= 0) {
+        float bias = 0.0f;
+#if AU_HAS_DLSS
+        if (g_setDlssEnabled && g_dlssW > 0 && g_dlssOW > 0) bias = log2f((float)g_dlssW / (float)g_dlssOW);
+#endif
+        r_glUniform1f(p->locMaterialLOD, bias);
+    }
+    if (p->locMaterials >= 0 || p->locNativeEmission >= 0) materials_use(p);
     if (p->locJitter >= 0) {
-        if (g_postPresent) r_glUniform2f(p->locJitter, 0.0f, 0.0f);
+        if (g_postPresent || !temporal_geometry(p)) r_glUniform2f(p->locJitter, 0.0f, 0.0f);
         else r_glUniform2f(p->locJitter, g_jitterNdc[0], g_jitterNdc[1]);
     }
     if (p->usesGI) g_giProg = g_curProg;
@@ -2210,8 +2656,47 @@ static void settings_load(void)
     g_setMotionSX = settings_num(txt, "AU_DLSS_MOTION_SX", 1);
     g_setMotionSY = settings_num(txt, "AU_DLSS_MOTION_SY", 1);
     g_setDlssDebug = settings_num(txt, "AU_DLSS_DEBUG", 0);
-    g_setDlssMode = settings_num(txt, "AU_DLSS_RR", 0) > 0.5 ? 2 : 1;
+    int voxelGI = settings_num(txt, "AU_PATH_TRACING", 0) > 0.5 && settings_num(txt, "AU_PRESET", 2) >= 2;
+    int modeDenoising = settings_num(txt, voxelGI ? "AU_PT_DENOISE" : "AU_SSGI_DENOISE", 1) > 0.5;
+    g_setDlssMode = settings_num(txt, "AU_GI_DENOISER", 1) == 2 && modeDenoising ? 2 : 1;
     g_setDlssPreset = settings_num(txt, "AU_DLSS_PRESET", 0);
+    g_setDlssRRPreset = settings_num(txt, "AU_DLSS_RR_PRESET", g_setDlssPreset);
+    g_setDlssSharpness = fmin(1.0, fmax(0.0, settings_num(txt, "AU_DLSS_SHARPNESS", 0.2)));
+    g_setDlssEnabled = settings_num(txt, "AU_DLSS", 0) > 0.5;
+    int previousFrameGen = g_setFrameGen;
+    g_setFrameGen = (int)settings_num(txt, "AU_DLSS_FRAMEGEN", 0);
+    if (g_setFrameGen < 0 || g_setFrameGen > 5) g_setFrameGen = 0;
+#if AU_HAS_FRAMEGEN
+    if (!previousFrameGen && g_setFrameGen && g_framegenState < 0) g_framegenState = 0;
+#else
+    (void)previousFrameGen;
+#endif
+    g_setRenderScale = (int)settings_num(txt, "AU_RENDER_SCALE", 0);
+    if (g_setRenderScale < 0 || g_setRenderScale > 100) g_setRenderScale = 0;
+    g_setGIHalf = 0;
+    g_setVoxelColors = settings_num(txt, "AU_PATH_TRACING", 0) > 0.5 && settings_num(txt, "AU_PRESET", 2) >= 2;
+    if (!g_setVoxelColors && g_voxTex[1]) {
+        PFN_glDeleteTextures deleteTextures = (PFN_glDeleteTextures)GetProcAddress(g_real, "glDeleteTextures");
+        if (deleteTextures) {
+            if (r_glBindImageTexture) r_glBindImageTexture(VOX_UNIT_COL, 0, 0, 1, 0, GL_READ_WRITE, GL_RGBA8);
+            deleteTextures(1, &g_voxTex[1]);
+            g_voxTex[1] = 0;
+        }
+    }
+    if (!g_setVoxelColors && settings_num(txt, "AU_LOCAL_LIGHTS", 1) < 0.5 && g_voxState == 1) {
+        PFN_glDeleteTextures deleteTextures = (PFN_glDeleteTextures)GetProcAddress(g_real, "glDeleteTextures");
+        if (deleteTextures) {
+            if (r_glBindImageTexture) {
+                r_glBindImageTexture(VOX_UNIT_GEO, 0, 0, 1, 0, GL_READ_WRITE, GL_R32UI);
+                r_glBindImageTexture(VOX_UNIT_LIGHTS, 0, 0, 0, 0, GL_READ_WRITE, GL_R32UI);
+            }
+            deleteTextures(2, g_voxTex);
+            deleteTextures(1, &g_voxLights);
+            g_voxTex[0] = g_voxTex[1] = g_voxLights = 0;
+            g_voxState = 0;
+            g_voxLastUser[0] = 0;
+        }
+    }
     free(txt);
 }
 
@@ -2219,6 +2704,8 @@ static void materials_reset(void);
 
 static void do_reload(void)
 {
+    g_temporalHavePrevious = 0;
+    g_temporalValid = 0;
     settings_load();
     materials_reset();
     EnterCriticalSection(&g_lock);
@@ -2240,6 +2727,7 @@ static void do_reload(void)
         g_traceRemaining = 800;
     }
     vox_clear();
+    gi_release();
     int relinked = 0, failed = 0;
     for (size_t id = 1; id < g_progCap; id++) {
         ProgRec *p = &g_progs[id];
@@ -2277,7 +2765,7 @@ static void APIENTRY hook_glUseProgram(GLuint prog)
         if (!p->blkChecked && g_nKnownBlocks) apply_known_blocks(prog, p);
         if (g_nShares) apply_shares(prog, p);
         for (int i = 0; i < g_nFwd; i++) if (!strcmp(g_fwd[i].src, p->pname)) g_fwd[i].srcProg = prog;
-        if (!strcmp(p->pname, "PostEffectFS")) { g_frame++; update_wetness(); profile_frame_marker(); profile_collect(); jitter_next_frame(); }
+        if (!strcmp(p->pname, "PostEffectFS")) { update_wetness(); profile_frame_marker(); profile_collect(); }
         if (g_nCtex) ensure_textures();
         if (!p->extrasChecked) check_extras(prog, p);
         if (p->hasExtras) apply_extras(p);
@@ -2336,13 +2824,16 @@ static DWORD WINAPI watcher_thread(LPVOID arg)
 // Drawn as an overlay at SwapBuffers, after the game's own UI.
 
 #define MENU_MAX 160
+#define MENU_TAB_MAX 24
 #define MENU_SETTINGS "include\\AU_Settings.glsl"
-enum { MO_HEADER, MO_BOOL, MO_ENUM, MO_RANGE, MO_PACK, MO_INFO };
+enum { MO_HEADER, MO_BOOL, MO_ENUM, MO_RANGE, MO_PACK, MO_INFO, MO_ACTION };
 #define MENU_SELECTABLE(m) ((m)->kind != MO_HEADER && (m)->kind != MO_INFO)
 typedef struct {
     int kind;
+    int tab;
     char define[48];
     wchar_t label[64];
+    wchar_t help[192];
     double min, max, step, def, value;
     int nEnum;
     double enumVal[8];
@@ -2350,15 +2841,93 @@ typedef struct {
     int decimals, isFloat, present;
 } MenuOpt;
 
+typedef struct {
+    wchar_t label[64];
+    int selected, top, count;
+} MenuTab;
+
+typedef struct {
+    int x, y, width, height, pad, rail, title, footer, row, rows, contentTop, controlX;
+} MenuLayout;
+
 static MenuOpt g_mo[MENU_MAX];
 static int g_nMo, g_moSel = -1, g_moTop;
+static MenuTab g_menuTabs[MENU_TAB_MAX];
+static int g_menuTabCount, g_menuTab, g_menuVisible[MENU_MAX], g_menuVisibleCount;
+static wchar_t g_menuSearch[64];
+static int g_menuSearchFocus, g_menuDragging = -1, g_menuRawMouse;
+static double g_menuLastClick;
+static double g_menuResetArmedAt, g_menuResetUntil;
+static float g_menuPointerX, g_menuPointerY;
+static MenuLayout g_menuLayout;
 static volatile LONG g_menuOpen;
+static volatile LONG g_menuTAAWarningPending;
+static int g_menuMouseMode;
+static int g_menuSDLReady;
+static volatile LONG g_menuKeyEdges;
+static const int g_menuKeys[] = {VK_HOME, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_PRIOR, VK_NEXT, VK_ESCAPE};
 static int g_menuDirty = 1;
 static double g_menuWriteAt;
 static wchar_t g_menuStatus[96];
 static CRITICAL_SECTION g_menuLock;
 static HWND g_gameHwnd;
 static WNDPROC g_prevWndProc;
+
+static int menu_contains(const wchar_t *text, const wchar_t *query)
+{
+    if (!*query) return 1;
+    for (int start = 0; text[start]; start++) {
+        int offset = 0;
+        while (query[offset] && text[start + offset]
+               && towlower(text[start + offset]) == towlower(query[offset])) offset++;
+        if (!query[offset]) return 1;
+    }
+    return 0;
+}
+
+static int menu_visible_index(int option)
+{
+    for (int index = 0; index < g_menuVisibleCount; index++)
+        if (g_menuVisible[index] == option) return index;
+    return -1;
+}
+
+static void menu_rebuild_rows(void)
+{
+    g_menuVisibleCount = 0;
+    for (int index = 0; index < g_nMo; index++) {
+        MenuOpt *option = &g_mo[index];
+        if (option->kind == MO_HEADER) continue;
+        if (*g_menuSearch) {
+            wchar_t identifier[64];
+            MultiByteToWideChar(CP_UTF8, 0, option->define, -1, identifier, 64);
+            if (!menu_contains(option->label, g_menuSearch) && !menu_contains(identifier, g_menuSearch)) continue;
+        } else if (option->tab != g_menuTab) continue;
+        g_menuVisible[g_menuVisibleCount++] = index;
+    }
+    if (menu_visible_index(g_moSel) < 0) {
+        g_moSel = -1;
+        for (int index = 0; index < g_menuVisibleCount; index++)
+            if (MENU_SELECTABLE(&g_mo[g_menuVisible[index]])) { g_moSel = g_menuVisible[index]; break; }
+    }
+    g_menuDirty = 1;
+}
+
+static void menu_activate_tab(int tab)
+{
+    if (tab < 0 || tab >= g_menuTabCount) return;
+    if (g_menuTab >= 0 && g_menuTab < g_menuTabCount) {
+        g_menuTabs[g_menuTab].selected = g_moSel;
+        g_menuTabs[g_menuTab].top = g_moTop;
+    }
+    g_menuTab = tab;
+    g_menuSearch[0] = 0;
+    g_menuSearchFocus = 0;
+    g_menuDragging = -1;
+    g_moSel = g_menuTabs[tab].selected;
+    g_moTop = g_menuTabs[tab].top;
+    menu_rebuild_rows();
+}
 
 static double now_sec(void)
 {
@@ -2418,6 +2987,8 @@ static void menu_load(void)
     char *opt = read_file("options.txt", NULL);
     char *set = read_file(MENU_SETTINGS, NULL);
     g_nMo = 0;
+    g_menuTabCount = 0;
+    memset(g_menuTabs, 0, sizeof(g_menuTabs));
     char *save = NULL;
     for (char *line = opt ? strtok_s(opt, "\n", &save) : NULL; line && g_nMo < MENU_MAX; line = strtok_s(NULL, "\n", &save)) {
         line = menu_trim(line);
@@ -2425,20 +2996,33 @@ static void menu_load(void)
         MenuOpt *m = &g_mo[g_nMo];
         memset(m, 0, sizeof(*m));
         if (*line == '@') {
+            if (g_menuTabCount >= MENU_TAB_MAX) continue;
             m->kind = MO_HEADER;
             to_wide(m->label, 64, menu_trim(line + 1));
+            MenuTab *tab = &g_menuTabs[g_menuTabCount++];
+            memcpy(tab->label, m->label, sizeof(tab->label));
+            tab->selected = -1;
             g_nMo++;
             continue;
         }
-        char *f[4] = {0};
+        char *f[5] = {0};
         int nf = 0;
         char *s2 = NULL;
-        for (char *t = strtok_s(line, "|", &s2); t && nf < 4; t = strtok_s(NULL, "|", &s2)) f[nf++] = menu_trim(t);
+        for (char *t = strtok_s(line, "|", &s2); t && nf < 5; t = strtok_s(NULL, "|", &s2)) f[nf++] = menu_trim(t);
         if (nf < 3) continue;
+        m->tab = g_menuTabCount > 0 ? g_menuTabCount - 1 : 0;
+        if (g_menuTabCount > 0) g_menuTabs[m->tab].count++;
+        if (nf >= 5) to_wide(m->help, 192, f[4]);
         snprintf(m->define, sizeof(m->define), "%s", f[0]);
         to_wide(m->label, 64, f[1]);
         char *kind = f[2];
-        if (!strcmp(m->define, "!DLSS_INFO")) {   // read-only: what DLSS is doing right now
+        if (!strcmp(m->define, "!RESET_ALL")) {
+            m->kind = MO_ACTION;
+            m->present = 1;
+            g_nMo++;
+            continue;
+        }
+        if (!strcmp(kind, "info")) {
             m->kind = MO_INFO;
             m->present = 1;
             g_nMo++;
@@ -2505,10 +3089,9 @@ static void menu_load(void)
     }
     free(opt);
     free(set);
-    if (g_moSel < 0 || g_moSel >= g_nMo || !MENU_SELECTABLE(&g_mo[g_moSel])) {
-        g_moSel = -1;
-        for (int i = 0; i < g_nMo; i++) if (MENU_SELECTABLE(&g_mo[i])) { g_moSel = i; break; }
-    }
+    if (g_menuTab >= g_menuTabCount) g_menuTab = 0;
+    g_moTop = 0;
+    menu_rebuild_rows();
 }
 
 static void format_value(const MenuOpt *m, double v, char *out, size_t cap)
@@ -2519,7 +3102,30 @@ static void format_value(const MenuOpt *m, double v, char *out, size_t cap)
 
 static void display_value(const MenuOpt *m, wchar_t *out, int cap)
 {
+    if (m->kind == MO_ACTION) {
+        _snwprintf(out, cap, L"%ls", now_sec() < g_menuResetUntil ? L"Confirm reset" : L"Reset all");
+        out[cap - 1] = 0;
+        return;
+    }
     if (m->kind == MO_INFO) {
+        if (!strcmp(m->define, "!TAA_INFO")) {
+            _snwprintf(out, cap, L"Disable Hytale TAA");
+            out[cap - 1] = 0;
+            return;
+        }
+        if (!strcmp(m->define, "!DLSS_DENOISER_INFO")) {
+            _snwprintf(out, cap, L"%ls", g_setDlssMode == 2 ? L"NVIDIA RR requested" : L"Original");
+            out[cap - 1] = 0;
+            return;
+        }
+        if (!strcmp(m->define, "!DLSS_FG_INFO")) {
+#if AU_HAS_FRAMEGEN
+            to_wide(out, cap, g_setFrameGen ? afg_status() : "Off");
+#else
+            _snwprintf(out, cap, L"Backend not built"); out[cap - 1] = 0;
+#endif
+            return;
+        }
 #if AU_HAS_DLSS
         static const wchar_t *modes[] = {L"Performance", L"Balanced", L"Quality", L"Ultra Perf", L"Ultra Quality", L"DLAA"};
         int q = g_dlssOW > 0 ? dlss_quality(g_dlssW, g_dlssOW) : -1;
@@ -2535,6 +3141,13 @@ static void display_value(const MenuOpt *m, wchar_t *out, int cap)
         return;
     }
     if (!m->present) { _snwprintf(out, cap, L"n/a"); out[cap - 1] = 0; return; }
+    if ((!strcmp(m->define, "AU_DLSS_PRESET") || !strcmp(m->define, "AU_DLSS_RR_PRESET")) && m->value > 0.5) {
+        int reconstruction = !strcmp(m->define, "AU_DLSS_RR_PRESET");
+        _snwprintf(out, cap, L"%ls (%ls)", reconstruction ? (m->value < 1.5 ? L"E" : L"D") : (m->value < 1.5 ? L"K" : L"J"),
+                   m->value < 1.5 ? L"sharpest" : L"less ghosting");
+        out[cap - 1] = 0;
+        return;
+    }
     if (m->kind == MO_BOOL || m->kind == MO_PACK) { _snwprintf(out, cap, L"%ls", m->value > 0.5 ? L"On" : L"Off"); out[cap - 1] = 0; return; }
     if (m->kind == MO_ENUM)
         for (int i = 0; i < m->nEnum; i++)
@@ -2553,7 +3166,7 @@ static void menu_save(void)
     int changed = 0;
     for (int i = 0; i < g_nMo; i++) {
         MenuOpt *m = &g_mo[i];
-        if (m->kind == MO_HEADER || m->kind == MO_PACK || m->kind == MO_INFO || !m->present) continue;
+        if (m->kind == MO_HEADER || m->kind == MO_PACK || m->kind == MO_INFO || m->kind == MO_ACTION || !m->present) continue;
         char *e = NULL;
         char *v = find_define_value(set, m->define, &e);
         if (!v) continue;
@@ -2582,31 +3195,54 @@ static void menu_save(void)
     free(set);
 }
 
+static void menu_reset_all(void)
+{
+    double time = now_sec();
+    if (time >= g_menuResetUntil) {
+        g_menuResetArmedAt = time;
+        g_menuResetUntil = time + 5.0;
+        _snwprintf(g_menuStatus, 96, L"Click again to reset all categories");
+        g_menuDirty = 1;
+        return;
+    }
+    if (time - g_menuResetArmedAt < 0.5) return;
+    for (int index = 0; index < g_nMo; index++) {
+        MenuOpt *option = &g_mo[index];
+        if (!option->present || option->kind == MO_HEADER || option->kind == MO_INFO || option->kind == MO_ACTION) continue;
+        option->value = option->def;
+        if (option->kind == MO_PACK) g_toggleOff = option->def < 0.5;
+    }
+    g_menuResetUntil = 0.0;
+    g_menuWriteAt = 0.0;
+    g_menuDragging = -1;
+    menu_save();
+    InterlockedExchange(&g_reloadRequested, 1);
+    _snwprintf(g_menuStatus, 96, L"All categories restored to defaults");
+    g_menuDirty = 1;
+}
+
 static void menu_move(int dir)
 {
-    for (int i = g_moSel + dir; i >= 0 && i < g_nMo; i += dir)
-        if (MENU_SELECTABLE(&g_mo[i])) { g_moSel = i; g_menuDirty = 1; return; }
+    int selected = menu_visible_index(g_moSel);
+    for (int index = selected + dir; index >= 0 && index < g_menuVisibleCount; index += dir)
+        if (MENU_SELECTABLE(&g_mo[g_menuVisible[index]])) {
+            g_moSel = g_menuVisible[index];
+            g_menuDirty = 1;
+            return;
+        }
 }
 
 static void menu_section(int dir)
 {
-    int i = g_moSel;
-    if (dir > 0) {
-        while (i < g_nMo && g_mo[i].kind != MO_HEADER) i++;
-    } else {
-        while (i >= 0 && g_mo[i].kind != MO_HEADER) i--;   // this section's header
-        i--;
-        while (i > 0 && g_mo[i].kind != MO_HEADER) i--;    // previous section's header
-    }
-    for (int k = i < 0 ? 0 : i; k < g_nMo; k++)
-        if (MENU_SELECTABLE(&g_mo[k])) { g_moSel = k; g_menuDirty = 1; return; }
+    if (g_menuTabCount > 0)
+        menu_activate_tab((g_menuTab + dir + g_menuTabCount) % g_menuTabCount);
 }
 
 static void menu_change(int dir, int reset)
 {
     if (g_moSel < 0) return;
     MenuOpt *m = &g_mo[g_moSel];
-    if (!m->present || m->kind == MO_INFO) return;
+    if (!m->present || m->kind == MO_INFO || m->kind == MO_ACTION) return;
     double v = m->value;
     if (reset) {
         v = m->def;
@@ -2637,63 +3273,308 @@ static void menu_change(int dir, int reset)
     g_menuDirty = 1;
 }
 
-static int menu_key_is_ours(WPARAM vk)
+static void menu_scroll(int direction)
 {
-    return vk == VK_UP || vk == VK_DOWN || vk == VK_LEFT || vk == VK_RIGHT || vk == VK_BACK || vk == VK_PRIOR || vk == VK_NEXT;
-}
-
-// Keeps the menu keys away from the game while the menu is open (best effort: input the game
-// reads some other way still gets through, which is why the menu polls the keys itself).
-static LRESULT CALLBACK menu_wndproc(HWND h, UINT msg, WPARAM w, LPARAM l)
-{
-    if (msg == WM_KEYDOWN || msg == WM_KEYUP || msg == WM_SYSKEYDOWN || msg == WM_SYSKEYUP) {
-        if (w == VK_HOME || (g_menuOpen && menu_key_is_ours(w))) return 0;
+    int maximum = g_menuVisibleCount - g_menuLayout.rows;
+    if (maximum < 0) maximum = 0;
+    g_moTop += direction;
+    if (g_moTop < 0) g_moTop = 0;
+    if (g_moTop > maximum) g_moTop = maximum;
+    int selected = menu_visible_index(g_moSel);
+    if (selected < g_moTop || selected >= g_moTop + g_menuLayout.rows) {
+        for (int index = g_moTop; index < g_menuVisibleCount && index < g_moTop + g_menuLayout.rows; index++)
+            if (MENU_SELECTABLE(&g_mo[g_menuVisible[index]])) { g_moSel = g_menuVisible[index]; break; }
     }
-    if (msg == WM_CHAR && g_menuOpen && w == 8) return 0;
-    return CallWindowProcW(g_prevWndProc, h, msg, w, l);
+    g_menuDirty = 1;
 }
 
-static DWORD WINAPI menu_input_thread(LPVOID arg)
+static void menu_pointer_range(int optionIndex)
 {
-    (void)arg;
-    static const int keys[] = { VK_HOME, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_BACK, VK_PRIOR, VK_NEXT };
-    enum { NK = sizeof(keys) / sizeof(keys[0]) };
-    int down[NK] = {0};
-    double next[NK] = {0};
+    MenuOpt *option = &g_mo[optionIndex];
+    float left = (float)(g_menuLayout.x + g_menuLayout.controlX + g_menuLayout.row / 2);
+    float right = (float)(g_menuLayout.x + g_menuLayout.width - g_menuLayout.pad - g_menuLayout.row / 2);
+    if (right <= left || option->kind != MO_RANGE || !option->present) return;
+    double fraction = (g_menuPointerX - left) / (right - left);
+    if (fraction < 0.0) fraction = 0.0;
+    if (fraction > 1.0) fraction = 1.0;
+    double value = option->min + floor(fraction * (option->max - option->min) / option->step + 0.5) * option->step;
+    if (value > option->max) value = option->max;
+    if (fabs(value - option->value) < 1e-9) return;
+    option->value = value;
+    g_menuWriteAt = now_sec() + 0.35;
+    _snwprintf(g_menuStatus, 96, L"Applying...");
+    g_menuDirty = 1;
+}
+
+static void menu_pointer(int clicked)
+{
+    MenuLayout *layout = &g_menuLayout;
+    if (layout->width <= 0 || layout->height <= 0) return;
+    if (g_menuSDLReady && (g_menuPointerX < layout->x || g_menuPointerX >= layout->x + layout->width
+        || g_menuPointerY < layout->y || g_menuPointerY >= layout->y + layout->height)) {
+        if (g_menuDragging >= 0) menu_pointer_range(g_menuDragging);
+        return;
+    }
+    if (g_menuPointerX < layout->x) g_menuPointerX = (float)layout->x;
+    if (g_menuPointerX >= layout->x + layout->width) g_menuPointerX = (float)(layout->x + layout->width - 1);
+    if (g_menuPointerY < layout->y) g_menuPointerY = (float)layout->y;
+    if (g_menuPointerY >= layout->y + layout->height) g_menuPointerY = (float)(layout->y + layout->height - 1);
+    if (g_menuDragging >= 0) menu_pointer_range(g_menuDragging);
+    g_menuDirty = 1;
+    if (!clicked || now_sec() - g_menuLastClick < 0.12) return;
+    g_menuLastClick = now_sec();
+    int pointerX = (int)g_menuPointerX - layout->x;
+    int pointerY = (int)g_menuPointerY - layout->y;
+    if (pointerY < layout->title && pointerX > layout->width - layout->row) {
+        g_menuOpen = 0;
+        g_menuDragging = -1;
+        return;
+    }
+    if (pointerX < layout->rail && pointerY >= layout->title) {
+        int tabHeight = (layout->height - layout->title - layout->footer - layout->pad) / (g_menuTabCount > 0 ? g_menuTabCount : 1);
+        if (tabHeight < 1) tabHeight = 1;
+        int tab = (pointerY - layout->title - layout->pad / 2) / tabHeight;
+        if (tab >= 0 && tab < g_menuTabCount) menu_activate_tab(tab);
+        return;
+    }
+    if (pointerY >= layout->title && pointerY < layout->contentTop) {
+        g_menuSearchFocus = 1;
+        return;
+    }
+    if (pointerY >= layout->height - layout->footer) {
+        int resetTop = layout->height - layout->row * 31 / 58;
+        int resetBottom = layout->height - layout->row * 7 / 58;
+        if (pointerX > layout->width - layout->row * 3 && pointerX < layout->width - layout->pad
+            && pointerY >= resetTop && pointerY <= resetBottom) menu_change(0, 1);
+        return;
+    }
+    int row = (pointerY - layout->contentTop) / layout->row;
+    int visible = g_moTop + row;
+    if (pointerY < layout->contentTop || row >= layout->rows || visible < 0 || visible >= g_menuVisibleCount) return;
+    int optionIndex = g_menuVisible[visible];
+    if (!MENU_SELECTABLE(&g_mo[optionIndex])) return;
+    g_moSel = optionIndex;
+    g_menuSearchFocus = 0;
+    MenuOpt *option = &g_mo[optionIndex];
+    if (option->kind == MO_ACTION) {
+        int buttonTop = layout->contentTop + row * layout->row + layout->row / 2;
+        if (pointerX >= layout->controlX + layout->pad && pointerX <= layout->width - layout->pad * 2
+            && pointerY >= buttonTop && pointerY <= buttonTop + layout->row / 2 - layout->row * 8 / 58) menu_reset_all();
+        return;
+    }
+    if (option->kind == MO_RANGE && pointerY < layout->contentTop + row * layout->row + layout->row / 2) return;
+    if (pointerX < layout->controlX || !option->present) return;
+    if (option->kind == MO_RANGE) {
+        if (pointerX < layout->controlX + layout->row / 2) menu_change(-1, 0);
+        else if (pointerX > layout->width - layout->pad - layout->row / 2) menu_change(1, 0);
+        else if (pointerX < layout->width - layout->pad - layout->row / 2) {
+            g_menuDragging = optionIndex;
+            menu_pointer_range(optionIndex);
+        }
+    } else {
+        int direction = option->kind == MO_ENUM && pointerX < layout->controlX + layout->row / 2 ? -1 : 1;
+        menu_change(direction, 0);
+    }
+}
+
+static int menu_edit_mode(int foreground, SHORT altState)
+{
+    return g_menuOpen && foreground && (altState & 0x8000) != 0;
+}
+
+#include "menu_sdl.h"
+
+static RenderUIState render_ui_begin(void)
+{
+    RenderUIState state = {0};
+#if AU_HAS_DLSS
+    if (g_renderAppliedScale >= 100 || !g_postPresent) return state;
+    GLint framebuffer = -1;
+    r_glGetIntegerv(0x8ca6, &framebuffer);
+    if (framebuffer != 0) return state;
+    ProgRec *program = g_curProg ? prog_rec(g_curProg, 0) : NULL;
+    if (!program || (strcmp(program->pname, "Batcher2DFS") && strcmp(program->pname, "TextFS") && strcmp(program->pname, "BasicFS"))) return state;
+    int width = 0, height = 0;
+    if (!render_physical_size(&width, &height)) return state;
+    r_glGetIntegerv(GL_VIEWPORT, state.viewport);
+    r_glGetIntegerv(0x0c10, state.scissor);
+    if (state.viewport[2] <= 0 || state.viewport[3] <= 0) return state;
+    float horizontal = (float)width / state.viewport[2], vertical = (float)height / state.viewport[3];
+    void (APIENTRY *viewport)(GLint, GLint, GLsizei, GLsizei) = (void (APIENTRY *)(GLint, GLint, GLsizei, GLsizei))GetProcAddress(g_real, "glViewport");
+    void (APIENTRY *scissor)(GLint, GLint, GLsizei, GLsizei) = (void (APIENTRY *)(GLint, GLint, GLsizei, GLsizei))GetProcAddress(g_real, "glScissor");
+    viewport(0, 0, width, height);
+    scissor((int)roundf(state.scissor[0] * horizontal), (int)roundf(state.scissor[1] * vertical),
+            (int)roundf(state.scissor[2] * horizontal), (int)roundf(state.scissor[3] * vertical));
+    state.fragmentLocation = program->locUIFragmentScale;
+    if (state.fragmentLocation >= 0) r_glUniform2f(state.fragmentLocation, 1.0f / horizontal, 1.0f / vertical);
+    state.active = 1;
+#endif
+    return state;
+}
+
+static void render_ui_end(RenderUIState state)
+{
+    if (!state.active) return;
+    void (APIENTRY *viewport)(GLint, GLint, GLsizei, GLsizei) = (void (APIENTRY *)(GLint, GLint, GLsizei, GLsizei))GetProcAddress(g_real, "glViewport");
+    void (APIENTRY *scissor)(GLint, GLint, GLsizei, GLsizei) = (void (APIENTRY *)(GLint, GLint, GLsizei, GLsizei))GetProcAddress(g_real, "glScissor");
+    viewport(state.viewport[0], state.viewport[1], state.viewport[2], state.viewport[3]);
+    scissor(state.scissor[0], state.scissor[1], state.scissor[2], state.scissor[3]);
+    if (state.fragmentLocation >= 0) r_glUniform2f(state.fragmentLocation, 1.0f, 1.0f);
+}
+
+static LRESULT CALLBACK menu_wndproc(HWND window, UINT message, WPARAM parameter, LPARAM data)
+{
+    if ((message == WM_KEYDOWN || message == WM_SYSKEYDOWN) && !(data & ((LPARAM)1 << 30)))
+        for (int index = 0; index < (int)(sizeof(g_menuKeys) / sizeof(g_menuKeys[0])); index++)
+            if (parameter == (WPARAM)g_menuKeys[index] && (menu_shortcut_key((int)parameter) || g_menuOpen))
+                InterlockedOr(&g_menuKeyEdges, (LONG)1 << index);
+    if (message == WM_SYSKEYDOWN && parameter == VK_F4) {
+        g_menuOpen = 0;
+        g_menuDragging = -1;
+    }
+    if (g_menuOpen && message == WM_SYSCOMMAND && (parameter & 0xfff0) == SC_KEYMENU) return 0;
+    if (g_menuSDLReady && (message == WM_INPUT || message == WM_MOUSEMOVE || message == WM_MOUSEWHEEL
+        || message == WM_LBUTTONDOWN || message == WM_LBUTTONUP || message == WM_RBUTTONDOWN
+        || message == WM_RBUTTONUP || message == WM_MBUTTONDOWN || message == WM_MBUTTONUP || message == WM_SETCURSOR))
+        return CallWindowProcW(g_prevWndProc, window, message, parameter, data);
+    if (menu_edit_mode(is_game_foreground(), GetAsyncKeyState(VK_MENU))) {
+        if (message == WM_INPUT) {
+            RAWINPUT input;
+            UINT size = sizeof(input);
+            UINT received = GetRawInputData((HRAWINPUT)data, RID_INPUT, &input, &size, sizeof(RAWINPUTHEADER));
+            if (received != (UINT)-1 && input.header.dwType == RIM_TYPEKEYBOARD && (input.data.keyboard.Flags & RI_KEY_BREAK))
+                return CallWindowProcW(g_prevWndProc, window, message, parameter, data);
+            if (received != (UINT)-1 && input.header.dwType == RIM_TYPEMOUSE) {
+                EnterCriticalSection(&g_menuLock);
+                g_menuRawMouse = 1;
+                if (!(input.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) {
+                    g_menuPointerX += input.data.mouse.lLastX;
+                    g_menuPointerY += input.data.mouse.lLastY;
+                } else {
+                    POINT point;
+                    if (GetCursorPos(&point) && ScreenToClient(window, &point)) {
+                        g_menuPointerX = (float)point.x;
+                        g_menuPointerY = (float)point.y;
+                    }
+                }
+                if (input.data.mouse.usButtonFlags & RI_MOUSE_LEFT_BUTTON_UP) g_menuDragging = -1;
+                menu_pointer((input.data.mouse.usButtonFlags & RI_MOUSE_LEFT_BUTTON_DOWN) != 0);
+                if (input.data.mouse.usButtonFlags & RI_MOUSE_WHEEL)
+                    menu_scroll(-((short)input.data.mouse.usButtonData / WHEEL_DELTA) * 3);
+                LeaveCriticalSection(&g_menuLock);
+            }
+            return DefWindowProcW(window, message, parameter, data);
+        }
+        if (message == WM_MOUSEMOVE || message == WM_LBUTTONDOWN || message == WM_LBUTTONUP || message == WM_MOUSEWHEEL) {
+            EnterCriticalSection(&g_menuLock);
+            if (!g_menuRawMouse) {
+                if (message != WM_MOUSEWHEEL) {
+                    g_menuPointerX = (float)(short)LOWORD(data);
+                    g_menuPointerY = (float)(short)HIWORD(data);
+                }
+                if (message == WM_LBUTTONUP) g_menuDragging = -1;
+                if (message == WM_MOUSEWHEEL) menu_scroll(-GET_WHEEL_DELTA_WPARAM(parameter) / WHEEL_DELTA * 3);
+                else menu_pointer(message == WM_LBUTTONDOWN);
+            }
+            LeaveCriticalSection(&g_menuLock);
+            return 0;
+        }
+        if (message == WM_RBUTTONDOWN || message == WM_RBUTTONUP || message == WM_MBUTTONDOWN || message == WM_MBUTTONUP) return 0;
+        if (message == WM_SETCURSOR) { SetCursor(NULL); return 1; }
+        if (message == WM_CHAR || message == WM_SYSCHAR) {
+            EnterCriticalSection(&g_menuLock);
+            if (g_menuSearchFocus && parameter == 8 && *g_menuSearch) {
+                g_menuSearch[wcslen(g_menuSearch) - 1] = 0;
+                g_moTop = 0;
+                menu_rebuild_rows();
+            } else if (g_menuSearchFocus && parameter >= 32 && parameter < 65536) {
+                size_t length = wcslen(g_menuSearch);
+                if (length < 63) {
+                    g_menuSearch[length] = (wchar_t)parameter;
+                    g_menuSearch[length + 1] = 0;
+                    g_moTop = 0;
+                    menu_rebuild_rows();
+                }
+            }
+            LeaveCriticalSection(&g_menuLock);
+            return 0;
+        }
+        if (message == WM_KEYDOWN || (message == WM_SYSKEYDOWN && parameter != VK_F4)) return 0;
+    }
+    if ((message == WM_KEYDOWN || message == WM_KEYUP || message == WM_SYSKEYDOWN || message == WM_SYSKEYUP)
+        && menu_shortcut_key((int)parameter)) return 0;
+    return CallWindowProcW(g_prevWndProc, window, message, parameter, data);
+}
+
+static DWORD WINAPI menu_input_thread(LPVOID argument)
+{
+    (void)argument;
+    const int *keys = g_menuKeys;
+    enum { KEY_COUNT = sizeof(g_menuKeys) / sizeof(g_menuKeys[0]) };
+    int down[KEY_COUNT] = {0};
+    double next[KEY_COUNT] = {0};
     for (;;) {
         Sleep(15);
-        double t = now_sec();
+        if (InterlockedExchange(&g_menuTAAWarningPending, 0)) {
+            MessageBoxW(g_gameHwnd,
+                L"Disable TAA in Hytale's Graphics settings before using Aurora Shaders.\n\nHytale's TAA can cause scene shaking and ghosting. Aurora's own anti-aliasing and DLSS controls are separate.",
+                L"Aurora Shaders - Hytale TAA", MB_OK | MB_ICONWARNING);
+            write_file("taa-warning-seen", "1", 1);
+        }
+        double time = now_sec();
         EnterCriticalSection(&g_menuLock);
-        if (g_menuWriteAt > 0.0 && t >= g_menuWriteAt) {
+        if (g_menuWriteAt > 0.0 && time >= g_menuWriteAt) {
             g_menuWriteAt = 0.0;
             menu_save();
             _snwprintf(g_menuStatus, 96, L"Saved - shaders reloading");
             g_menuDirty = 1;
         }
         LeaveCriticalSection(&g_menuLock);
-        int fg = is_game_foreground();
-        for (int k = 0; k < NK; k++) {
-            int d = fg && (GetAsyncKeyState(keys[k]) & 0x8000) != 0;
-            int fire = 0, repeat = 0;
-            if (d && !down[k]) { fire = 1; next[k] = t + 0.35; }
-            else if (d && k >= 1 && k <= 4 && t >= next[k]) { fire = repeat = 1; next[k] = t + 0.06; }
-            down[k] = d;
+        int foreground = is_game_foreground();
+        LONG edges = InterlockedExchange(&g_menuKeyEdges, 0);
+        EnterCriticalSection(&g_menuLock);
+        int mouseMode = menu_edit_mode(foreground, GetAsyncKeyState(VK_MENU));
+        if (mouseMode != g_menuMouseMode) {
+            g_menuMouseMode = mouseMode;
+            if (!mouseMode) g_menuSearchFocus = 0;
+            g_menuRawMouse = 0;
+            g_menuDragging = -1;
+            g_menuDirty = 1;
+        }
+        LeaveCriticalSection(&g_menuLock);
+        for (int index = 0; index < KEY_COUNT; index++) {
+            int pressed = foreground && (GetAsyncKeyState(keys[index]) & 0x8000) != 0;
+            int fire = foreground && (edges & ((LONG)1 << index)), repeat = 0;
+            if (pressed && !down[index]) { if (!g_prevWndProc) fire = 1; next[index] = time + 0.35; }
+            else if (pressed && index >= 1 && index <= 4 && time >= next[index]) {
+                fire = repeat = 1;
+                next[index] = time + 0.06;
+            }
+            down[index] = pressed;
             if (!fire) continue;
             EnterCriticalSection(&g_menuLock);
-            if (keys[k] == VK_HOME) {
+            if (keys[index] == VK_HOME) {
                 g_menuOpen = !g_menuOpen;
-                if (g_menuOpen) { menu_load(); g_menuStatus[0] = 0; }
+                if (g_menuOpen) {
+                    menu_load();
+                    if (!pack_flag("taa-warning-seen")) InterlockedExchange(&g_menuTAAWarningPending, 1);
+                    g_menuStatus[0] = 0;
+                    g_menuRawMouse = 0;
+                    g_menuDragging = -1;
+                    g_menuPointerX = (float)(g_menuLayout.x + g_menuLayout.width / 2);
+                    g_menuPointerY = (float)(g_menuLayout.y + g_menuLayout.height / 2);
+                }
                 g_menuDirty = 1;
             } else if (g_menuOpen) {
                 int sliding = g_moSel >= 0 && g_mo[g_moSel].kind == MO_RANGE;
-                switch (keys[k]) {
-                case VK_UP: menu_move(-1); break;
-                case VK_DOWN: menu_move(1); break;
-                case VK_LEFT: if (!repeat || sliding) menu_change(-1, 0); break;
-                case VK_RIGHT: if (!repeat || sliding) menu_change(1, 0); break;
-                case VK_BACK: menu_change(0, 1); break;
+                switch (keys[index]) {
+                case VK_UP: g_menuSearchFocus = 0; menu_move(-1); break;
+                case VK_DOWN: g_menuSearchFocus = 0; menu_move(1); break;
+                case VK_LEFT: if (!g_menuSearchFocus && (!repeat || sliding)) menu_change(-1, 0); break;
+                case VK_RIGHT: if (!g_menuSearchFocus && (!repeat || sliding)) menu_change(1, 0); break;
                 case VK_PRIOR: menu_section(-1); break;
                 case VK_NEXT: menu_section(1); break;
+                case VK_ESCAPE: g_menuOpen = 0; g_menuDragging = -1; break;
                 }
             }
             LeaveCriticalSection(&g_menuLock);
@@ -2707,7 +3588,7 @@ static DWORD WINAPI menu_input_thread(LPVOID arg)
 static HDC g_ovDC;
 static HBITMAP g_ovBmp;
 static unsigned char *g_ovBits;
-static int g_ovW, g_ovH, g_ovScreenH, g_ovUpload;
+static int g_ovW, g_ovH, g_ovTexW, g_ovTexH, g_ovScreenH, g_ovScreenW, g_ovUpload;
 static HFONT g_fText, g_fBold, g_fSmall;
 static int g_fPx;
 
@@ -2733,110 +3614,254 @@ static void menu_text(HDC dc, const wchar_t *s, int x0, int y0, int x1, int y1, 
     DrawTextW(dc, s, -1, &r, align | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 }
 
-static void menu_render(int screenH)
+static void menu_round(HDC dc, int left, int top, int right, int bottom, int radius, COLORREF color)
 {
-    double s = screenH / 1080.0;
-    if (s < 0.75) s = 0.75;
-    int rowH = (int)(30 * s + 0.5), pad = (int)(18 * s + 0.5), W = (int)(600 * s + 0.5);
-    int rows = (int)(screenH * 0.70 / rowH) - 4;
-    if (rows < 6) rows = 6;
-    if (rows > g_nMo) rows = g_nMo;
-    if (g_moSel >= 0) {
-        if (g_moSel - 1 < g_moTop) g_moTop = g_moSel - 1;          // keep the section header in view
-        if (g_moSel >= g_moTop + rows) g_moTop = g_moSel - rows + 1;
+    HBRUSH brush = CreateSolidBrush(color);
+    HGDIOBJ oldBrush = SelectObject(dc, brush);
+    HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
+    RoundRect(dc, left, top, right, bottom, radius, radius);
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(brush);
+}
+
+static void menu_render(int screenWidth, int screenHeight)
+{
+    double scale = screenHeight / 1080.0;
+    if (scale < 0.85) scale = 0.85;
+    if (scale > 2.0) scale = 2.0;
+    MenuLayout *layout = &g_menuLayout;
+    layout->pad = (int)(12 * scale);
+    layout->width = (int)(540 * scale);
+    if (layout->width > screenWidth - layout->pad * 2) layout->width = screenWidth - layout->pad * 2;
+    layout->height = (int)(640 * scale);
+    if (layout->height > screenHeight - layout->pad * 2) layout->height = screenHeight - layout->pad * 2;
+    layout->rail = (int)(148 * scale);
+    layout->title = (int)(60 * scale);
+    layout->footer = (int)(104 * scale);
+    layout->row = (int)(58 * scale);
+    layout->contentTop = layout->title + (int)(88 * scale);
+    layout->rows = (layout->height - layout->footer - layout->contentTop) / layout->row;
+    if (layout->rows < 1) layout->rows = 1;
+    layout->controlX = layout->rail + layout->pad;
+    layout->x = layout->pad;
+    layout->y = (screenHeight - layout->height) / 2;
+    int selected = menu_visible_index(g_moSel);
+    if (selected >= 0) {
+        if (selected < g_moTop) g_moTop = selected;
+        if (selected >= g_moTop + layout->rows) g_moTop = selected - layout->rows + 1;
     }
-    if (g_moTop > g_nMo - rows) g_moTop = g_nMo - rows;
+    int maximum = g_menuVisibleCount - layout->rows;
+    if (maximum < 0) maximum = 0;
+    if (g_moTop > maximum) g_moTop = maximum;
     if (g_moTop < 0) g_moTop = 0;
-    int titleH = (int)(44 * s + 0.5), footH = rowH * 2 + pad;
-    int H = titleH + rows * rowH + footH;
-
+    int width = layout->width, height = layout->height, pad = layout->pad;
+    if (width <= 0 || height <= 0) return;
     if (!g_ovDC) g_ovDC = CreateCompatibleDC(NULL);
-    if (W != g_ovW || H != g_ovH || !g_ovBmp) {
-        if (g_ovBmp) DeleteObject(g_ovBmp);
-        BITMAPINFO bi;
-        memset(&bi, 0, sizeof(bi));
-        bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
-        bi.bmiHeader.biWidth = W;
-        bi.bmiHeader.biHeight = -H;
-        bi.bmiHeader.biPlanes = 1;
-        bi.bmiHeader.biBitCount = 32;
-        bi.bmiHeader.biCompression = BI_RGB;
-        g_ovBmp = CreateDIBSection(g_ovDC, &bi, DIB_RGB_COLORS, (void **)&g_ovBits, NULL, 0);
+    if (width != g_ovW || height != g_ovH || !g_ovBmp) {
+        static HBITMAP baseBitmap;
+        if (g_ovBmp) {
+            SelectObject(g_ovDC, baseBitmap);
+            DeleteObject(g_ovBmp);
+        }
+        BITMAPINFO bitmap;
+        memset(&bitmap, 0, sizeof(bitmap));
+        bitmap.bmiHeader.biSize = sizeof(bitmap.bmiHeader);
+        bitmap.bmiHeader.biWidth = width * 2;
+        bitmap.bmiHeader.biHeight = -height * 2;
+        bitmap.bmiHeader.biPlanes = 1;
+        bitmap.bmiHeader.biBitCount = 32;
+        bitmap.bmiHeader.biCompression = BI_RGB;
+        g_ovBmp = CreateDIBSection(g_ovDC, &bitmap, DIB_RGB_COLORS, (void **)&g_ovBits, NULL, 0);
         if (!g_ovBmp) { g_ovBits = NULL; return; }
-        SelectObject(g_ovDC, g_ovBmp);
-        g_ovW = W;
-        g_ovH = H;
+        HGDIOBJ previousBitmap = SelectObject(g_ovDC, g_ovBmp);
+        if (!baseBitmap) baseBitmap = (HBITMAP)previousBitmap;
+        g_ovW = width;
+        g_ovH = height;
+        g_ovTexW = width * 2;
+        g_ovTexH = height * 2;
+        SetMapMode(g_ovDC, MM_ANISOTROPIC);
+        SetWindowExtEx(g_ovDC, width, height, NULL);
+        SetViewportExtEx(g_ovDC, g_ovTexW, g_ovTexH, NULL);
     }
-    int fpx = (int)(17 * s + 0.5);
-    if (fpx != g_fPx) {
+    int fontPixels = (int)(17 * scale);
+    if (fontPixels != g_fPx) {
+        SelectObject(g_ovDC, GetStockObject(DEFAULT_GUI_FONT));
         if (g_fText) { DeleteObject(g_fText); DeleteObject(g_fBold); DeleteObject(g_fSmall); }
-        g_fText = menu_font(fpx, FW_NORMAL);
-        g_fBold = menu_font(fpx, FW_SEMIBOLD);
-        g_fSmall = menu_font((int)(13.5 * s + 0.5), FW_SEMIBOLD);
-        g_fPx = fpx;
+        g_fText = menu_font(fontPixels, FW_NORMAL);
+        g_fBold = menu_font(fontPixels, FW_SEMIBOLD);
+        g_fSmall = menu_font((int)(14 * scale), FW_NORMAL);
+        g_fPx = fontPixels;
     }
-
     HDC dc = g_ovDC;
     SetBkMode(dc, TRANSPARENT);
-    menu_fill(dc, 0, 0, W, H, RGB(15, 19, 28));
-    menu_fill(dc, 0, 0, W, titleH, RGB(22, 29, 44));
-    menu_text(dc, L"AURORA SHADERS", pad, 0, W - pad, titleH, g_fBold, RGB(150, 190, 255), DT_LEFT);
-    menu_text(dc, L"Options", pad, 0, W - pad, titleH, g_fText, RGB(150, 160, 180), DT_RIGHT);
-
-    int y = titleH;
-    for (int i = g_moTop; i < g_moTop + rows && i < g_nMo; i++, y += rowH) {
-        MenuOpt *m = &g_mo[i];
-        if (m->kind == MO_HEADER) {
-            wchar_t up[64];
-            int k = 0;
-            for (; m->label[k] && k < 63; k++) up[k] = (wchar_t)towupper(m->label[k]);
-            up[k] = 0;
-            menu_text(dc, up, pad, y + rowH / 3, W - pad, y + rowH, g_fSmall, RGB(105, 132, 182), DT_LEFT);
-            menu_fill(dc, pad, y + rowH - 1, W - pad, y + rowH, RGB(36, 46, 66));
-            continue;
+    menu_fill(dc, 0, 0, width, height, RGB(13, 20, 29));
+    menu_fill(dc, 0, layout->title, layout->rail, height - layout->footer, RGB(10, 16, 24));
+    for (int stripe = 0; stripe < layout->title; stripe++)
+        menu_fill(dc, 0, stripe, width, stripe + 1, RGB(22 - stripe * 5 / layout->title, 36 - stripe * 9 / layout->title, 49 - stripe * 12 / layout->title));
+    menu_fill(dc, pad, layout->title - 2, width - pad, layout->title - 1, RGB(47, 85, 91));
+    menu_text(dc, L"Aurora", pad + (int)(6 * scale), (int)(4 * scale), width / 2, layout->title / 2 + (int)(6 * scale),
+              g_fBold, RGB(158, 243, 221), DT_LEFT);
+    menu_text(dc, L"Shader settings", pad + (int)(6 * scale), layout->title / 2, width / 2, layout->title - (int)(5 * scale),
+              g_fSmall, RGB(129, 153, 174), DT_LEFT);
+    int badgeLeft = width - (int)(150 * scale), badgeRight = width - layout->row;
+    menu_round(dc, badgeLeft, (int)(17 * scale), badgeRight, (int)(42 * scale), (int)(16 * scale),
+               g_menuMouseMode ? RGB(26, 75, 69) : RGB(30, 42, 58));
+    menu_text(dc, g_menuMouseMode ? L"EDITING" : L"LIVE VIEW", badgeLeft, (int)(17 * scale), badgeRight, (int)(42 * scale),
+              g_fSmall, g_menuMouseMode ? RGB(154, 243, 211) : RGB(159, 188, 224), DT_CENTER);
+    menu_text(dc, L"\x00D7", width - layout->row, 0, width - pad / 2, layout->title, g_fBold, RGB(173, 195, 218), DT_CENTER);
+    int tabHeight = (height - layout->title - layout->footer - pad) / (g_menuTabCount > 0 ? g_menuTabCount : 1);
+    if (tabHeight < 1) tabHeight = 1;
+    for (int tab = 0; tab < g_menuTabCount; tab++) {
+        int top = layout->title + pad / 2 + tab * tabHeight;
+        int active = tab == g_menuTab && !*g_menuSearch;
+        if (active) {
+            menu_round(dc, pad / 2, top + 3, layout->rail - pad / 2, top + tabHeight - 3, (int)(12 * scale), RGB(27, 53, 60));
+            menu_fill(dc, pad / 2, top + tabHeight / 3, pad / 2 + (int)(3 * scale), top + tabHeight * 2 / 3, RGB(112, 228, 200));
         }
-        int sel = i == g_moSel;
-        if (sel) {
-            menu_fill(dc, pad / 2, y + 2, W - pad / 2, y + rowH - 2, RGB(37, 57, 94));
-            menu_fill(dc, pad / 2, y + 2, pad / 2 + (int)(3 * s + 0.5), y + rowH - 2, RGB(120, 170, 255));
-        }
-        menu_text(dc, m->label, pad + (int)(8 * s), y, W * 6 / 10, y + rowH, sel ? g_fBold : g_fText,
-                  m->present ? RGB(222, 228, 238) : RGB(105, 108, 118), DT_LEFT);
-        wchar_t val[48], shown[64];
-        display_value(m, val, 48);
-        if (sel && m->present) _snwprintf(shown, 64, L"\x2039   %ls   \x203A", val);
-        else _snwprintf(shown, 64, L"%ls", val);
-        shown[63] = 0;
-        int modified = m->present && m->kind != MO_INFO && fabs(m->value - m->def) > 1e-9;
-        menu_text(dc, shown, W * 6 / 10, y, W - pad, y + rowH, sel ? g_fBold : g_fText,
-                  modified ? RGB(255, 196, 112) : RGB(238, 242, 250), DT_RIGHT);
+        menu_text(dc, g_menuTabs[tab].label, pad + (int)(4 * scale), top, layout->rail - pad / 2, top + tabHeight,
+                  g_fSmall, active ? RGB(175, 248, 226) : RGB(140, 162, 184), DT_LEFT);
     }
-    // Scroll hints.
-    if (g_moTop > 0) menu_text(dc, L"\x25B2", 0, titleH, W - pad / 3, titleH + rowH / 2, g_fSmall, RGB(90, 110, 150), DT_RIGHT);
-    if (g_moTop + rows < g_nMo) menu_text(dc, L"\x25BC", 0, y - rowH / 2, W - pad / 3, y, g_fSmall, RGB(90, 110, 150), DT_RIGHT);
-
-    menu_fill(dc, pad, y + pad / 3, W - pad, y + pad / 3 + 1, RGB(36, 46, 66));
-    y += pad / 2;
-    menu_text(dc, L"\x2191\x2193  select      \x2190\x2192  change      PgUp/PgDn  section", pad, y, W - pad, y + rowH,
-              g_fSmall, RGB(128, 138, 158), DT_LEFT);
-    menu_text(dc, L"Backspace  default      Home  close", pad, y + rowH, W - pad, y + rowH * 2, g_fSmall, RGB(128, 138, 158), DT_LEFT);
-    if (g_menuStatus[0]) menu_text(dc, g_menuStatus, pad, y + rowH, W - pad, y + rowH * 2, g_fSmall, RGB(140, 214, 160), DT_RIGHT);
-    GdiFlush();
-
-    // Alpha: translucent panel with rounded corners.
-    int rad = (int)(12 * s + 0.5);
-    for (int py = 0; py < H; py++) {
-        for (int px = 0; px < W; px++) {
-            int cx = px < rad ? rad - px : (px >= W - rad ? px - (W - rad - 1) : 0);
-            int cy = py < rad ? rad - py : (py >= H - rad ? py - (H - rad - 1) : 0);
-            float a = 236.0f;
-            if (cx && cy) {
-                float d = sqrtf((float)(cx * cx + cy * cy));
-                a = d >= rad ? 0.0f : (d > rad - 1 ? a * (rad - d) : a);
+    int contentLeft = layout->rail + pad, contentRight = width - pad;
+    int searchTop = layout->title + (int)(12 * scale), searchBottom = searchTop + (int)(32 * scale);
+    menu_round(dc, contentLeft, searchTop, contentRight, searchBottom, (int)(14 * scale),
+               g_menuSearchFocus ? RGB(31, 60, 68) : RGB(23, 34, 47));
+    wchar_t query[96];
+    _snwprintf(query, 96, L"%ls%ls", *g_menuSearch ? g_menuSearch : L"Search settings...", g_menuSearchFocus ? L" |" : L"");
+    query[95] = 0;
+    menu_text(dc, query, contentLeft + pad, searchTop, contentRight - pad, searchBottom, g_fSmall,
+              *g_menuSearch ? RGB(232, 243, 248) : RGB(124, 151, 177), DT_LEFT);
+    int headingTop = searchBottom + (int)(6 * scale);
+    menu_text(dc, *g_menuSearch ? L"Search results" : g_menuTabs[g_menuTab].label, contentLeft + pad / 2, headingTop,
+              contentRight - (int)(65 * scale), layout->contentTop - (int)(4 * scale), g_fBold, RGB(220, 236, 247), DT_LEFT);
+    wchar_t count[32];
+    _snwprintf(count, 32, L"%d", g_menuVisibleCount);
+    menu_text(dc, count, contentRight - (int)(65 * scale), headingTop, contentRight - pad / 2,
+              layout->contentTop - (int)(4 * scale), g_fSmall, RGB(123, 150, 176), DT_RIGHT);
+    for (int row = 0; row < layout->rows && g_moTop + row < g_menuVisibleCount; row++) {
+        int optionIndex = g_menuVisible[g_moTop + row];
+        MenuOpt *option = &g_mo[optionIndex];
+        int top = layout->contentTop + row * layout->row;
+        int active = optionIndex == g_moSel;
+        int modified = option->present && MENU_SELECTABLE(option) && option->kind != MO_ACTION && fabs(option->value - option->def) > 1e-9;
+        menu_round(dc, contentLeft, top + 2, contentRight, top + layout->row - 4, (int)(12 * scale),
+                   active ? RGB(29, 47, 61) : RGB(20, 30, 42));
+        if (active) menu_fill(dc, contentLeft + (int)(4 * scale), top + (int)(12 * scale), contentLeft + (int)(6 * scale),
+                              top + layout->row - (int)(14 * scale), RGB(92, 191, 176));
+        int labelRight = contentRight - pad;
+        if (option->kind == MO_BOOL || option->kind == MO_PACK || option->kind == MO_RANGE) labelRight -= (int)(65 * scale);
+        menu_text(dc, option->label, contentLeft + pad, top + (int)(4 * scale), labelRight, top + layout->row / 2,
+                  g_fText, option->present ? RGB(220, 232, 244) : RGB(112, 132, 150), DT_LEFT);
+        wchar_t value[64];
+        display_value(option, value, 64);
+        COLORREF valueColor = modified ? RGB(156, 229, 211) : RGB(246, 209, 105);
+        if (option->kind == MO_ACTION) {
+            int buttonLeft = contentLeft + pad, buttonRight = contentRight - pad;
+            int buttonTop = top + layout->row / 2, buttonBottom = top + layout->row - (int)(8 * scale);
+            menu_round(dc, buttonLeft, buttonTop, buttonRight, buttonBottom, (int)(8 * scale),
+                       now_sec() < g_menuResetUntil ? RGB(126, 52, 44) : RGB(83, 69, 39));
+            menu_text(dc, value, buttonLeft, buttonTop, buttonRight, buttonBottom, g_fSmall, RGB(246, 209, 105), DT_CENTER);
+        } else if (option->present && (option->kind == MO_BOOL || option->kind == MO_PACK)) {
+            int toggleWidth = (int)(58 * scale), toggleHeight = (int)(24 * scale);
+            int toggleLeft = contentRight - pad - toggleWidth, toggleTop = top + (layout->row - toggleHeight) / 2;
+            int enabled = option->value > 0.5;
+            menu_round(dc, toggleLeft, toggleTop, contentRight - pad, toggleTop + toggleHeight, toggleHeight,
+                       enabled ? (modified ? RGB(41, 123, 105) : RGB(117, 92, 37)) : RGB(44, 58, 73));
+            int knob = toggleHeight - (int)(6 * scale);
+            int knobLeft = enabled ? contentRight - pad - knob - (int)(3 * scale) : toggleLeft + (int)(3 * scale);
+            menu_round(dc, knobLeft, toggleTop + (int)(3 * scale), knobLeft + knob, toggleTop + (int)(3 * scale) + knob, knob,
+                       modified ? RGB(226, 242, 242) : RGB(246, 209, 105));
+            menu_text(dc, enabled ? L"ON" : L"OFF", contentLeft + pad, top + layout->row / 2,
+                      toggleLeft - pad, top + layout->row - (int)(6 * scale), g_fSmall, valueColor, DT_LEFT);
+        } else if (option->present && option->kind == MO_RANGE) {
+            int trackLeft = layout->controlX + layout->row / 2, trackRight = width - pad - layout->row / 2;
+            int trackY = top + layout->row * 3 / 4;
+            double fraction = option->max > option->min ? (option->value - option->min) / (option->max - option->min) : 0.0;
+            if (fraction < 0.0) fraction = 0.0;
+            if (fraction > 1.0) fraction = 1.0;
+            int handle = trackLeft + (int)(fraction * (trackRight - trackLeft));
+            menu_fill(dc, trackLeft, trackY - 1, trackRight, trackY + 2, RGB(48, 65, 82));
+            menu_fill(dc, trackLeft, trackY - 1, handle, trackY + 2, RGB(81, 184, 170));
+            double defaultFraction = option->max > option->min ? (option->def - option->min) / (option->max - option->min) : 0.0;
+            if (defaultFraction < 0.0) defaultFraction = 0.0;
+            if (defaultFraction > 1.0) defaultFraction = 1.0;
+            int defaultMarker = trackLeft + (int)(defaultFraction * (trackRight - trackLeft));
+            menu_fill(dc, defaultMarker - 1, trackY - (int)(5 * scale), defaultMarker + 1, trackY + (int)(5 * scale), RGB(246, 209, 105));
+            int radius = (int)(4 * scale);
+            menu_round(dc, handle - radius, trackY - radius, handle + radius, trackY + radius, radius * 2, valueColor);
+            menu_text(dc, L"\x2212", layout->controlX, top + layout->row / 2, trackLeft, top + layout->row - 4, g_fText, RGB(150, 174, 193), DT_CENTER);
+            menu_text(dc, L"+", trackRight, top + layout->row / 2, contentRight, top + layout->row - 4, g_fText, RGB(150, 174, 193), DT_CENTER);
+            menu_text(dc, value, labelRight, top + 4, contentRight - pad, top + layout->row / 2, g_fSmall, valueColor, DT_RIGHT);
+        } else {
+            int lowerTop = top + layout->row / 2, lowerBottom = top + layout->row - (int)(5 * scale);
+            if (option->kind == MO_ENUM) {
+                menu_text(dc, L"\x2039", layout->controlX, lowerTop, layout->controlX + layout->row / 2, lowerBottom, g_fText, RGB(134, 165, 191), DT_CENTER);
+                menu_text(dc, L"\x203A", contentRight - layout->row / 2, lowerTop, contentRight, lowerBottom, g_fText, RGB(134, 165, 191), DT_CENTER);
             }
-            g_ovBits[(py * W + px) * 4 + 3] = (unsigned char)a;
+            menu_text(dc, value, layout->controlX + layout->row / 2, lowerTop, contentRight - layout->row / 2, lowerBottom,
+                      g_fSmall, valueColor, option->kind == MO_ENUM ? DT_CENTER : DT_LEFT);
         }
     }
+    if (!g_menuVisibleCount) menu_text(dc, L"No matching settings", contentLeft + pad, layout->contentTop,
+                                      contentRight, layout->contentTop + layout->row, g_fText, RGB(142, 168, 190), DT_LEFT);
+    if (g_menuVisibleCount > layout->rows) {
+        int area = layout->rows * layout->row, thumbHeight = area * layout->rows / g_menuVisibleCount;
+        int thumbTop = layout->contentTop + (maximum ? g_moTop * (area - thumbHeight) / maximum : 0);
+        menu_fill(dc, width - pad / 3, thumbTop, width - pad / 3 + 2, thumbTop + thumbHeight, RGB(87, 153, 157));
+    }
+    int footerTop = height - layout->footer;
+    menu_fill(dc, pad, footerTop, width - pad, footerTop + 1, RGB(37, 57, 73));
+    menu_text(dc, L"Hold ALT: mouse   |   Arrows: edit   |   PgUp / PgDn: tabs", pad, footerTop + 3,
+              width - pad, footerTop + (int)(25 * scale), g_fSmall, RGB(130, 161, 185), DT_LEFT);
+    if (g_moSel >= 0) {
+        MenuOpt *option = &g_mo[g_moSel];
+        wchar_t help[256];
+        if (option->help[0]) _snwprintf(help, 256, L"%ls", option->help);
+        else _snwprintf(help, 256, L"%hs", option->define);
+        help[255] = 0;
+        RECT helpRect = {pad, footerTop + (int)(30 * scale), width - pad, footerTop + (int)(69 * scale)};
+        SelectObject(dc, g_fSmall);
+        SetTextColor(dc, RGB(160, 181, 199));
+        DrawTextW(dc, help, -1, &helpRect, DT_WORDBREAK | DT_END_ELLIPSIS | DT_NOPREFIX);
+    }
+    wchar_t defaultText[96] = L"Auto-save enabled";
+    if (g_moSel >= 0 && MENU_SELECTABLE(&g_mo[g_moSel]) && g_mo[g_moSel].kind != MO_ACTION) {
+        MenuOpt defaultOption = g_mo[g_moSel];
+        defaultOption.value = defaultOption.def;
+        wchar_t defaultValue[64];
+        display_value(&defaultOption, defaultValue, 64);
+        _snwprintf(defaultText, 96, L"Default: %ls", defaultValue);
+        defaultText[95] = 0;
+    }
+    menu_text(dc, defaultText, pad, height - (int)(30 * scale),
+              width - layout->row * 3, height - 4, g_fSmall, RGB(246, 209, 105), DT_LEFT);
+    menu_round(dc, width - layout->row * 3, height - (int)(31 * scale), width - pad, height - (int)(7 * scale), (int)(12 * scale), RGB(30, 47, 62));
+    menu_text(dc, L"Reset selected", width - layout->row * 3, height - (int)(31 * scale), width - pad, height - (int)(7 * scale),
+              g_fSmall, RGB(164, 199, 218), DT_CENTER);
+    int pointerX = (int)g_menuPointerX - layout->x, pointerY = (int)g_menuPointerY - layout->y;
+    POINT pointer[3] = {{pointerX, pointerY}, {pointerX + (int)(5 * scale), pointerY + (int)(18 * scale)},
+                        {pointerX + (int)(12 * scale), pointerY + (int)(12 * scale)}};
+    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(WHITE_BRUSH));
+    HGDIOBJ oldPen = SelectObject(dc, GetStockObject(BLACK_PEN));
+    if (g_menuMouseMode && !g_menuSDLReady) Polygon(dc, pointer, 3);
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    GdiFlush();
+    width = g_ovTexW;
+    height = g_ovTexH;
+    int radius = (int)(24 * scale);
+    for (int pixel = 0; pixel < width * height; pixel++) g_ovBits[pixel * 4 + 3] = 248;
+    for (int pixelY = 0; pixelY < radius; pixelY++)
+        for (int pixelX = 0; pixelX < radius; pixelX++) {
+            int cornerX = radius - pixelX, cornerY = radius - pixelY;
+            float alpha = 248.0f;
+            float distance = sqrtf((float)(cornerX * cornerX + cornerY * cornerY));
+            alpha = distance >= radius ? 0.0f : (distance > radius - 1 ? alpha * (radius - distance) : alpha);
+            g_ovBits[(pixelY * width + pixelX) * 4 + 3] = (unsigned char)alpha;
+            g_ovBits[(pixelY * width + width - pixelX - 1) * 4 + 3] = (unsigned char)alpha;
+            g_ovBits[((height - pixelY - 1) * width + pixelX) * 4 + 3] = (unsigned char)alpha;
+            g_ovBits[((height - pixelY - 1) * width + width - pixelX - 1) * 4 + 3] = (unsigned char)alpha;
+        }
 }
 
 // ---- Overlay draw (GL) ----
@@ -3031,9 +4056,9 @@ static void menu_draw(int sw, int sh)
         ov.PixelStorei(OV_GL_UNPACK_SKIP_ROWS, 0);
         ov.PixelStorei(OV_GL_UNPACK_SKIP_PIXELS, 0);
         ov.PixelStorei(GL_UNPACK_ALIGNMENT, 4);
-        ov.TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, g_ovW, g_ovH, 0, OV_GL_BGRA, GL_UNSIGNED_BYTE, g_ovBits);
-        ov.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        ov.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        ov.TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, g_ovTexW, g_ovTexH, 0, OV_GL_BGRA, GL_UNSIGNED_BYTE, g_ovBits);
+        ov.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        ov.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         ov.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         ov.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         ov.BindBuffer(OV_GL_PIXEL_UNPACK_BUFFER, (GLuint)unpackBuf);
@@ -3052,9 +4077,7 @@ static void menu_draw(int sw, int sh)
     ov.BlendEquationSeparate(OV_GL_FUNC_ADD, OV_GL_FUNC_ADD);
     ov.ColorMask(1, 1, 1, 1);
     ov.UseProgram(ov.prog);
-    double s = sh / 1080.0;
-    if (s < 0.75) s = 0.75;
-    int px = (int)(40 * s + 0.5), py = (int)(110 * s + 0.5);
+    int px = g_menuLayout.x, py = g_menuLayout.y;
     float x0 = -1.0f + 2.0f * px / sw, x1 = -1.0f + 2.0f * (px + g_ovW) / sw;
     float y0 = 1.0f - 2.0f * (py + g_ovH) / sh, y1 = 1.0f - 2.0f * py / sh;
     ov.Uniform4f(ov.locRect, x0, y0, x1, y1);
@@ -3078,6 +4101,7 @@ static void menu_draw(int sw, int sh)
 
 static void menu_frame(HDC hdc)
 {
+    menu_sdl_install();
     if (!g_gameHwnd) {
         HWND w = WindowFromDC(hdc);
         if (w) {
@@ -3093,9 +4117,10 @@ static void menu_frame(HDC hdc)
     int sw = rc.right - rc.left, sh = rc.bottom - rc.top;
     if (sw <= 0 || sh <= 0 || !ov_init()) return;
     EnterCriticalSection(&g_menuLock);
-    if (g_menuDirty || sh != g_ovScreenH) {
-        menu_render(sh);
+    if (g_menuDirty || sh != g_ovScreenH || sw != g_ovScreenW) {
+        menu_render(sw, sh);
         g_ovScreenH = sh;
+        g_ovScreenW = sw;
         g_ovUpload = 1;
         g_menuDirty = 0;
     }
@@ -3196,6 +4221,9 @@ __declspec(dllexport) BOOL WINAPI wglSwapBuffers(HDC hdc)
     g_postPresent = 0;
     shot_frame(hdc);
     menu_frame(hdc);
+    int generated = framegen_swap();
+    g_frame++;
+    if (generated) return TRUE;
     return r_wglSwapBuffers(hdc);
 }
 
@@ -3213,6 +4241,8 @@ __declspec(dllexport) PROC WINAPI wglGetProcAddress(LPCSTR name)
     HOOK(glUniform4fv) HOOK(glUniform1iv) HOOK(glUniform1uiv) HOOK(glUniformMatrix2fv) HOOK(glUniformMatrix3fv)
     HOOK(glUniformMatrix4fv) HOOK(glActiveTexture) HOOK(glBindSampler)
     HOOK(glDrawArraysInstanced) HOOK(glDrawElementsInstanced) HOOK(glBlitFramebuffer)
+    HOOK(glBufferData) HOOK(glBufferSubData)
+    HOOK(glMapBufferRange) HOOK(glUnmapBuffer)
 #undef HOOK
     if (!strcmp(name, "glBindTexture")) return (PROC)glBindTexture;
     if (!strcmp(name, "glDrawArrays")) return (PROC)glDrawArrays;
@@ -3222,55 +4252,11 @@ __declspec(dllexport) PROC WINAPI wglGetProcAddress(LPCSTR name)
     return p;
 }
 
-// AU_RENDER_SCALE (menu, 0 = leave it to Hytale's slider): Hytale's own Render Scale, which
-// is the DLSS render size. Hytale keeps it in memory and writes UserData\Settings.json when it
-// quits, so the menu's choice is written after that, at process exit, for the next start.
-static void render_scale_on_exit(void)
-{
-    char *set = read_file("include\\AU_Settings.glsl", NULL);
-    int scale = (int)settings_num(set, "AU_RENDER_SCALE", 0);
-    free(set);
-    if (scale < 10 || scale > 100) return;
-    // ...\Hytale\install\release\package\game\latest\Client\HytaleClient.exe -> ...\Hytale
-    wchar_t path[MAX_PATH];
-    if (!GetModuleFileNameW(NULL, path, MAX_PATH)) return;
-    for (int i = 0; i < 7; i++) {
-        wchar_t *slash = wcsrchr(path, L'\\');
-        if (!slash) return;
-        *slash = 0;
-    }
-    wcscat(path, L"\\UserData\\Settings.json");
-    FILE *f = _wfopen(path, L"rb");
-    if (!f) return;
-    fseek(f, 0, SEEK_END);
-    long n = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char *txt = n > 0 ? (char *)malloc((size_t)n + 1) : NULL;
-    size_t got = txt ? fread(txt, 1, (size_t)n, f) : 0;
-    fclose(f);
-    if (!txt || got != (size_t)n) { free(txt); return; }
-    txt[n] = 0;
-    char *k = strstr(txt, "\"RenderScale\":");
-    if (k) {
-        char *v = k + 14;
-        while (*v == ' ') v++;
-        char *e = v;
-        while (*e >= '0' && *e <= '9') e++;
-        if (e > v && atoi(v) != scale && (f = _wfopen(path, L"wb")) != NULL) {
-            fwrite(txt, 1, (size_t)(v - txt), f);
-            fprintf(f, "%d", scale);
-            fwrite(e, 1, strlen(e), f);
-            fclose(f);
-        }
-    }
-    free(txt);
-}
 
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
 {
     (void)reserved;
     if (reason == DLL_PROCESS_DETACH) {
-        render_scale_on_exit();
         return TRUE;
     }
     if (reason == DLL_PROCESS_ATTACH) {

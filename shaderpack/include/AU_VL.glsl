@@ -83,7 +83,7 @@ vec3 GetVolumetricLight(vec3 nPlayerPos, float lViewPos1, bool sky, float dither
     qualityThreshold = mix(qualityThreshold, 100.0, vlSceneIntensity);
 
     float rayEnd = !sky ? min(lViewPos1, maxDistance) : maxDistance;
-    float lastDistance = 0.0;
+    float lastFogWeight = 0.0, lastShaftWeight = 0.0;
     float activeThreshold = min(qualityThreshold, maxDistance);
     // March the near samples over the ray that actually exists: indoors the ray ends at a wall
     // 10-20 blocks away, and spreading the samples over the full shaft range left only a dozen
@@ -124,19 +124,20 @@ vec3 GetVolumetricLight(vec3 nPlayerPos, float lViewPos1, bool sky, float dither
             localDensity = eyeBrightnessM;
         }
 
-        float currentWeight = smoothstep1(pow(lastDistance / maxDistance, fogCurve));
         float nextWeight = smoothstep1(pow(nextDistance / maxDistance, fogCurve));
         // Beams use the dense, near-weighted curve of enclosed spaces everywhere.
-        float shaftWeight = smoothstep1(sqrt(nextDistance / maxDistance)) - smoothstep1(sqrt(lastDistance / maxDistance));
+        float nextShaftWeight = smoothstep1(sqrt(nextDistance / maxDistance));
+        float shaftWeight = nextShaftWeight - lastShaftWeight;
         shadowSum += 1.0 - localDensity;
         shadowN += 1.0;
         float enclosed = shadowSum / shadowN;
         float nearW = (1.0 - smoothstep(12.0, 48.0, nextDistance)) * (1.0 - litRecent) * shaftAmount * mix(0.4, 1.0, enclosed);
-        float sampleLight = localDensity * (nextWeight - currentWeight);
+        float sampleLight = localDensity * (nextWeight - lastFogWeight);
         vlBase += sampleLight;
         vlShaft += localDensity * shaftWeight * (shaftMult - 1.0) * nearW;
         litRecent = mix(litRecent, localDensity, 0.6);
-        lastDistance = nextDistance;
+        lastFogWeight = nextWeight;
+        lastShaftWeight = nextShaftWeight;
     }
 
     vlColor = pow(vlColor, vec3(0.5 + (0.5 + 0.25 * sunVisibility) * invNoonFactor * invRainFactor + 0.3 * rainFactor));
@@ -150,7 +151,7 @@ vec3 GetVolumetricLight(vec3 nPlayerPos, float lViewPos1, bool sky, float dither
     // (vlShaft: light right after shadow - forests, caves, windows) keep theirs.
     vec3 volumetricLight = (vlBase * dirBase * AU_LIGHTSHAFT_HAZE + vlShaft * dirShaft) * vlColor * vlMult;
     if (IsCameraUnderwater > 0.5) volumetricLight *= pow2(vec3(0.46, 0.62, 1.0) * 0.55);
-    return max(volumetricLight - dither * 0.005, vec3(0.0));
+    return max(volumetricLight - 0.0025, vec3(0.0));
 #else
     return vec3(0.0);
 #endif

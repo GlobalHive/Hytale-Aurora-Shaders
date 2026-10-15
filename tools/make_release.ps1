@@ -11,7 +11,8 @@ if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Force $stage | Out-Null
 Push-Location $root
 try {
-    foreach ($f in (git ls-files)) {
+    foreach ($f in (git ls-files --cached --others --exclude-standard)) {
+        if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { continue }
         $dst = Join-Path $stage $f
         New-Item -ItemType Directory -Force (Split-Path $dst) | Out-Null
         Copy-Item -LiteralPath $f -Destination $dst
@@ -28,6 +29,23 @@ if (Test-Path (Join-Path $dlss 'nvngx_dlss.dll')) {
     if (Test-Path $lic) { Copy-Item $lic (Join-Path $stage 'shaderpack\dlss\NVIDIA-DLSS-LICENSE.txt') }
 } else {
     Write-Host 'No DLSS runtime in shaderpack\dlss: the release ships without DLSS'
+}
+
+$streamline = Join-Path $root 'shaderpack\streamline'
+if (Test-Path (Join-Path $streamline 'sl.interposer.dll')) {
+    $destination = Join-Path $stage 'shaderpack\streamline'
+    New-Item -ItemType Directory -Force $destination | Out-Null
+    foreach ($name in @('sl.interposer.dll', 'sl.common.dll', 'sl.reflex.dll', 'sl.pcl.dll', 'sl.dlss_g.dll', 'nvngx_dlssg.dll')) {
+        $source = Join-Path $streamline $name
+        $signature = Get-AuthenticodeSignature -LiteralPath $source
+        if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'CN=NVIDIA Corporation') {
+            throw "Invalid Frame Generation runtime signature: $name"
+        }
+        Copy-Item -LiteralPath $source -Destination $destination
+    }
+    foreach ($name in @('nvngx_dlss.license.txt', 'reflex.license.txt', 'Streamline-license.txt', 'Streamline-3rd-party-licenses.md')) {
+        Copy-Item -LiteralPath (Join-Path $streamline $name) -Destination $destination
+    }
 }
 
 $zip = Join-Path $dist "Aurora-Shaders-$Version.zip"

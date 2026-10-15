@@ -1,5 +1,6 @@
 #version 410 core
 #extension GL_ARB_shader_image_load_store : enable
+#extension GL_ARB_shader_image_size : enable
 
 #define PIXELSIZE uPixelSize
 #include "Fallback_inc.glsl"
@@ -17,22 +18,29 @@
 uniform vec2 uPixelSize;
 #include "DepthOfField_inc.glsl"
 #include "AU_Tonemap.glsl"
-#if AU_DEBUG || AU_LENSFLARE || AU_DLSS
+#if AU_DEBUG || AU_LENSFLARE || AU_DLSS || AU_DLSS_FRAMEGEN
 #include "SceneData_inc.glsl"
 #include "AU_Common.glsl"
 #endif
-#if AU_LENSFLARE || AU_DLSS
+#if AU_LENSFLARE || AU_DLSS || AU_DLSS_FRAMEGEN
 uniform sampler2D uHookDepth;   // DeferredFS linear depth (0..1 of the far plane), shared by the hook
 #endif
-#if AU_DLSS
+#if AU_DLSS || AU_DLSS_FRAMEGEN
 #include "Reconstruction_inc.glsl"
+#include "AU_Temporal.glsl"
 // DLSS inputs: textures shared with the hook's Vulkan device (hook/aud_dlss.c). The hook
 // upscales them with DLSS in place of Hytale's final scale-to-window draw.
 layout(rgba16f) uniform writeonly image2D auDlssColor;
 layout(r32f) uniform writeonly image2D auDlssDepth;
 layout(rg16f) uniform writeonly image2D auDlssMotion;
 uniform int uHookDlssActive;    // 1 only while the hook has the DLSS textures bound to units 2-4
-#if AU_DLSS && AU_DLSS_RR
+uniform int uHookDlssResolve;
+uniform sampler2D uHookDlssOutput;
+uniform float uHookDlssSharpness;
+#if AU_DLSS
+layout(r8) uniform writeonly image2D auDlssResponsive;
+#endif
+#if AU_DLSS
 // DLSS Ray Reconstruction also reads what each pixel's surface is made of (guide images,
 // units 5-7), worked out here from Hytale's G-buffer (shared by the hook).
 #include "Deferred_inc.glsl"
@@ -333,6 +341,32 @@ vec3 computeDepthOfField(out bool isSharp)
 
 void main()
 {
+#if AU_DLSS
+    if (uHookDlssResolve == 1) {
+        vec2 outputPixel = 1.0 / vec2(textureSize(uHookDlssOutput, 0));
+        vec3 resolved = texture(uHookDlssOutput, fragTexCoords).rgb;
+        if (uHookDlssSharpness > 0.0) {
+            vec3 north = texture(uHookDlssOutput, fragTexCoords + vec2(0.0, outputPixel.y)).rgb;
+            vec3 south = texture(uHookDlssOutput, fragTexCoords - vec2(0.0, outputPixel.y)).rgb;
+            vec3 east = texture(uHookDlssOutput, fragTexCoords + vec2(outputPixel.x, 0.0)).rgb;
+            vec3 west = texture(uHookDlssOutput, fragTexCoords - vec2(outputPixel.x, 0.0)).rgb;
+            vec3 low = min(resolved, min(min(north, south), min(east, west)));
+            vec3 high = max(resolved, max(max(north, south), max(east, west)));
+            resolved = clamp(resolved + (resolved - (north + south + east + west) * 0.25) * uHookDlssSharpness * 2.0, low, high);
+        }
+        DoTonemap(resolved);
+#if AU_LENSFLARE
+        AU_InitCommon();
+        DoLensFlare(resolved, fragTexCoords, GetDither(gl_FragCoord.xy), uColorTexture);
+#endif
+        DoBSLColorSaturation(resolved);
+#if AU_VIGNETTE
+        DoVignette(resolved, fragTexCoords);
+#endif
+        outColor = vec4(clamp(resolved, 0.0, 1.0), 1.0);
+        return;
+    }
+#endif
     vec4 color;
     vec2 texCoords = fragTexCoords;
 
@@ -377,7 +411,7 @@ void main()
     #endif // USE_DOF
 
 // -------------------------------------------- FXAA --------------------------------------------
-    #if USE_FXAA
+    #if USE_FXAA && !AU_DLSS
         color.rgb = isSharp ? FXAA(uColorTexture, texCoords, uPixelSize).rgb : color.rgb;
     #if USE_SHARPEN
         // Especially useful after FXAA, to compensate the blur produced
@@ -389,7 +423,7 @@ void main()
     #endif
 
 
-#if AU_SHARPENING > 0
+#if AU_SHARPENING > 0 && !AU_DLSS
     // Image sharpening. Applied before Hytale's
     // temporal blend, which reuses its own output as history - sharpening after it would compound.
     if (isSharp) {
@@ -423,6 +457,7 @@ void main()
         c = mix(c, bloom, AU_BLOOM_STRENGTH);
     }
     #endif
+    vec3 dlssHDR = c;
     DoTonemap(c);
 #if AU_LENSFLARE
     AU_InitCommon();
@@ -485,31 +520,41 @@ void main()
     if(v.x == 0 || v.y == 0) outColor =  vec4(1);
 #endif
 
-#if AU_DLSS
+#if AU_DLSS || AU_DLSS_FRAMEGEN
     if (uHookDlssActive == 1) {
+        ivec2 inputSize = imageSize(auDlssColor);
+        ivec2 pix = clamp(ivec2(fragTexCoords * vec2(inputSize)), ivec2(0), inputSize - 1);
+        ivec2 representative = ivec2(floor((vec2(pix) + 0.5) / (vec2(inputSize) * uPixelSize)));
+        if (any(notEqual(ivec2(gl_FragCoord.xy), representative))) return;
         // The finished frame, its depth and the camera motion (where each pixel's surface was
         // last frame, in pixels; the first-person hand moves with the camera).
         float lin = min(texture(uHookDepth, fragTexCoords).r, 1.0);
-        vec3 posVS = PositionFromLinearDepth(fragTexCoords, -lin * FarClip, ProjInfos);
-        vec4 prevClip = ReprojectionMatrix * vec4(posVS, 1.0);
-        vec2 prevUV = prevClip.xy / prevClip.w * 0.5 + 0.5;
-        // Against the same point projected with this frame's matrix (not the pixel position):
-        // the depth reconstruction doesn't match Hytale's projection exactly, and the
-        // difference showed up as motion in a still image that DLSS smeared its history with.
-        vec4 curClip = ProjectionMatrix * vec4(posVS, 1.0);
-        vec2 curUV = curClip.xy / curClip.w * 0.5 + 0.5;
-        vec2 motion = lin * FarClip < AU_NEAR_IGNORE ? vec2(0.0) : (prevUV - curUV) / uPixelSize;
-        ivec2 pix = ivec2(gl_FragCoord.xy);
-        imageStore(auDlssColor, pix, vec4(outColor.rgb, 1.0));
-#if AU_DLSS_DEPTH_HW
-        // Hardware-style depth (0 near .. 1 far, non-linear) from the linear depth.
-        float n = NearFarClip.x, z = max(lin * FarClip, n);
-        imageStore(auDlssDepth, pix, vec4(lin >= 1.0 ? 1.0 : (1.0 / n - 1.0 / z) / (1.0 / n - 1.0 / FarClip)));
+        vec3 posVS = AU_ViewPosition(fragTexCoords, lin * FarClip);
+        vec4 previousClip = ReprojectionMatrix * vec4(posVS, lin >= 1.0 ? 0.0 : 1.0);
+        vec4 currentClip = ProjectionMatrix * vec4(posVS, lin >= 1.0 ? 0.0 : 1.0);
+        vec2 motion = vec2(0.0);
+        if (lin * FarClip >= AU_NEAR_IGNORE && uHookHistoryValid != 0 && previousClip.w > 0.00001 && currentClip.w > 0.00001)
+            motion = (previousClip.xy / previousClip.w - currentClip.xy / currentClip.w) * 0.5 * vec2(inputSize);
+#if AU_DLSS
+        imageStore(auDlssColor, pix, vec4(dlssHDR, 1.0));
 #else
-        imageStore(auDlssDepth, pix, vec4(lin));
+        imageStore(auDlssColor, pix, vec4(outColor.rgb, 1.0));
 #endif
+        float viewDepth = max(lin * FarClip, NearClip);
+        float dlssDepth = lin >= 1.0 ? 1.0 : clamp(GetDepthHWFromLinearDepth(viewDepth, ProjectionMatrix), 0.0, 1.0);
+#if AU_DLSS
+        if (uHookDlssRR == 1) dlssDepth = viewDepth;
+#endif
+        imageStore(auDlssDepth, pix, vec4(dlssDepth));
         imageStore(auDlssMotion, pix, vec4(motion, 0.0, 0.0));
-#if AU_DLSS && AU_DLSS_RR
+#if AU_DLSS
+        vec4 responseSurface = texture(uHookGBuffer0, fragTexCoords);
+        vec4 responseNormal = texture(uHookGBuffer1, fragTexCoords);
+        uint responseFlags = uint(round(responseSurface.a * 255.0));
+        float response = lin >= 1.0 ? 0.0 : (responseFlags & 2u) != 0u ? 0.8
+            : (responseFlags & 1u) == 0u ? 0.5 : responseNormal.a < 0.5 ? 0.25 : 0.0;
+        if (lin * FarClip < AU_NEAR_IGNORE) response = 0.8;
+        imageStore(auDlssResponsive, pix, vec4(response));
         if (uHookDlssRR == 1) {
             // Sky: the defaults NVIDIA recommends (grey albedo, no specular, no normal).
             vec3 diffuseAlbedo = vec3(0.5), specularAlbedo = vec3(0.0);
@@ -519,15 +564,21 @@ void main()
                 vec3 normal = decodeNormal(texture(uHookGBuffer1, fragTexCoords).rg);
                 // Matte blocks; the glowing ore crystals are glossy (DeferredFS gives them gloss).
                 uint meta = uint(round(g0.a * 255.0));
-                uint cls = (meta >> 5) & 3u;
+                bool emissive = (meta & 2u) != 0u;
+                bool foliage = !emissive && (meta & 1u) == 0u;
+                uint cls = emissive || foliage ? 0u : (meta >> 5) & 3u;
                 float level = float((meta >> 2) & 7u) / 7.0;
-                float crystal = cls == 0u ? level : 0.0;
+                float crystal = cls == 0u && !emissive && !foliage ? smoothstep(0.0, 0.4, level) * AU_ORE_GLOSS : 0.0;
                 float gloss = cls == 1u ? (level < 0.5 ? 0.0 : mix(0.12, 0.92, level)) : cls == 2u ? mix(0.35, 0.85, level) : 0.0;
-                float roughness = 1.0 - max(0.8 * smoothstep(0.0, 0.4, crystal), min(gloss * AU_MATERIAL_GLOSS, 0.95));
+#if !AU_MATERIALS
+                gloss = 0.0;
+#endif
+                float roughness = 1.0 - clamp(max(0.85 * crystal, gloss * AU_MATERIAL_GLOSS), 0.0, 0.95);
                 vec3 nVS = mat3(ViewMatrix) * normal;
                 float NdotV = clamp(dot(nVS, -normalize(posVS)), 0.0, 1.0);
-                diffuseAlbedo = mix(vec3(GetLuminance(g0.rgb)), g0.rgb, AU_ALBEDO_SATURATION) * AU_ALBEDO_MULT;
+                diffuseAlbedo = pow(clamp(mix(vec3(GetLuminance(g0.rgb)), g0.rgb, AU_ALBEDO_SATURATION) * AU_ALBEDO_MULT, 0.0, 1.0), vec3(2.2));
                 specularAlbedo = AU_EnvBRDF(cls == 2u ? diffuseAlbedo : vec3(0.04 + 0.02 * crystal), roughness, NdotV);
+                if (emissive) specularAlbedo = vec3(0.0);
                 if (cls == 2u) diffuseAlbedo *= 0.55;
                 normalRough = vec4(normal, roughness);
             }

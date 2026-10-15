@@ -38,9 +38,9 @@ static PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr_;
     X(vkEnumeratePhysicalDevices) X(vkGetPhysicalDeviceProperties2) X(vkGetPhysicalDeviceQueueFamilyProperties) \
     X(vkGetPhysicalDeviceMemoryProperties) X(vkGetPhysicalDeviceFeatures2) X(vkEnumerateDeviceExtensionProperties) \
     X(vkCreateDevice) X(vkGetDeviceProcAddr) X(vkDestroyDevice) X(vkGetDeviceQueue) X(vkDeviceWaitIdle) \
-    X(vkCreateCommandPool) X(vkAllocateCommandBuffers) X(vkBeginCommandBuffer) X(vkEndCommandBuffer) \
+    X(vkCreateCommandPool) X(vkDestroyCommandPool) X(vkAllocateCommandBuffers) X(vkBeginCommandBuffer) X(vkEndCommandBuffer) \
     X(vkResetCommandBuffer) X(vkQueueSubmit) X(vkQueueWaitIdle) X(vkCreateFence) X(vkWaitForFences) \
-    X(vkResetFences) X(vkCreateImage) X(vkDestroyImage) X(vkGetImageMemoryRequirements) X(vkAllocateMemory) \
+    X(vkResetFences) X(vkDestroyFence) X(vkDestroySemaphore) X(vkCreateImage) X(vkDestroyImage) X(vkGetImageMemoryRequirements) X(vkAllocateMemory) \
     X(vkFreeMemory) X(vkBindImageMemory) X(vkCreateImageView) X(vkDestroyImageView) \
     X(vkGetMemoryWin32HandleKHR) X(vkCreateSemaphore) X(vkGetSemaphoreWin32HandleKHR) X(vkCmdPipelineBarrier)
 #define VK_DECL(n) static PFN_##n n##_;
@@ -65,7 +65,7 @@ typedef NVSDK_NGX_Result (*PFN_NGX_RequiredExtensions)(unsigned int *, const cha
 typedef NVSDK_NGX_Result (*PFN_NGX_Init_ProjectID_Ext)(const char *, NVSDK_NGX_EngineType, const char *, const wchar_t *,
                                                        VkInstance, VkPhysicalDevice, VkDevice, PFN_vkGetInstanceProcAddr,
                                                        PFN_vkGetDeviceProcAddr, NVSDK_NGX_Version, const NVSDK_NGX_FeatureCommonInfo *);
-typedef NVSDK_NGX_Result (*PFN_NGX_Shutdown1)(VkDevice);
+typedef void (*PFN_NGX_Shutdown1)(VkDevice, NVSDK_NGX_Result *);
 typedef NVSDK_NGX_Result (*PFN_NGX_GetParams)(NVSDK_NGX_Parameter **);
 typedef NVSDK_NGX_Result (*PFN_NGX_DestroyParameters)(NVSDK_NGX_Parameter *);
 typedef NVSDK_NGX_Result (*PFN_NGX_CreateFeature1)(VkDevice, VkCommandBuffer, NVSDK_NGX_Feature, NVSDK_NGX_Parameter *, NVSDK_NGX_Handle **);
@@ -95,7 +95,19 @@ static NVSDK_NGX_Result ngx_get_ui(NVSDK_NGX_Parameter *p, const char *n, unsign
 
 static NVSDK_NGX_Parameter *g_params;
 static NVSDK_NGX_Handle *g_feature;
+static float g_worldToView[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+static float g_viewToClip[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+
+void aud_set_camera(const float *worldToViewColumnMajor, const float *viewToClipColumnMajor)
+{
+    for (int row = 0; row < 4; row++)
+        for (int column = 0; column < 4; column++) {
+            g_worldToView[row * 4 + column] = worldToViewColumnMajor[column * 4 + row];
+            g_viewToClip[row * 4 + column] = viewToClipColumnMajor[column * 4 + row];
+        }
+}
 static int g_ngxReady;
+static int g_ownsDevice;
 static int g_rrAvailable, g_rr;   // Ray Reconstruction available / the configured feature is RR
 
 // ----------------------------------------------------------------------------------------
@@ -131,6 +143,7 @@ typedef void (GLAPI *PFN_glMemoryObjectParameterivEXT)(GLuint, GLenum, const GLi
 typedef void (GLAPI *PFN_glImportMemoryWin32HandleEXT)(GLuint, GLuint64, GLenum, void *);
 typedef void (GLAPI *PFN_glTexStorageMem2DEXT)(GLenum, GLsizei, GLenum, GLsizei, GLsizei, GLuint, GLuint64);
 typedef void (GLAPI *PFN_glGenSemaphoresEXT)(GLsizei, GLuint *);
+typedef void (GLAPI *PFN_glDeleteSemaphoresEXT)(GLsizei, const GLuint *);
 typedef void (GLAPI *PFN_glImportSemaphoreWin32HandleEXT)(GLuint, GLenum, void *);
 typedef void (GLAPI *PFN_glSignalSemaphoreEXT)(GLuint, GLuint, const GLuint *, GLuint, const GLuint *, const GLenum *);
 typedef void (GLAPI *PFN_glWaitSemaphoreEXT)(GLuint, GLuint, const GLuint *, GLuint, const GLuint *, const GLenum *);
@@ -141,6 +154,7 @@ typedef void (GLAPI *PFN_glBindTexture)(GLenum, GLuint);
 typedef void (GLAPI *PFN_glTexParameteri)(GLenum, GLenum, GLint);
 typedef void (GLAPI *PFN_glGetIntegerv)(GLenum, GLint *);
 typedef void (GLAPI *PFN_glFlush)(void);
+typedef void (GLAPI *PFN_glFinish)(void);
 
 static struct {
     PFN_glCreateMemoryObjectsEXT CreateMemoryObjects;
@@ -149,6 +163,7 @@ static struct {
     PFN_glImportMemoryWin32HandleEXT ImportMemoryWin32Handle;
     PFN_glTexStorageMem2DEXT TexStorageMem2D;
     PFN_glGenSemaphoresEXT GenSemaphores;
+    PFN_glDeleteSemaphoresEXT DeleteSemaphores;
     PFN_glImportSemaphoreWin32HandleEXT ImportSemaphoreWin32Handle;
     PFN_glSignalSemaphoreEXT SignalSemaphore;
     PFN_glWaitSemaphoreEXT WaitSemaphore;
@@ -159,6 +174,7 @@ static struct {
     PFN_glTexParameteri TexParameteri;
     PFN_glGetIntegerv GetIntegerv;
     PFN_glFlush Flush;
+    PFN_glFinish Finish;
 } gl;
 
 // ----------------------------------------------------------------------------------------
@@ -341,7 +357,7 @@ static int has_ext(const char *name, const char **list, unsigned n)
     return 0;
 }
 
-int aud_init(AudLogFn log, AudGetProcFn glGetProc, const wchar_t *dllDir, const wchar_t *dataDir)
+static int aud_init_context(AudLogFn log, AudGetProcFn glGetProc, const wchar_t *dllDir, const wchar_t *dataDir, const AudVulkanContext *context)
 {
     g_log = log;
 #define GLP(field, name) gl.field = (void *)glGetProc(name); if (!gl.field) { LOG("dlss: GL entry point %s missing", name); return 0; }
@@ -351,6 +367,7 @@ int aud_init(AudLogFn log, AudGetProcFn glGetProc, const wchar_t *dllDir, const 
     GLP(ImportMemoryWin32Handle, "glImportMemoryWin32HandleEXT")
     GLP(TexStorageMem2D, "glTexStorageMem2DEXT")
     GLP(GenSemaphores, "glGenSemaphoresEXT")
+    GLP(DeleteSemaphores, "glDeleteSemaphoresEXT")
     GLP(ImportSemaphoreWin32Handle, "glImportSemaphoreWin32HandleEXT")
     GLP(SignalSemaphore, "glSignalSemaphoreEXT")
     GLP(WaitSemaphore, "glWaitSemaphoreEXT")
@@ -361,6 +378,7 @@ int aud_init(AudLogFn log, AudGetProcFn glGetProc, const wchar_t *dllDir, const 
     GLP(TexParameteri, "glTexParameteri")
     GLP(GetIntegerv, "glGetIntegerv")
     GLP(Flush, "glFlush")
+    GLP(Finish, "glFinish")
 #undef GLP
 
     HMODULE vk = LoadLibraryW(L"vulkan-1.dll");
@@ -385,9 +403,19 @@ int aud_init(AudLogFn log, AudGetProcFn glGetProc, const wchar_t *dllDir, const 
     NGXP(ngxReleaseFeature, "NVSDK_NGX_VULKAN_ReleaseFeature")
 #undef NGXP
 
+    NVSDK_NGX_Result r;
+    g_ownsDevice = context == NULL;
+    if (context) {
+        g_inst = (VkInstance)context->instance;
+        g_phys = (VkPhysicalDevice)context->physicalDevice;
+        g_dev = (VkDevice)context->device;
+        g_queue = (VkQueue)context->queue;
+        g_qfam = context->queueFamily;
+        vkGetInstanceProcAddr_ = (PFN_vkGetInstanceProcAddr)context->getInstanceProcAddr;
+    } else {
     unsigned nInst = 0, nDev = 0;
     const char **instExts = NULL, **devExts = NULL;
-    NVSDK_NGX_Result r = ngxRequiredExtensions(&nInst, &instExts, &nDev, &devExts);
+    r = ngxRequiredExtensions(&nInst, &instExts, &nDev, &devExts);
     if (NVSDK_NGX_FAILED(r)) { LOG("dlss: NGX RequiredExtensions failed 0x%x", r); return 0; }
 
     VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -478,9 +506,14 @@ int aud_init(AudLogFn log, AudGetProcFn glGetProc, const wchar_t *dllDir, const 
     dci.ppEnabledExtensionNames = want;
     vr = vkCreateDevice_(g_phys, &dci, NULL, &g_dev);
     if (vr != VK_SUCCESS) { LOG("dlss: vkCreateDevice failed %d", (int)vr); return 0; }
+    }
+#define VK_LOAD_SHARED(n) n##_ = (PFN_##n)vkGetInstanceProcAddr_(g_inst, #n);
+    VK_FUNCS(VK_LOAD_SHARED)
+    if (context) vkGetDeviceProcAddr_ = (PFN_vkGetDeviceProcAddr)context->getDeviceProcAddr;
 #define VK_LOAD_D(n) { PFN_vkVoidFunction f = vkGetDeviceProcAddr_(g_dev, #n); if (f) n##_ = (PFN_##n)f; }
     VK_FUNCS(VK_LOAD_D)
     vkGetDeviceQueue_(g_dev, g_qfam, 0, &g_queue);
+    vkGetPhysicalDeviceMemoryProperties_(g_phys, &g_memProps);
 
     VkCommandPoolCreateInfo pci = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -501,14 +534,24 @@ int aud_init(AudLogFn log, AudGetProcFn glGetProc, const wchar_t *dllDir, const 
         return 0;
     }
 
-    const wchar_t *paths[1] = {dllDir};
+    wchar_t framegenDirectory[MAX_PATH], framegenRuntime[MAX_PATH];
+    _snwprintf(framegenDirectory, MAX_PATH, L"%ls", dllDir);
+    framegenDirectory[MAX_PATH - 1] = 0;
+    wchar_t *parent = wcsrchr(framegenDirectory, L'\\');
+    int framegenPath = 0;
+    if (parent && (size_t)(parent - framegenDirectory) + 12 < MAX_PATH) {
+        wcscpy(parent, L"\\streamline");
+        int length = _snwprintf(framegenRuntime, MAX_PATH, L"%ls\\nvngx_dlssg.dll", framegenDirectory);
+        framegenPath = length > 0 && length < MAX_PATH && GetFileAttributesW(framegenRuntime) != INVALID_FILE_ATTRIBUTES;
+    }
+    const wchar_t *paths[2] = {dllDir, framegenDirectory};
     NVSDK_NGX_FeatureCommonInfo info;
     memset(&info, 0, sizeof(info));
     info.PathListInfo.Path = paths;
-    info.PathListInfo.Length = 1;
+    info.PathListInfo.Length = framegenPath ? 2 : 1;
     info.LoggingInfo.LoggingCallback = ngx_log_cb;
     info.LoggingInfo.MinimumLoggingLevel = NVSDK_NGX_LOGGING_LEVEL_ON;
-    r = ngxInit("a3f1c9e2-7b4d-4e8a-9c6f-5d2b8e1a4f70", NVSDK_NGX_ENGINE_TYPE_CUSTOM, "1.0", dataDir,
+    r = context ? NVSDK_NGX_Result_Success : ngxInit("a3f1c9e2-7b4d-4e8a-9c6f-5d2b8e1a4f70", NVSDK_NGX_ENGINE_TYPE_CUSTOM, "1.0", dataDir,
                 g_inst, g_phys, g_dev, vkGetInstanceProcAddr_, vkGetDeviceProcAddr_, NVSDK_NGX_Version_API, &info);
     if (NVSDK_NGX_FAILED(r)) { LOG("dlss: NGX init failed 0x%x", r); return 0; }
     g_ngxReady = 1;
@@ -526,6 +569,17 @@ int aud_init(AudLogFn log, AudGetProcFn glGetProc, const wchar_t *dllDir, const 
     if (!ss) return 0;
     ngxAllocateParameters(&g_params);
     return g_params != NULL;
+}
+
+int aud_init(AudLogFn log, AudGetProcFn glGetProc, const wchar_t *dllDir, const wchar_t *dataDir)
+{
+    return aud_init_context(log, glGetProc, dllDir, dataDir, NULL);
+}
+
+int aud_init_shared(AudLogFn log, AudGetProcFn glGetProc, const wchar_t *dllDir, const wchar_t *dataDir, const AudVulkanContext *context)
+{
+    if (!context || !context->instance || !context->physicalDevice || !context->device || !context->queue || !context->getInstanceProcAddr || !context->getDeviceProcAddr) return 0;
+    return aud_init_context(log, glGetProc, dllDir, dataDir, context);
 }
 
 // ----------------------------------------------------------------------------------------
@@ -592,6 +646,7 @@ int aud_configure(int renderW, int renderH, int outW, int outH, int quality, int
         !create_image(&g_img[AUD_TEX_DEPTH], renderW, renderH, VK_FORMAT_R32_SFLOAT, GL_R32F) ||
         !create_image(&g_img[AUD_TEX_MOTION], renderW, renderH, VK_FORMAT_R16G16_SFLOAT, GL_RG16F) ||
         !create_image(&g_img[AUD_TEX_OUTPUT], outW, outH, VK_FORMAT_R16G16B16A16_SFLOAT, GL_RGBA16F) ||
+        !create_image(&g_img[AUD_TEX_RESPONSIVE], renderW, renderH, VK_FORMAT_R8_UNORM, 0x8229) ||
         (g_rr && (!create_image(&g_img[AUD_TEX_ALBEDO], renderW, renderH, VK_FORMAT_R8G8B8A8_UNORM, GL_RGBA8) ||
                   !create_image(&g_img[AUD_TEX_SPECULAR], renderW, renderH, VK_FORMAT_R8G8B8A8_UNORM, GL_RGBA8) ||
                   !create_image(&g_img[AUD_TEX_NORMALS], renderW, renderH, VK_FORMAT_R16G16B16A16_SFLOAT, GL_RGBA16F)))) {
@@ -629,7 +684,7 @@ int aud_configure(int renderW, int renderH, int outW, int outH, int quality, int
     ngx_set_ui(p, NVSDK_NGX_Parameter_OutHeight, (unsigned)outH);
     ngx_set_i(p, NVSDK_NGX_Parameter_PerfQualityValue, quality);
     ngx_set_i(p, NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags,
-              NVSDK_NGX_DLSS_Feature_Flags_MVLowRes | (hdr ? NVSDK_NGX_DLSS_Feature_Flags_IsHDR : 0));
+              NVSDK_NGX_DLSS_Feature_Flags_MVLowRes | (hdr ? NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure : 0));
     ngx_set_i(p, NVSDK_NGX_Parameter_DLSS_Enable_Output_Subrects, 0);
     // The model for every quality mode (0 = NVIDIA's default, what the SDK library fills in
     // when unset; an override in the NVIDIA app still wins).
@@ -644,7 +699,7 @@ int aud_configure(int renderW, int renderH, int outW, int outH, int quality, int
     // roughness packed into the normals' alpha, linear depth.
     ngx_set_i(p, NVSDK_NGX_Parameter_DLSS_Denoise_Mode, g_rr ? NVSDK_NGX_DLSS_Denoise_Mode_DLUnified : NVSDK_NGX_DLSS_Denoise_Mode_Off);
     ngx_set_ui(p, NVSDK_NGX_Parameter_DLSS_Roughness_Mode, NVSDK_NGX_DLSS_Roughness_Mode_Packed);
-    ngx_set_ui(p, NVSDK_NGX_Parameter_Use_HW_Depth, NVSDK_NGX_DLSS_Depth_Type_Linear);
+    ngx_set_ui(p, NVSDK_NGX_Parameter_Use_HW_Depth, g_rr ? NVSDK_NGX_DLSS_Depth_Type_Linear : NVSDK_NGX_DLSS_Depth_Type_HW);
     ngx_set_ui(p, NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_DLAA, rp);
     ngx_set_ui(p, NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Quality, rp);
     ngx_set_ui(p, NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Balanced, rp);
@@ -691,6 +746,7 @@ int aud_evaluate(float jitterX, float jitterY, float mvScaleX, float mvScaleY, i
     ngx_set_ptr(p, NVSDK_NGX_Parameter_Output, &g_img[AUD_TEX_OUTPUT].res);
     ngx_set_ptr(p, NVSDK_NGX_Parameter_Depth, &g_img[AUD_TEX_DEPTH].res);
     ngx_set_ptr(p, NVSDK_NGX_Parameter_MotionVectors, &g_img[AUD_TEX_MOTION].res);
+    ngx_set_ptr(p, NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask, &g_img[AUD_TEX_RESPONSIVE].res);
     ngx_set_f(p, NVSDK_NGX_Parameter_Jitter_Offset_X, jitterX);
     ngx_set_f(p, NVSDK_NGX_Parameter_Jitter_Offset_Y, jitterY);
     ngx_set_f(p, NVSDK_NGX_Parameter_Sharpness, 0.0f);
@@ -702,6 +758,8 @@ int aud_evaluate(float jitterX, float jitterY, float mvScaleX, float mvScaleY, i
     ngx_set_f(p, NVSDK_NGX_Parameter_DLSS_Pre_Exposure, 1.0f);
     ngx_set_f(p, NVSDK_NGX_Parameter_DLSS_Exposure_Scale, 1.0f);
     if (g_rr) {
+        ngx_set_ptr(p, NVSDK_NGX_Parameter_DLSS_WORLD_TO_VIEW_MATRIX, g_worldToView);
+        ngx_set_ptr(p, NVSDK_NGX_Parameter_DLSS_VIEW_TO_CLIP_MATRIX, g_viewToClip);
         ngx_set_ptr(p, NVSDK_NGX_Parameter_DiffuseAlbedo, &g_img[AUD_TEX_ALBEDO].res);
         ngx_set_ptr(p, NVSDK_NGX_Parameter_SpecularAlbedo, &g_img[AUD_TEX_SPECULAR].res);
         ngx_set_ptr(p, NVSDK_NGX_Parameter_GBuffer_Normals, &g_img[AUD_TEX_NORMALS].res);
@@ -735,7 +793,29 @@ int aud_evaluate(float jitterX, float jitterY, float mvScaleX, float mvScaleY, i
 void aud_shutdown(void)
 {
     if (!g_dev) return;
+    gl.Finish();
     release_feature();
     if (g_params) { ngxDestroyParameters(g_params); g_params = NULL; }
-    if (g_ngxReady) { ngxShutdown1(g_dev); g_ngxReady = 0; }
+    if (g_ngxReady && g_ownsDevice) {
+        NVSDK_NGX_Result result = NVSDK_NGX_Result_FAIL_PlatformError;
+        ngxShutdown1(g_dev, &result);
+        if (NVSDK_NGX_FAILED(result)) LOG("dlss: NGX shutdown failed 0x%x", result);
+    }
+    g_ngxReady = 0;
+    if (g_glSemGLDone) gl.DeleteSemaphores(1, &g_glSemGLDone);
+    if (g_glSemVKDone) gl.DeleteSemaphores(1, &g_glSemVKDone);
+    if (g_semGLDone) vkDestroySemaphore_(g_dev, g_semGLDone, NULL);
+    if (g_semVKDone) vkDestroySemaphore_(g_dev, g_semVKDone, NULL);
+    for (int index = 0; index < AUD_FRAMES; index++) {
+        if (g_fence[index]) vkDestroyFence_(g_dev, g_fence[index], NULL);
+        g_fence[index] = VK_NULL_HANDLE;
+    }
+    if (g_pool) vkDestroyCommandPool_(g_dev, g_pool, NULL);
+    if (g_ownsDevice) {
+        vkDestroyDevice_(g_dev, NULL);
+        vkDestroyInstance_(g_inst, NULL);
+    }
+    g_dev = VK_NULL_HANDLE; g_inst = VK_NULL_HANDLE; g_phys = VK_NULL_HANDLE; g_queue = VK_NULL_HANDLE;
+    g_pool = VK_NULL_HANDLE; g_semGLDone = g_semVKDone = VK_NULL_HANDLE;
+    g_glSemGLDone = g_glSemVKDone = 0; g_frameIdx = 0;
 }

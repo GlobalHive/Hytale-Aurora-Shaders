@@ -44,6 +44,13 @@ try {
     if ((Test-Path (Join-Path $root 'third_party\DLSS\include\nvsdk_ngx_defs.h')) -and
         (Test-Path (Join-Path $root 'third_party\vulkan\include\vulkan\vulkan.h'))) {
         $dlss = @('-DAU_HAS_DLSS=1', '-I..\third_party\DLSS\include', '-I..\third_party\vulkan\include', 'aud_dlss.c', '-ladvapi32')
+        if (Test-Path (Join-Path $root 'third_party\Streamline\include\sl_dlss_g.h')) {
+            & $zig c++ -target x86_64-windows-gnu -std=c++17 -O2 -fno-exceptions -fno-rtti `
+                -I..\third_party\Streamline\include -I..\third_party\vulkan\include `
+                -c aud_framegen.cpp -o ..\build\aud_framegen.o
+            if ($LASTEXITCODE -ne 0) { throw "Frame Generation backend compilation failed ($LASTEXITCODE)" }
+            $dlss += @('-DAU_HAS_FRAMEGEN=1', '..\build\aud_framegen.o', '-lwintrust', '-lcrypt32')
+        }
     }
     & $zig cc -target x86_64-windows-gnu -O2 -shared -o ..\build\opengl32.dll hook.c gl_stubs.c @dlss -lgdi32 -luser32
     if ($LASTEXITCODE -ne 0) { throw "zig cc failed ($LASTEXITCODE)" }

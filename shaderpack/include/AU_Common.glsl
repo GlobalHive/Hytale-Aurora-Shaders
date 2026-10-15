@@ -35,6 +35,18 @@ const float goldenRatio = 1.61803398875;
 // ---- Values forwarded by the hook from other game passes -----------------------------
 uniform int uHookFrame;
 uniform float uHookTime;
+
+float AU_OrePulse(vec3 tint)
+{
+#if AU_ORE_ANIMATION != 1
+    return 1.0;
+#else
+    float phase = dot(tint / max(max(tint.r, max(tint.g, tint.b)), 0.001), vec3(1.3, 2.7, 4.1));
+    float wave = 0.5 + 0.5 * sin(uHookTime * AU_ORE_PULSE_SPEED * 6.2831853 + phase);
+    float pulse = mix(0.15, 1.8, wave * wave * wave);
+    return mix(1.0, pulse, clamp(AU_ORE_PULSE_STRENGTH, 0.0, 1.0));
+#endif
+}
 uniform vec4 uHookTopGradientColor;   // Hytale sky top colour (biome / weather / time of day)
 uniform vec4 uHookSunsetColor;
 uniform vec4 uHookCloudColors[4];     // Hytale cloud layer tints (weather)

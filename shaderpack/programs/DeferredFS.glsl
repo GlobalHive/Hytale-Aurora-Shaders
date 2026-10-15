@@ -1,5 +1,6 @@
 #version 410 core
 #extension GL_ARB_shader_image_load_store : enable
+#extension GL_ARB_shader_image_size : enable
 
 // Aurora Shaders for Hytale - deferred lighting.
 // Replaces Hytale's albedo * (light + ambient) * shadow with a full lighting model,
@@ -11,6 +12,7 @@
 #include "Fog_inc.glsl"
 #include "AU_Lighting.glsl"
 #include "AU_Tonemap.glsl"
+#include "AU_Temporal.glsl"
 #include "AU_VL.glsl"
 #include "AU_Clouds.glsl"
 #include "AU_Caustics.glsl"
@@ -18,12 +20,17 @@
 #if AU_PRESET >= 2 || AU_RAIN_PUDDLES
 #include "AU_RTX.glsl"
 #endif
-#if AU_VOXELS
-#include "AU_Voxel.glsl"
-#endif
 
 #ifndef INPUT_NORMALS_IN_WS
 #define INPUT_NORMALS_IN_WS 1
+#endif
+#if AU_VOXEL_WORLD
+#include "AU_Voxel.glsl"
+#endif
+#if AU_GI_DENOISE
+#include "AU_DenoiseLegacy.glsl"
+#elif AU_VOXEL_WORLD
+uniform int uHookPTPass;
 #endif
 
 uniform sampler2D uColorTexture;
@@ -46,9 +53,9 @@ float getShadowFactor(vec2 texCoords)
 {
 #if USE_DEFERRED_SHADOW
 #if USE_DEFERRED_SHADOW_BLURRED && USE_SSAO
-    return texture(uSSAOTexture, texCoords).a;
+    return textureLod(uSSAOTexture, texCoords, 0.0).a;
 #else
-    return texture(uShadowTexture, texCoords).r;
+    return textureLod(uShadowTexture, texCoords, 0.0).r;
 #endif
 #else
     return 1.0;
@@ -58,18 +65,21 @@ float getShadowFactor(vec2 texCoords)
 #if AU_PRESET >= 2
 // One-bounce source for the RTX GI: the sun light a surface receives this frame (albedo x
 // shadow-mapped sun x N.L), plus emissive blocks, read straight from the G-buffer.
-vec3 AU_GIHitLight(vec2 uv)
+vec3 AU_GIHitLightData(vec2 uv, out vec2 albedoSky)
 {
     vec4 g0 = textureLod(uColorTexture, uv, 0.0);
+    vec4 g1 = textureLod(uNormalTexture, uv, 0.0);
     bool hitSSAO, hitBloom;
     unpackGBufferMeta(g0.a, hitSSAO, hitBloom);
     vec3 alb = g0.rgb * AU_ALBEDO_MULT;
-    if (hitBloom) return alb * AU_RTX_GI_EMISSIVE;
+    albedoSky = vec2(GetLuminance(alb), g1.b);
+    if (hitBloom) return alb * textureLod(uLightTexture, uv, 0.0).rgb * AU_RTX_GI_EMISSIVE;
     // Glowing ore crystals light up what is around them in their colour (the same evened-out
     // tint as their glow).
     float hitOre = AU_MaterialClass(g0.a) == 0u ? AU_OreGlowLevel(g0.a) : 0.0;
-    vec3 oreLight = hitOre > 0.0 ? alb * pow(max(GetLuminance(alb), 0.002), -0.5) * (hitOre * AU_ORE_LIGHT) : vec3(0.0);
-    vec3 n = decodeNormal(textureLod(uNormalTexture, uv, 0.0).rg);
+    vec3 oreLight = hitOre > 0.0 ? alb * pow(max(GetLuminance(alb), 0.002), -0.5)
+        * (hitOre * AU_ORE_TORCH_RATIO * (AU_ORE_LIGHT / 8.0) * AU_OrePulse(g0.rgb)) : vec3(0.0);
+    vec3 n = decodeNormal(g1.rg);
     // Foliage is lit flat (no N.L) by Hytale's shading.
     float NdotL = hitSSAO ? max(dot(n, lightVec), 0.0) : 0.6;
 #if AU_VOXELS
@@ -77,14 +87,20 @@ vec3 AU_GIHitLight(vec2 uv)
     vec3 hitStatic = textureLod(uLightTexture, uv, 0.0).rgb;
     vec3 hitGlow = (uint(round(g0.a * 255.0)) & AU_GBUFFER_PURE_GLOW) != 0u
                  ? AU_GlowToBlockLight(hitStatic, n, !hitSSAO)
-                 : AU_ExtractBlockLight(hitStatic, textureLod(uNormalTexture, uv, 0.0).b, n, !hitSSAO);
+                 : AU_ExtractBlockLight(hitStatic, g1.b, n, !hitSSAO);
     // And the sky light it gets, for the further bounces (what fills a room with light):
     // Hytale's sky light there, through the same curve as the ambient term.
-    float hitSky = smoothstep1(clamp(textureLod(uNormalTexture, uv, 0.0).b, 0.0, 1.0));
+    float hitSky = smoothstep1(clamp(g1.b, 0.0, 1.0));
     return alb * (lightColor * (getShadowFactor(uv) * NdotL) + hitGlow * 0.5 + ambientColor * (hitSky * AU_PT_AMBIENT_BOUNCE)) + oreLight;
 #else
     return alb * lightColor * (getShadowFactor(uv) * NdotL) + oreLight;
 #endif
+}
+
+vec3 AU_GIHitLight(vec2 uv)
+{
+    vec2 albedoSky;
+    return AU_GIHitLightData(uv, albedoSky);
 }
 
 // For the path tracer's sky light: albedo luminance and Hytale sky light of an on-screen
@@ -123,15 +139,30 @@ float getSSAOValue(vec2 texCoords, float depth)
 
 void main()
 {
+#if AU_LOCAL_LIGHTS
+    if (uHookPTPass == 2) {
+        AU_BuildLocalLightTile();
+        discard;
+    }
+#endif
     AU_InitCommon();
 
     vec2 texCoords = fragTexCoords;
-#if AU_VOXELS && AU_PT_LIGHTS
-    // Empty next frame's light list; MapChunkVS fills it before this pass runs again.
-    if (gl_FragCoord.x < 1.0 && gl_FragCoord.y < 1.0) imageStore(auLights, ivec2(0, 1 - (uHookFrame & 1)), uvec4(0u));
-#endif
     float depth = texture(uDepthTexture, texCoords).r;
-    if (depth >= 1.0) discard;
+    if (depth >= 1.0) {
+#if AU_GI_DENOISE
+#if AU_GI_TEMPORAL_FILTER
+        if (uHookPTPass == 3) {
+            ivec2 historySize = imageSize(auGIOutPos);
+            ivec2 historyPixel = clamp(ivec2(texCoords * vec2(historySize)), ivec2(0), historySize - 1);
+            ivec2 representative = ivec2(floor((vec2(historyPixel) + 0.5) * ViewportSize / vec2(historySize)));
+            if (all(equal(ivec2(gl_FragCoord.xy), representative)))
+                imageStore(auGIOutPos, historyPixel, vec4(1e9, 1e9, 1e9, 0.0));
+        }
+#endif
+#endif
+        discard;
+    }
 
     vec4 gbuffer0 = texture(uColorTexture, texCoords);   // RGBA8: albedo + render flags
     vec3 albedo = gbuffer0.rgb;
@@ -143,7 +174,7 @@ void main()
     float shadow = getShadowFactor(texCoords);
 
 #if USE_LINEAR_Z
-    vec3 playerPos = fragFrustumRay * depth;
+    vec3 playerPos = mat3(InvViewMatrix) * AU_ViewPosition(texCoords, depth * FarClip);
 #else
     vec3 playerPos = PositionFromDepth(depth, texCoords, InvViewProjectionMatrix);
 #endif
@@ -166,7 +197,7 @@ void main()
     int subsurfaceMode = 0;
     bool noDirectionalShading = false;
     float emission = 0.0;
-#if AU_SUBSURFACE
+#if AU_SUBSURFACE || AU_SSS
     if (!hasSSAO && !hasBloom) {
         // Leaf blocks are cubes (axis-aligned normals): keep directional shading.
         // Grass / cross plants have diagonal normals: soft, direction-less light.
@@ -176,8 +207,28 @@ void main()
         noDirectionalShading = !axisAligned;
     }
 #endif
+#if AU_PRESET >= 2
+#if AU_GI_DENOISE || (!AU_VOXELS && AU_SSGI_SELF_HIT_FIX)
+    vec3 historyNormal = fastNormalFromPosition(playerPos);
+#else
+    vec3 historyNormal = normal;
+#endif
 #if AU_VOXELS
-    AU_VoxFeed(playerPos, normal, albedo, subsurfaceMode != 0 || !hasSSAO, hasBloom, fract(dither * 7.31 + float(uHookFrame % 3600) * 0.137));
+    if (uHookPTPass <= 1)
+        AU_VoxFeed(playerPos, normal, albedo, subsurfaceMode != 0 || !hasSSAO, hasBloom, fract(dither * 7.31 + float(uHookFrame % 3600) * 0.137));
+#endif
+#if AU_VOXEL_WORLD || AU_GI_DENOISE
+    if (uHookPTPass == 1) discard;
+#endif
+#if AU_GI_DENOISE && AU_GI_TEMPORAL_FILTER
+    if (hasBloom && uHookPTPass == 3) {
+        ivec2 historySize = imageSize(auGIOutPos);
+        ivec2 historyPixel = clamp(ivec2(texCoords * vec2(historySize)), ivec2(0), historySize - 1);
+        ivec2 representative = ivec2(floor((vec2(historyPixel) + 0.5) * ViewportSize / vec2(historySize)));
+        if (all(equal(ivec2(gl_FragCoord.xy), representative)))
+            imageStore(auGIOutPos, historyPixel, vec4(1e9, 1e9, 1e9, 0.0));
+    }
+#endif
 #endif
 
     // Emissive (lava, flames, crystals): brighter texels glow more.
@@ -186,6 +237,9 @@ void main()
     // the meta bits: a material class means the level bits are the material's.
     uint matClass = hasBloom || subsurfaceMode != 0 ? 0u : AU_MaterialClass(gbuffer0.a);
     float matLevel = AU_MaterialLevel(gbuffer0.a);
+#if AU_SSS
+    if (!hasBloom && matClass == 1u && uint(round(matLevel * 7.0)) == 6u) subsurfaceMode = 3;
+#endif
     float oreGlowAmount = hasBloom || AU_MaterialClass(gbuffer0.a) != 0u ? 0.0 : AU_OreGlowLevel(gbuffer0.a);
     bool oreGlow = oreGlowAmount > 0.0;
     // Gloss of the material: polished stone, bricks and planks a sheen, ice and glass a mirror;
@@ -223,45 +277,74 @@ void main()
 
     float aoUse = (hasSSAO || subsurfaceMode != 0) ? ao : 1.0;
 
+    vec3 localLighting = vec3(0.0);
+#if AU_SSS && AU_SSS_VOXEL && AU_VOXEL_WORLD
+    if (subsurfaceMode >= 2 && !hasBloom && skyLight > 0.02) {
+        float volumeThickness;
+        vec3 scatteringDepth;
+        vec4 transmission = AU_TraceSubsurface(playerPos + CameraPosition - normal * 0.025, lightVec, albedo,
+                                               subsurfaceMode, volumeThickness, scatteringDepth);
+        auSSSVolumeValid = transmission.a > 0.5;
+        if (auSSSVolumeValid) {
+            auSSSVolumeTransmission = transmission.rgb * SampleShadowWS(playerPos + lightVec * AU_SSS_TRACE_DISTANCE, 1.0);
+            auSSSVolumeLight = AU_SSSVolumeRadiance(auSSSVolumeTransmission, scatteringDepth, normal, playerPos, skyLight);
+        }
+    }
+#endif
+#if AU_LOCAL_LIGHTS
+    if (!hasBloom) {
+        if (uHookLocalLightTiles != 0)
+            localLighting = AU_LocalLightingOriginal(playerPos, normal, noDirectionalShading, GetDither2(gl_FragCoord.xy));
+        else
+            localLighting = AU_LocalLighting(playerPos, normal, noDirectionalShading, GetDither2(gl_FragCoord.xy));
+    }
+#endif
 #if AU_PRESET >= 2
     // RTX: the GI rays double as ray-traced ambient occlusion.
     float giVisibility = 1.0;
     vec3 gi = vec3(0.0);
+    auSSSUseGI = true;
     vec3 ptLight = vec3(0.0);
+    float skyVis = 1.0;
     if (!hasBloom) {
+        {
 #if AU_VOXELS
-        // Far away the traced light shimmers (a block is a few pixels, the history keeps
-        // getting rejected, the grid edge is near): hand over to the screen-space GI.
-        float ptFade = 1.0 - smoothstep(48.0, 80.0, length(playerPos));
-        float skyVis = 1.0;
-        if (ptFade > 0.0) {
             gi = AU_GetVoxelGI(uDepthTexture, playerPos, normal, skyLight, giVisibility, skyVis);
-#if AU_PT_LIGHTS
-            ptLight = AU_PTDirectLight(playerPos, normal, noDirectionalShading, GetDither2(gl_FragCoord.xy).y);
+#else
+            gi = AU_GetSSGI(uDepthTexture, playerPos, normal, historyNormal, dither, giVisibility);
 #endif
-            AU_PTAccumulate(playerPos, normal, gi, giVisibility, skyVis, ptLight);
-        } else {
-            imageStore(auGIOutPos, ivec2(gl_FragCoord.xy), vec4(1e9));   // no history here
         }
-        if (ptFade < 1.0) {
-            float ssVis;
-            vec3 ssgi = AU_GetSSGI(uDepthTexture, playerPos, normal, dither, ssVis) * (AU_RTX_GI_STRENGTH / AU_PT_GI_STRENGTH);
-            gi = mix(ssgi, gi, ptFade);
-            giVisibility = mix(ssVis, giVisibility, ptFade);
-            ptLight *= ptFade;
-        }
+    }
+#if AU_VOXELS
+    gi = gi * AU_PT_GI_STRENGTH + localLighting + auSSSVolumeLight;
+#else
+    gi = gi * AU_RTX_GI_STRENGTH + localLighting + auSSSVolumeLight;
+#endif
+#if AU_GI_DENOISE
+    if (uHookPTPass != 5) AU_GIQuadFilter(playerPos, normal, hasBloom, gi, giVisibility, skyVis, ptLight);
+#endif
+    if (!hasBloom) {
+#if AU_GI_DENOISE && AU_GI_TEMPORAL_FILTER
+        if (uHookPTPass == 3)
+            AU_GIAccumulate(texCoords, playerPos, historyNormal, gi, giVisibility, skyVis, ptLight,
+                            GetLuminance(blockLight) + shadow * GetLuminance(lightColor) * max(dot(normal, lightVec), 0.0));
+#endif
+#if AU_VOXELS
         // Path-traced sky light: the ambient follows how much open sky the surface sees,
         // relative to an open field (a wall there sees half the sky, a floor all of it).
         // Hytale's flood-fill sky light already darkens rooms and caves, so the traced sky
         // light only adds what it misses where it counts as open (under steps, overhangs,
         // trees); applying both inside a room left it black.
-        float ptSkyAmount = AU_PT_SKY_LIGHT * pow2(skyLight) * (subsurfaceMode != 0 ? 0.5 : 1.0) * ptFade;
+        float ptSkyAmount = AU_PT_SKY_LIGHT * pow2(skyLight) * (subsurfaceMode != 0 ? 0.5 : 1.0);
         auPTSky = mix(1.0, clamp(skyVis / max(0.5 + 0.5 * normal.y, 0.15), 0.0, 1.0), ptSkyAmount);
-#else
-        gi = AU_GetSSGI(uDepthTexture, playerPos, normal, dither, giVisibility);
 #endif
         // AO darkens indirect light; where the sun hits, direct light dominates.
         aoUse *= mix(1.0, giVisibility, AU_RTX_GI_AO * (1.0 - 0.75 * shadow));
+    }
+#endif
+#if AU_LOCAL_LIGHTS
+    if (!hasBloom) {
+        blockLight = AU_BlendLocalLightColour(blockLight, auLocalLightUnshadowed, GetLuminance(auLocalLightUnshadowed));
     }
 #endif
     float smoothnessG = 0.0, highlightMult = 1.0;
@@ -317,7 +400,7 @@ void main()
     if (oreGlow) {
         float oreLum = max(GetLuminance(albedo), 0.002);
         float facing = clamp(-dot(normal, normalize(playerPos)), 0.0, 1.0);
-        color += albedo * pow(oreLum, -0.5) * (AU_ORE_GLOW_STRENGTH * 0.5 * oreGlowAmount * mix(0.35, 1.0, facing * facing));
+        color += albedo * pow(oreLum, -0.5) * (AU_ORE_GLOW_STRENGTH * 0.5 * oreGlowAmount * mix(0.35, 1.0, facing * facing) * AU_OrePulse(gbuffer0.rgb));
         float mx = max(color.r, max(color.g, color.b));
         const float knee = 1.0;
         if (mx > knee) {
@@ -329,20 +412,17 @@ void main()
 #if AU_PRESET >= 2
     // RTX preset: screen-space GI bounce + glossy reflections on solid surfaces.
     if (!hasBloom) {
-#if AU_VOXELS
-        color += albedo * gi * AU_PT_GI_STRENGTH;
+#if AU_GI_DENOISE
+        color = AU_AddIndirectLight(color, albedo, gi, uHookPTPass == 5);
 #else
-        color += albedo * gi * AU_RTX_GI_STRENGTH;
-#endif
-#if AU_VOXELS && AU_PT_LIGHTS
-        color += albedo * ptLight * AU_PT_LIGHT_STRENGTH;
+        color += albedo * gi;
 #endif
 
         vec3 nView = normalize(playerPos);
         float fresnel = clamp(1.0 + dot(normal, nView), 0.0, 1.0);
         // Faint grazing sheen on solids, plus wet surfaces facing up when it rains.
         float wetness = rainFactor * smoothstep(0.7, 0.95, normal.y) * smoothstep(0.6, 0.9, skyLight);
-        float smoothness = subsurfaceMode != 0 ? 0.0 : mix(AU_RTX_SMOOTHNESS, 0.85, wetness);
+        float smoothness = subsurfaceMode == 1 || subsurfaceMode == 2 ? 0.0 : mix(AU_RTX_SMOOTHNESS, 0.85, wetness);
         smoothness = max(smoothness, max(0.85 * crystal, matSmooth));
         // Dielectrics reflect a little head-on (gems a bit more); metals mostly reflect, in
         // their own colour.
@@ -402,6 +482,10 @@ void main()
     }
 #endif
 
+#if AU_PRESET < 2 && AU_LOCAL_LIGHTS
+    if (!hasBloom) color += albedo * localLighting;
+#endif
+
     DoAUFog(color, playerPos, dither, skyLight);
     color += AU_GetRainbow(playerPos / max(length(playerPos), 0.0001), length(playerPos), false, dither);
 
@@ -409,7 +493,11 @@ void main()
     float lViewPos = length(playerPos);
     color = AU_AddVL(color, GetVolumetricLight(playerPos / max(lViewPos, 0.0001), lViewPos, false, dither));
 
-#if AU_DEBUG_CLASS == 1
+#if AU_DEBUG_CLASS == 11
+    color = gbuffer0.rgb;
+#elif AU_DEBUG_CLASS == 9 && AU_GI_DENOISE
+    color = auGIDiagnostic;
+#elif AU_DEBUG_CLASS == 1
     color = vec3(hasBloom ? 1.0 : 0.0, subsurfaceMode != 0 ? 1.0 : 0.0, hasSSAO ? 0.6 : 0.0) * 0.5 + shadow * 0.15;
 #elif AU_DEBUG_CLASS == 2
     color = vec3(shadow);
@@ -446,7 +534,7 @@ void main()
 #if AU_VOXELS && AU_PT_LIGHTS && AU_VOXEL_DEBUG == 3
     {
         // Light list probe: red = empty, green brighter with more lights.
-        uint nl = imageLoad(auLights, ivec2(0, uHookFrame & 1)).r;
+        uint nl = imageLoad(auLights, ivec2(0, 0)).r;
         color = mix(color, nl == 0u ? vec3(1.0, 0.0, 0.0) : vec3(0.0, min(float(nl) / 8.0, 1.0), 0.0), 0.5);
     }
 #elif AU_VOXELS && AU_PT_LIGHTS && AU_VOXEL_DEBUG == 4
@@ -456,7 +544,7 @@ void main()
 #elif AU_VOXELS && AU_PT_LIGHTS && AU_VOXEL_DEBUG == 5
     {
         // Distance to the nearest listed light: rings every 2 blocks, red beyond 32.
-        int row = uHookFrame & 1;
+        int row = 0;
         uint nl = min(imageLoad(auLights, ivec2(0, row)).r, 64u);
         ivec3 base = ivec3(floor(CameraPosition)) - AU_VOX_HALF;
         float md = 1e9;

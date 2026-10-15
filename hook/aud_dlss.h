@@ -3,6 +3,7 @@
 // the game's context current.
 #ifndef AUD_DLSS_H
 #define AUD_DLSS_H
+#include "aud_vulkan.h"
 
 typedef void (*AudLogFn)(const char *fmt, ...);
 typedef void *(*AudGetProcFn)(const char *name);   // GL entry points (core and extensions)
@@ -17,12 +18,14 @@ enum {
     AUD_TEX_ALBEDO,     // RGBA8 diffuse albedo
     AUD_TEX_SPECULAR,   // RGBA8 specular albedo
     AUD_TEX_NORMALS,    // RGBA16F world-space normal, linear roughness in alpha
+    AUD_TEX_RESPONSIVE,
     AUD_TEX_COUNT
 };
 
 // Vulkan device + NGX core; dllDir holds nvngx_dlss.dll, dataDir gets NGX's log/cache.
 // Returns 1 when DLSS super resolution is available on this machine.
 int aud_init(AudLogFn log, AudGetProcFn glGetProc, const wchar_t *dllDir, const wchar_t *dataDir);
+int aud_init_shared(AudLogFn log, AudGetProcFn glGetProc, const wchar_t *dllDir, const wchar_t *dataDir, const AudVulkanContext *context);
 
 // 1 when DLSS Ray Reconstruction is available too (after aud_init).
 int aud_rr_available(void);
@@ -38,6 +41,7 @@ unsigned aud_texture(int which);
 // the GL context wait, on the GPU, until the output is ready. jitter in pixels; mvScale
 // converts the motion texture into pixels; reset after camera cuts.
 int aud_evaluate(float jitterX, float jitterY, float mvScaleX, float mvScaleY, int reset);
+void aud_set_camera(const float *worldToViewColumnMajor, const float *viewToClipColumnMajor);
 
 void aud_shutdown(void);
 

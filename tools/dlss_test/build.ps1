@@ -11,6 +11,6 @@ try {
         -o tools/dlss_test/dlss_test.exe tools/dlss_test/dlss_test.c hook/aud_dlss.c `
         -lopengl32 -lgdi32 -luser32 -ladvapi32
     if ($LASTEXITCODE -ne 0) { throw "zig cc failed ($LASTEXITCODE)" }
-    Copy-Item third_party/DLSS/bin/nvngx_dlss.dll tools/dlss_test/ -Force
+    Copy-Item third_party/DLSS/bin/nvngx_dlss.dll, third_party/DLSS/bin/nvngx_dlssd.dll tools/dlss_test/ -Force
     Write-Host 'Built tools\dlss_test\dlss_test.exe'
 } finally { Pop-Location }

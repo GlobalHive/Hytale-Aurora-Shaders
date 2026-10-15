@@ -17,7 +17,7 @@ void LinearToRGB(inout vec3 color)
 // Lottes 2016 tonemap, modified.
 void DoTonemap(inout vec3 color)
 {
-    color = AU_TM_EXPOSURE * color;
+    color = max(AU_TM_EXPOSURE * color, vec3(0.0));
 
     float initialLuminance = AU_Lum(color);
 

@@ -36,12 +36,19 @@ a rotating star sky, lens flare and a filmic tonemap - with an in-game options m
 2. Close Hytale and double-click **`Install.bat`**.
 3. Start Hytale.
 
-The installer finds the game on its own (it asks for the folder if Hytale is installed
-somewhere unusual), reads the game's shaders from your own `HytaleClient.exe`, and puts a small
+The installer offers the detected game, an executable picker that supports any drive,
+or a pasted installation/executable path. It reads the game's shaders from your own `HytaleClient.exe`, and puts a small
 `opengl32.dll` next to the game. Nothing in the game itself is modified.
 
-- **After a Hytale update**, run `Install.bat` again: updates replace the game folder.
-- **To remove it**, double-click `Uninstall.bat`: the game is back to vanilla.
+Install and Update both remove the previous Aurora files and links before installing the new build.
+Changed DLL hashes or stale receipts do not block cleanup. Recovery files are stored under the
+Aurora package's `backups/` folder, outside the game directory. If the destination
+drive cannot create a junction, the installer copies the pack instead. Copied installs preserve
+existing setting values on upgrade; edit that installed copy for hot reload. Installation failures
+restore the previous client files, and the installed DLL is checksum-verified.
+
+- **After a Hytale update**, run `Update.bat`, or choose **Update shaders for a new game version** in the installer. It clean-installs and regenerates shaders from the new client.
+- **To remove it**, double-click `Uninstall.bat`: Aurora's DLL, shaderpack link/copy, receipt, and old Aurora install debris are removed from the game folder. Junction targets are preserved; recovery files stay outside the game.
 
 Requires Windows 10 or 11 and a GPU that runs Hytale. The pack is heavier than vanilla,
 especially the RTX preset; see [Performance](#performance).
@@ -51,15 +58,32 @@ especially the RTX preset; see [Performance](#performance).
 | Key | |
 |---|---|
 | **Home** | Opens / closes the options menu. |
-| **Up / Down** | Select an option. |
-| **Left / Right** | Change it (hold to slide numbers). |
-| **PgUp / PgDn** | Jump to the previous / next section. |
-| **Backspace** | Put the selected option back to its default. |
+| **Hold Alt** | Edit the small left-side panel; release to move and look normally. |
+| **Up / Down** | Select an option, without Alt. |
+| **Left / Right** | Change it (hold to slide numbers), without Alt. |
+| **PgUp / PgDn** | Switch category tabs, without Alt. |
+| **Alt + Mouse** | Click tabs and switches; drag sliders; scroll the current category. |
+| **Escape** | Close the menu. |
 | **Pause** | Shaders off / on, for quick comparisons. |
 
-Changes apply instantly; values you changed from the default show in orange. They are saved in
+Changes apply instantly; default values and slider markers are yellow, including On/Off switches.
+Click the search box while holding Alt to search by setting label or define; Backspace edits
+the search text only. Tab, Enter and Space do not navigate or change the menu.
+Changed values are mint, and the selected option's default is always shown in the footer. Settings are saved in
 `shaderpack/include/AU_Settings.glsl`, which you can also edit by hand while the game runs (saving
 the file reloads the shaders).
+
+The compact left-side menu leaves the centre of the game visible and does not capture movement
+or camera input unless Alt is held. Keyboard shortcuts remain available without Alt;
+typing in search captures keys until Enter or an arrow key leaves the search field.
+The vertically centred panel has category tabs, global search, per-category scrolling, and help for
+the selected setting. **Reset selected** resets only that option, never the entire pack.
+The ore sweep uses a continuous world-space band with a feathered highlight instead of
+triangle-by-triangle screen-space brightening. Its strength, speed and band width are in
+**Ores & materials**, separate from the ore's base glow and surrounding light.
+Ore blink strength and speed control a coloured glow pulse; zero strength restores steady glow.
+**Ore animation** selects blinking plus the soft glint, the original Hytale glint without
+blinking, or entirely steady glow. None of these choices disables the base coloured glow.
 
 ## Menu options
 
@@ -191,6 +215,112 @@ that instead. Edited shader files are recompiled live. The in-game menu is drawn
 Hytale's own shader sources are not redistributed: `tools/prepare_shaders.ps1` extracts them from
 the installed game into `shaderpack/original/` during install, because the pack's shaders include
 parts of them.
+
+Screen-space GI and path tracing use **Original** by default. It filters lighting in the
+existing lighting pass at native resolution. **NVIDIA DLSS Ray Reconstruction** is the second
+backend, selected in the GI denoising tab; it requires DLSS and a supported RTX GPU.
+Original remains active until the NVIDIA backend is ready. Successful Ray Reconstruction
+bypasses Original's spatial/temporal filtering and releases its history buffers.
+
+Original exposes 1/4/9 history samples, spatial strength and normal tolerance, surface
+matching tolerance and reach, maximum history weight, lighting-change rejection, and separate
+PT/non-PT history lengths and enable switches. Spatial sharing and temporal history can be
+disabled independently. Spatial-only filtering needs no history or current-frame lighting buffers.
+Temporal history uses four textures (about 169 MiB at 1440p or 380 MiB at 4K). Local lighting
+shares this history without extra denoiser buffers. Original culls local lights into a 64-cell
+spatial bitmask in the unused light-list row. This 2,048-pixel preparation draw avoids sparse
+whole-scene light sampling without another full-screen pass, extra textures, or extra shadow rays.
+NVIDIA Ray Reconstruction retains its independent sampling path. Lite and Full and their extra filtering passes
+have been removed. The block textures themselves are never filtered by the denoiser.
+
+History lookup uses Hytale's reprojection matrix. Held-item history stays in view space and
+cannot mix with world surfaces. Camera cuts, resizing, and shader reloads invalidate history.
+
+Native emissive metadata is generated from Hytale's item definitions, parent inheritance,
+states, textures, and tint variants. This includes luminous blue moss without making green
+moss glow. The generated `emitters.json` reports coverage and missing texture references.
+Native flood-fill lighting continues to work in every preset. Placed terrain/model emitters and ore
+crystals additionally supply texture-colored area lighting with traced soft shadows in both
+presets and both GI modes. Ore source brightness defaults to 30% of a torch and is independent
+of ore surface glow and bloom. Area-light intensity, reach, size, and sampling cost are configurable.
+Lighting's **Coloured bulb / potion light** independently scales illumination from coloured
+emitter pixels (default 1.75), without increasing ore lighting or bloom.
+Emissive fragments combine texture pixels with Hytale's own glow tint. Multicoloured fixtures
+retain separate RGB hue groups per block, with sub-block positions and local falloff
+so neighbouring bulbs do not collapse into one white light. Transparent emitters captured after
+deferred lighting contribute on the next frame. This does not discover arbitrary emitters in
+unloaded or never-rendered chunks. A small world-space cache retains observed emitters when
+they leave the screen, instead of rebuilding lighting from visible pixels every frame. Unobserved
+entries expire after one second by default, fading during the final quarter-second. Lighting's
+**Light cache duration (seconds)** adjusts this independently of FPS. Leaving the voxel window
+or reloading invalidates cached entries. This is bounded retention, not discovery of every light in the world.
+Accumulated local-light colour also corrects Hytale's broad warm/white fill close to emitters,
+instead of simply adding coloured bloom over a white pool. Lighting's **Native fill colour correction**
+controls this blend. The fill uses a deterministic sum at light centres, independent of random
+shadow-ray selection. Direct illumination sums RGB energy before sampling visibility separately
+per channel; channels selecting the same source share a shadow ray (one to three rays total).
+An unobstructed mixture is deterministic rather than randomly switching between bulb colours.
+Only shadow visibility samples the area source. RR receives
+the coloured lighting in HDR, while diffuse/specular material guides remain independent of light colour.
+RR's noisy indirect lighting is combined in linear energy before the gamma-space game passes,
+avoiding gamma amplification of rare samples into white bloom hotspots. Original retains its
+existing post-accumulation lighting response.
+
+Local lights share the geometry grid with PT. Without PT they allocate the geometry grid only
+(32 MiB), skip the color grid and its screen-color feed pass, and denoise inside the existing
+lighting pass. Area samples share their direction calculation across candidates, and out-of-range
+sources are rejected before attenuation/shadow work.
+RR uses the same spatial light culling as Original instead of sampling unrelated lights across
+the entire voxel window. The culling draw covers only 32x64 pixels and reuses the inactive light-list
+row; it adds no full-screen lighting pass or buffers.
+
+DLSS receives HDR color before tonemapping and uses camera motion from Hytale's reprojection.
+FXAA/pre-upscale sharpening are bypassed when DLSS is active, material mip bias follows the
+actual render ratio, and a current-color bias mask covers emissives, foliage, models, and held
+items. Tonemapping, grading, lens effects, and sharpening run on the reconstructed output.
+Model selectors remain K/J for SR and E/D for RR; NVIDIA's default/driver overrides can select
+a newer model. Independent animated-object motion vectors remain an engine integration limitation.
+
+The first menu opening warns to disable **TAA in Hytale's Graphics settings**. This reminder
+also stays in General. Aurora TAA/DLSS settings are separate. General's **Reset all categories**
+resets shader-menu options only, with a second-click confirmation.
+
+**Render resolution (live)** requests a native renderer resize while keeping the physical
+window unchanged, then recreates the DLSS buffers at the resulting scene resolution. Leave
+Hytale's Render Scale at 100% to avoid applying two scale factors. HUD viewports and clipping
+remain mapped to the physical window.
+
+**Subsurface scattering** defaults to voxel depth measurement for dense foliage and ice.
+A bounded grid ray integrates occupied material length, coloured absorption and single-scattering
+optical depth; empty gaps add no thickness and solid wood/stone blocks transmission. Measured
+RGB transmission replaces the opaque foliage self-shadow term, and a shadow-map lookup beyond
+the measured segment retains distant blockers. This follows
+the volume-depth approach discussed in [issue #3](https://github.com/Kristijan1001/Hytale-Aurora-Shaders/issues/3#issuecomment-6183476310),
+not shadow-map dithering. RTX feeds the result into its existing Original/Ray Reconstruction
+lighting path. Thin grass retains surface translucency. The surface approximation remains selectable,
+with volume density, absorption, reach and cell budget configurable in Lighting. The voxel method
+reuses the geometry grid without extra full-screen passes, colour volumes or history textures;
+when PT and area lights are off it still needs the 32 MiB geometry grid. Unseen geometry and
+surfaces outside the grid retain the surface approximation, rather than claiming full-scene SSS.
+
+**DLSS sharpness** is an edge-limited filter in the output resolve, before tonemapping. Zero skips its extra texture samples.
+**Quality+ (77%)** and **Quality++ (85%)** are Aurora's custom render ratios using NVIDIA's
+Quality mode; they are not additional NVIDIA model presets.
+
+**DLSS Frame Generation** uses NVIDIA Streamline, Reflex and an input-transparent child
+presentation surface. OpenGL keeps the game window; Vulkan presents generated frames on
+the child surface to avoid mixing both swapchains on one window. SR/RR and Frame Generation
+share one Vulkan device when used together, with shared inputs and GPU synchronization. It is off by default
+and independent of Super Resolution. 2x/3x/4x/6x selections are clamped to GPU capability.
+Normal OpenGL presentation is retained when disabled or unavailable. The backend's standalone
+RTX 5080 test verified 112 actual NVIDIA presents for 56 rendered frames at 2x. In-game
+validation remains necessary, especially HUD edges, transparent effects and moving models:
+the current motion vectors include camera motion, but not independent object animation.
+Install build dependencies and signed production runtimes with `tools\prepare_streamline.ps1`.
+DLSS 5 Neural Rendering is also not implemented: NVIDIA's public renderer sample requires
+the separate beta NGX SDK with `nvsdk_ngx_helpers_dlssnr_vk.h`, which is not in the SDK here.
+The downloaded official Streamline 2.14.1 package has neither an NR plugin nor an NR header.
+Ray Reconstruction is not relabelled as Neural Rendering.
 
 ## Troubleshooting
 

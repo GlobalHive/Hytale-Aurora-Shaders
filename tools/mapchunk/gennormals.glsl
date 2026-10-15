@@ -1,3 +1,9 @@
+    ivec3 auEmissionTile = ivec3(ivec2(fragTexCoords * vec2(textureSize(uTexture, 0).xy) / 32.0), int(fragAtlasPages.x + 0.5));
+    vec3 auSelfEmission = AU_NativeEmission(auEmissionTile, fragTintColorFixed);
+    if (!hasBloom && max(auSelfEmission.r, max(auSelfEmission.g, auSelfEmission.b)) > 0.0) {
+        hasBloom = true;
+        light = auSelfEmission * 2.0;
+    }
 #if AU_GENERATED_NORMALS
     // Generated normals: compare the texel's brightness
     // with neighbours a fraction of a texel away, so only texel edges bevel, with a dead zone
@@ -52,13 +58,16 @@
     // per tile: class 1 polished, 2 metal, 3 porous; level 0-7. Written to G-buffer meta: class
     // in bits 5-6, level in bits 2-4 (the ore glow level's bits: ores are REFLECTIVE, these never).
     float auMatClass = 0.0, auMatLevel = 0.0;
-#if AU_MATERIALS
+#if AU_MATERIALS || AU_SSS
     if (!hasBloom && shadingMode != SHADING_REFLECTIVE)
     {
         ivec3 auTile = ivec3(ivec2(fragTexCoords * vec2(textureSize(uTexture, 0).xy) / 32.0), int(fragAtlasPages.x + 0.5));
         vec2 auMat = texelFetch(uHookMaterials, auTile, 0).rg * 255.0;
         auMatClass = floor(auMat.x + 0.5);
         auMatLevel = floor(auMat.y + 0.5);
+#if !AU_MATERIALS
+        if (auMatClass != 1.0 || auMatLevel != 6.0) { auMatClass = 0.0; auMatLevel = 0.0; }
+#endif
     }
 #endif
 
@@ -66,13 +75,12 @@
     // REFLECTIVE - their 32px textures are all crystal - so those glow as a whole, more the more
     // gem-like a texel is (colourful, or bright like silver / mithril). Judged on the texel
     // blended with its neighbourhood (4 taps of the half-size mip around it, kept inside the
-    // tile), so the glow is even over a crystal instead of grainy. Hytale's sweeping glint over
-    // these blocks (near chunks) comes back as part of the same glow. Stored as 8 levels in
-    // G-buffer meta bits 2-4.
+    // tile), so the glow is even over a crystal instead of grainy. Stored as 8 levels in
+    // G-buffer meta bits 2-4; the continuous shine does not change those quantized levels.
     float auOreGlow = 0.0;
-#if AU_ORE_GLOW
     if (shadingMode == SHADING_REFLECTIVE && !hasBloom)
     {
+#if AU_ORE_GLOW
         vec2 auTexel = 1.0 / vec2(textureSize(uTexture, 0).xy);
         vec2 auTile = 32.0 * auTexel;
         vec2 auTileMin = floor(fragTexCoords / auTile) * auTile;
@@ -87,16 +95,31 @@
         float auSat = (auMx - auMn) / max(auMx, 0.001), auLum = dot(auC, vec3(0.299, 0.587, 0.114));
         float auGem = max(smoothstep(0.4, 0.8, auSat) * smoothstep(0.05, 0.35, auLum), smoothstep(0.35, 0.75, auLum));
         auOreGlow = 0.3 + 0.7 * auGem;
-#if NEAR
-        // Hytale's sweeping glint: a band of light passing over the crystal faces one after
-        // another. Like Hytale, it brightens the colour (the glow then carries it); stronger,
-        // since our crystals already glow.
-        vec4 auShine = computeFakeShininess(texColor.rgb, normalWS, CameraDirection.xyz);
-        albedo.rgb += auShine.rgb * (2.5 * AU_ORE_SHINE);
-        auOreGlow = max(auOreGlow, auShine.a * AU_ORE_SHINE);
+#endif
+#if !USE_SCENE_DATA_OVERRIDE
+#if AU_ORE_ANIMATION == 0 && NEAR
+        vec4 auOriginalShine = computeFakeShininess(texColor.rgb, normalWS, CameraDirection.xyz);
+        albedo.rgb += auOriginalShine.rgb * AU_ORE_SHINE;
+#elif AU_ORE_ANIMATION == 1
+        if (AU_ORE_SHINE > 0.0) {
+            vec4 auClip = vec4(gl_FragCoord.xy * InvViewportSize * 2.0 - 1.0, gl_FragCoord.z * 2.0 - 1.0, 1.0);
+            vec4 auPosition = InvViewProjectionMatrix * auClip;
+            vec3 auWorld = auPosition.xyz / auPosition.w + CameraPosition;
+            float auCoordinate = dot(auWorld, vec3(0.31, 0.43, 0.19)) - Time * AU_ORE_SHINE_SPEED;
+            float auDistance = abs(fract(auCoordinate + 0.5) - 0.5);
+            float auWidth = max(AU_ORE_SHINE_WIDTH, 0.02);
+            float auBand = exp2(-3.0 * pow(auDistance / auWidth, 2.0));
+            float auCore = exp2(-3.0 * pow(auDistance / (auWidth * 0.3), 2.0));
+            float auFacing = clamp(dot(normalWS, -CameraDirection.xyz), 0.0, 1.0);
+            float auBrightness = max(texColor.r, max(texColor.g, texColor.b));
+            vec3 auTint = mix(texColor.rgb / max(auBrightness, 0.001), vec3(1.0), 0.12);
+            float auAmount = (auBand * 0.55 + auCore * 0.3) * (0.3 + 0.7 * sqrt(auFacing))
+                           * mix(0.2, 1.0, smoothstep(0.08, 0.5, auBrightness));
+            albedo.rgb += (vec3(1.0) - clamp(albedo.rgb, 0.0, 1.0)) * auTint * clamp(auAmount * AU_ORE_SHINE, 0.0, 1.0);
+        }
+#endif
 #endif
 #if AU_ORE_GLOW == 2
         auOreGlow = 1.0;   // debug: every REFLECTIVE block
 #endif
     }
-#endif

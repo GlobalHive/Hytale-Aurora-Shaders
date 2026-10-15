@@ -5,6 +5,7 @@
 #define AU_LIGHTING
 
 #include "AU_Common.glsl"
+#include "AU_LightColour.glsl"
 
 float GetNoHSquared(float radiusTan, float NoL, float NoV, float VoL)
 {
@@ -112,6 +113,19 @@ vec3 AU_GlowToBlockLight(vec3 glowLight, vec3 normal, bool flatShading)
 // Sky light scale from the path tracer (DeferredFS sets it before AU_DoLighting): the
 // share of the open sky the surface sees, which Hytale's flood-fill sky light can't tell.
 float auPTSky = 1.0;
+bool auSSSVolumeValid = false;
+bool auSSSUseGI = false;
+vec3 auSSSVolumeLight = vec3(0.0);
+vec3 auSSSVolumeTransmission = vec3(1.0);
+
+vec3 AU_SSSVolumeRadiance(vec3 transport, vec3 scatteringDepth, vec3 normal, vec3 playerPosition, float skyLight)
+{
+    float forwardScatter = pow(max(dot(normalize(playerPosition), lightVec), 0.0), 4.0);
+    float backLighting = smoothstep(-0.15, 0.8, -dot(normal, lightVec));
+    vec3 accumulated = clamp(transport * scatteringDepth, 0.0, 1.0);
+    return lightColor * accumulated * (AU_SSS_STRENGTH * shadowTime * smoothstep(0.02, 0.3, skyLight)
+        * (0.2 + 0.8 * forwardScatter) * (0.3 + 0.7 * backLighting));
+}
 
 vec3 AU_DoLighting(vec3 albedo, vec3 normalM, vec3 playerPos, float skyLight, vec3 hytaleBlockLight,
                    float shadowVis, float ao, int subsurfaceMode, float emission, float smoothnessG,
@@ -149,7 +163,8 @@ vec3 AU_DoLighting(vec3 albedo, vec3 normalM, vec3 playerPos, float skyLight, ve
         float NdotLfol = subsurfaceMode == 2 ? NdotL : mix(NdotL, dot(upVec, lightVec), 0.5);
         // Leaves: half-Lambert wrapped towards full light, since light transmits through them.
         // Leaves take full light (translucent); grass is half top-lit.
-        NdotLM = subsurfaceMode == 2 ? 1.0 : max0(mix(NdotLfol, 1.0, 0.5));
+        NdotLM = subsurfaceMode == 2 ? max0((NdotLfol + 0.55) / 1.55)
+                : subsurfaceMode == 3 ? max0((NdotL + 0.18) / 1.18) : max0(mix(NdotLfol, 1.0, 0.5));
         highlightMult *= max0(NdotLfol);
     } else {
 #if AU_SIDE_SHADOWING
@@ -164,13 +179,17 @@ vec3 AU_DoLighting(vec3 albedo, vec3 normalM, vec3 playerPos, float skyLight, ve
     float shadowFar = max(SunShadowCascadeStats[AU_SHADOW_CASCADES - 1].x, 1.0);
     float beyondShadows = smoothstep(0.8, 1.0, lViewPos / shadowFar);
     // Leaves let some light through even where the shadow map says they are occluded.
-    float shadowVisM = subsurfaceMode == 2 ? mix(shadowVis, 1.0, 0.3) : shadowVis;
+    float shadowVisM = subsurfaceMode == 2 && !auSSSVolumeValid ? mix(shadowVis, 1.0, 0.3) : shadowVis;
     // Beyond the cascades the mask holds the distant screen-space shadows, combined with the
     // lightmap; distant leaves also get the shadowless leaf shading.
     float farLeaf = 1.0;
     if (subsurfaceMode == 2) farLeaf = (NdotL * 0.4999 + 0.5) * mix(1.0, NdotU * 0.5 + 0.5, 0.125 + 0.125 * pow2(noonFactor));
     else if (subsurfaceMode == 1) farLeaf = 0.6 + 0.3 * pow2(noonFactor);
     vec3 shadowMult = vec3(mix(shadowVisM * smoothstep(0.0, 0.4, skyLight), skyLightShadowMult * shadowVis * farLeaf, beyondShadows));
+#if AU_SSS && AU_SSS_VOXEL
+    if (auSSSVolumeValid)
+        shadowMult = mix(shadowMult, auSSSVolumeTransmission * smoothstep(0.0, 0.4, skyLight), clamp(AU_SSS_STRENGTH, 0.0, 1.0));
+#endif
 
     if (subsurfaceMode != 0) {
         float VdotL = dot(nViewPos, lightVec);
@@ -247,7 +266,24 @@ vec3 AU_DoLighting(vec3 albedo, vec3 normalM, vec3 playerPos, float skyLight, ve
     vec3 finalDiffuse = pow2(directionShade * vanillaAO) * (blockLighting + pow2(sceneLighting) + minLighting) + pow2(emission);
     finalDiffuse = sqrt(max(finalDiffuse, vec3(0.0)));
 
-    return albedo * finalDiffuse + lightHighlight;
+    vec3 scattering = vec3(0.0);
+#if AU_SSS
+    if (auSSSVolumeValid) scattering = auSSSUseGI ? vec3(0.0) : auSSSVolumeLight;
+    else if (subsurfaceMode != 0 && emission <= 0.0) {
+        float density = 0.35 + (1.0 - clamp(ao, 0.0, 1.0)) * 1.5 + (1.0 - skyLight) * 1.25;
+        float materialThickness = subsurfaceMode == 1 ? 0.45 : subsurfaceMode == 3 ? 2.0 : 0.9;
+        float thickness = density * materialThickness * AU_SSS_THICKNESS;
+        vec3 tint = clamp(albedo / max(max(albedo.r, max(albedo.g, albedo.b)), 0.001), 0.03, 1.0);
+        if (subsurfaceMode == 3) tint = mix(tint, vec3(0.45, 0.75, 1.0), 0.35);
+        vec3 absorption = vec3(0.25) - log(tint) * AU_SSS_ABSORPTION;
+        vec3 transmission = exp(-absorption * thickness);
+        float forwardScatter = pow(max(dot(nViewPos, lightVec), 0.0), subsurfaceMode == 3 ? 6.0 : 4.0);
+        float backLighting = smoothstep(-0.15, 0.8, -NdotL);
+        float exposure = sqrt(skyLight) * mix(0.12, 1.0, shadowVis) * shadowTime;
+        scattering = lightColor * transmission * (AU_SSS_STRENGTH * exposure * (0.2 + 0.8 * forwardScatter) * backLighting);
+    }
+#endif
+    return albedo * (finalDiffuse + scattering) + lightHighlight;
 }
 
 #endif // AU_LIGHTING

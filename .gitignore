@@ -17,6 +17,7 @@ shaderpack/original/
 shaderpack/index.txt
 shaderpack/materials.txt
 shaderpack/programs/ParticleFS.glsl
+shaderpack/programs/Batcher2DFS.glsl
 shaderpack/programs/MapChunkFS.glsl
 shaderpack/programs/MapChunkVS.glsl
 shaderpack/programs/BlockyModelVS.glsl
@@ -45,3 +46,9 @@ tools/dlss_test/*.dll
 tools/dlss_test/*.log
 tools/dlss_test/nvngx*
 shaderpack/dlss/
+shaderpack/streamline/
+shaderpack/taa-warning-seen
+backups/
+shaderpack/emitters.txt
+shaderpack/emitters.json
+shaderpack/programs/BlockyModelFS.glsl

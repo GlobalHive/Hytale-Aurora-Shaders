@@ -31,7 +31,12 @@
 #define AU_ORE_GLOW_STRENGTH 2.0
 #define AU_ORE_BLOOM 10.0             // coloured glow halo around ore crystals
 #define AU_ORE_LIGHT 8.0              // light ore crystals cast on what is around them (RTX preset)
-#define AU_ORE_SHINE 1.0              // Hytale's sweeping glint over ores (near chunks)
+#define AU_ORE_SHINE 1.0
+#define AU_ORE_SHINE_SPEED 0.18
+#define AU_ORE_SHINE_WIDTH 0.12
+#define AU_ORE_ANIMATION 1
+#define AU_ORE_PULSE_STRENGTH 0.85
+#define AU_ORE_PULSE_SPEED 0.5
 #define AU_MATERIALS 1                // block materials: polished stone/bricks/planks/ice gloss, metal reflections, rain soaking
 #define AU_MATERIAL_GLOSS 1.0
 #define AU_RAIN_WETNESS 1.0           // how wet and glossy rain makes everything open to the sky
@@ -40,6 +45,14 @@
 #define AU_CAVE_LIGHTING 250.0        // minimum light underground, %
 #define AU_SUBSURFACE 1              // foliage translucency
 #define AU_SUBSURFACE_GLOW 0.35
+#define AU_SSS 1
+#define AU_SSS_STRENGTH 0.65
+#define AU_SSS_THICKNESS 1.0
+#define AU_SSS_ABSORPTION 1.0
+#define AU_SSS_VOXEL 1
+#define AU_SSS_DENSITY 0.55
+#define AU_SSS_TRACE_DISTANCE 12.0
+#define AU_SSS_TRACE_STEPS 32
 #define AU_GENERATED_NORMALS 1        // per-texel relief from block textures
 #define AU_GENERATED_NORMAL_MULT 100.0  // relief strength (25-400)
 #define AU_GENERATED_NORMAL_RES 128.0   // relief resolution (16-512)
@@ -143,20 +156,46 @@
 #define AU_RTX_GI_AO 0.55          // how much the GI rays darken occluded ambient
 #define AU_RTX_SSR_STEPS 32
 #define AU_RTX_SMOOTHNESS 0.0          // dry surfaces stay matte (only rain makes them reflective)
+#define AU_SSGI_DENOISE 1
+#define AU_GI_DENOISER 1
+#define AU_GI_HISTORY_TAPS 9
+#define AU_GI_SPATIAL_STRENGTH 1.0
+#define AU_GI_NORMAL_THRESHOLD 0.05
+#define AU_GI_PLANE_TOLERANCE 0.03
+#define AU_GI_HISTORY_REACH 0.3
+#define AU_GI_MAX_HISTORY 0.92
+#define AU_GI_LIGHT_REJECTION 0.25
+#define AU_PT_DENOISE 1
+#define AU_GI_SPATIAL_FILTER 1
+#define AU_GI_TEMPORAL_FILTER 1
+#define AU_SSGI_HISTORY 8.0
+#define AU_SSGI_SELF_HIT_FIX 1
+#define AU_GI_DENOISE (AU_PRESET >= 2 && AU_GI_DENOISER > 0 && (AU_GI_SPATIAL_FILTER || AU_GI_TEMPORAL_FILTER) && ((AU_PATH_TRACING && AU_PT_DENOISE) || (!AU_PATH_TRACING && AU_SSGI_DENOISE)))
+#define AU_GI_LEGACY AU_GI_DENOISE
+#define AU_NATIVE_EMISSION 1
+#define AU_NATIVE_EMISSION_STRENGTH 1.0
+#define AU_LOCAL_LIGHTS 1
+#define AU_LOCAL_LIGHT_RANGE 8.0
+#define AU_LOCAL_LIGHT_STRENGTH 1.0
+#define AU_EMISSIVE_LIGHT_STRENGTH 1.75
+#define AU_LOCAL_LIGHT_COLOR_BLEND 1.0
+#define AU_LIGHT_CACHE_SECONDS 1.0
+#define AU_LOCAL_LIGHT_SOFTNESS 0.35
+#define AU_LOCAL_LIGHT_CANDIDATES 8
+#define AU_ORE_TORCH_RATIO 0.3
+#define AU_VOXEL_WORLD (AU_VOXELS || AU_LOCAL_LIGHTS || (AU_SSS && AU_SSS_VOXEL))
 
 // ---- Path tracing (RTX preset) -------------------------------------------------------
 // Voxel path tracing: the hook keeps a 256x128x256 block grid of the world around the
 // player (include/AU_Voxel.glsl) and the bounce light traces rays through it.
-#define AU_PATH_TRACING 1             // experimental: heavy, and the look is close to the screen-space GI
+#define AU_PATH_TRACING 0             // experimental: heavy, and the look is close to the screen-space GI
 #define AU_PT_GI_STRENGTH 1.5         // bounce light strength with path tracing
 #define AU_VOXELS (AU_PRESET >= 2 && AU_PATH_TRACING)
 #define AU_PT_RAYS 3                  // rays per pixel per frame
 #define AU_PT_REACH 24.0              // how far (blocks) rays travel
 #define AU_PT_HISTORY 24.0            // frames the path tracer averages over (more = smoother, slower to react)
 #define AU_PT_SKY_LIGHT 0.8           // how much the traced sky visibility shapes the ambient light
-#define AU_PT_LIGHTS 0                // experimental: path-traced light from FULLBRIGHT blocks (misses torches, they are models)
-#define AU_PT_LIGHT_STRENGTH 1.50
-#define AU_PT_LIGHT_RANGE 14.0        // blocks
+#define AU_PT_LIGHTS (0)
 #define AU_PT_AMBIENT_BOUNCE 1.0      // how much sky light bounced surfaces pass on (multiple bounces)
 #define AU_VOXEL_DEBUG 0              // 1 = show the voxel grid (ray cast from the camera), 2 = blend over the scene
 
@@ -177,9 +216,11 @@
 #define AU_SUN_GLARE 1.0              // soft lens glare around the visible sun
 #define AU_TAA 1                      // reprojected TAA (cleans up dithered shafts / shadows / GI)
 #define AU_DLSS 0                     // NVIDIA DLSS instead of the TAA (hook/aud_dlss.c; RTX GPUs)
-#define AU_DLSS_RR 0                  // DLSS Ray Reconstruction (denoiser + upscaler in one) instead of Super Resolution
-#define AU_RENDER_SCALE 0            // hook: Hytale's Render Scale = DLSS render size, written for the next start (0 = Hytale's slider)
+#define AU_RENDER_SCALE 100
 #define AU_DLSS_PRESET 0              // hook: DLSS model, 0 NVIDIA's default, 1 sharpest (K / RR E), 2 less ghosting (J / RR D)
+#define AU_DLSS_RR_PRESET 0
+#define AU_DLSS_SHARPNESS 0.2
+#define AU_DLSS_FRAMEGEN 0
 #define AU_DLSS_JITTER 1              // hook: sub-pixel camera jitter while DLSS runs
 #define AU_DLSS_JITTER_SX 1           // hook: sign of the jitter handed to DLSS (axis conventions)
 #define AU_DLSS_JITTER_SY 1

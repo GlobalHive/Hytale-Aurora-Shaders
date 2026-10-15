@@ -1,15 +1,11 @@
 #version 410 core
 
 // Aurora Shaders for Hytale - temporal anti-aliasing / accumulation.
-// Hytale's TAA blends 50% of the previous frame at the same pixel, without reprojection, so the
-// per-frame dithered effects (light shafts, soft shadows, GI) stay grainy and motion smears.
-// This reprojects the history with the camera motion (Hytale's ReprojectionMatrix + linear
-// depth), samples it with a sharp Catmull-Rom filter, clips it to the current neighbourhood in
-// YCoCg (variance clipping) and accumulates ~10 frames, like modern TAA.
 
 #include "SceneData_inc.glsl"
 #include "Reconstruction_inc.glsl"
 #include "AU_Settings.glsl"
+#include "AU_Temporal.glsl"
 
 uniform sampler2D uColorTexture;
 uniform sampler2D uPreviousColorTexture;
@@ -58,7 +54,11 @@ vec3 SampleHistory(vec2 uv)
 void main()
 {
     vec2 uv = fragTexCoords;
-    vec4 current = texture(uColorTexture, uv);
+    vec2 currentUV = uv;
+#if !AU_DLSS
+    currentUV += uHookSceneJitter * 0.5;
+#endif
+    vec4 current = texture(uColorTexture, currentUV);
 
 #if AU_DLSS
     // DLSS (fed by PostEffectFS) replaces the anti-aliasing: pass the frame through.
@@ -68,15 +68,18 @@ void main()
 #endif
 
 #if AU_TAA
+    if (uHookHistoryValid == 0) {
+        outColor = current;
+        if (uNeighborHoodCheck < -1000) outColor.r += texture(uPreviousColorTexture, uv).r + texture(uHookDepth, uv).r;
+        return;
+    }
     // Reproject: this pixel's view-space position -> previous frame's screen position.
-    float lin = min(texture(uHookDepth, uv).r, 1.0);
-    vec3 posVS = PositionFromLinearDepth(uv, -lin * FarClip, ProjInfos);
-    vec4 prevClip = ReprojectionMatrix * vec4(posVS, 1.0);
-    vec4 curClip = ProjectionMatrix * vec4(posVS, 1.0);
-    // Motion = previous minus current projection of the same point, so the depth
-    // reconstruction's mismatch with Hytale's projection cancels out.
-    vec2 prevUV = uv + (prevClip.xy / prevClip.w - curClip.xy / curClip.w) * 0.5;
-    bool offscreen = any(lessThan(prevUV, vec2(0.0))) || any(greaterThan(prevUV, vec2(1.0)));
+    float lin = min(texture(uHookDepth, currentUV).r, 1.0);
+    vec3 posVS = AU_ViewPosition(currentUV, lin * FarClip);
+    vec2 prevUV = AU_PreviousUV(mat3(InvViewMatrix) * posVS, true);
+    if (lin >= 1.0) prevUV = AU_PreviousSkyUV(mat3(InvViewMatrix) * posVS, true);
+    if (lin * FarClip < AU_NEAR_IGNORE) prevUV = uv;
+    bool offscreen = uHookHistoryValid == 0 || any(lessThan(prevUV, uPixelSize * 0.5)) || any(greaterThan(prevUV, vec2(1.0) - uPixelSize * 0.5));
 
     // Neighbourhood statistics (3x3) for variance clipping.
     vec3 cur = RGBToYCoCg(current.rgb);
@@ -84,7 +87,7 @@ void main()
     vec3 nMin = vec3(1e9), nMax = vec3(-1e9);
     for (int y = -1; y <= 1; y++) {
         for (int x = -1; x <= 1; x++) {
-            vec3 c = RGBToYCoCg(texture(uColorTexture, uv + vec2(x, y) * uPixelSize).rgb);
+            vec3 c = RGBToYCoCg(texture(uColorTexture, currentUV + vec2(x, y) * uPixelSize).rgb);
             m1 += c;
             m2 += c * c;
             nMin = min(nMin, c);
@@ -96,32 +99,24 @@ void main()
     vec3 boxMin = max(nMin, m1 - AU_TAA_CLIP * sigma);
     vec3 boxMax = min(nMax, m1 + AU_TAA_CLIP * sigma);
 
-    vec3 history = RGBToYCoCg(SampleHistory(prevUV));
+    vec3 rawHistory = RGBToYCoCg(SampleHistory(clamp(prevUV, uPixelSize * 0.5, vec2(1.0) - uPixelSize * 0.5)));
+    vec3 history = rawHistory;
     history = clamp(history, boxMin, boxMax);
 
     // Less history while moving fast (fresh detail), none for pixels coming from off-screen.
     float motion = length((prevUV - uv) / uPixelSize);
-    float blend = offscreen ? 0.0 : mix(AU_TAA_BLEND, 0.7, clamp(motion / 40.0, 0.0, 1.0));
+    float change = abs(rawHistory.x - cur.x) / max(max(abs(rawHistory.x), abs(cur.x)), 0.05);
+    float blend = offscreen ? 0.0 : mix(min(AU_TAA_BLEND, 0.95), 0.55, clamp(motion / 24.0, 0.0, 1.0));
+    blend *= 1.0 - smoothstep(0.15, 0.65, change);
+    if (lin * FarClip < AU_NEAR_IGNORE) blend = min(blend, 0.6);
     if (uNeighborHoodCheck < -1000) blend = 0.0;   // keep the game's uniform referenced
 
     outColor = vec4(max(YCoCgToRGB(mix(cur, history, blend)), vec3(0.0)), current.a);
-#if AU_DEBUG_TAA
+#if AU_DEBUG_TAA == 1
     outColor.rgb = vec3(blend, clamp(motion / 40.0, 0.0, 1.0), offscreen ? 1.0 : lin);
 #endif
 #else
-    // Hytale's original.
-    vec4 previousColor = texture(uPreviousColorTexture, uv);
-    if (1 == uNeighborHoodCheck) {
-        vec4 nMin = current, nMax = current;
-        for (int y = -1; y <= 1; y++) {
-            for (int x = -1; x <= 1; x++) {
-                vec4 n = texture(uColorTexture, uv + vec2(x, y) * uPixelSize);
-                nMin = min(nMin, n);
-                nMax = max(nMax, n);
-            }
-        }
-        previousColor = clamp(previousColor, nMin, nMax);
-    }
-    outColor = mix(current, previousColor, 0.5);
+    outColor = current;
+    if (uNeighborHoodCheck < -1000) outColor.r += texture(uPreviousColorTexture, uv).r;
 #endif
 }
