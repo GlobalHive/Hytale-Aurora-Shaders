@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.1
+
+- Fixed native glowing blocks, including Cracked Volcanic Rock, turning black while preserving their coloured light.
+
 ## 1.4.0
 
 - Added outdoor sunlight controls: directional sky fill, sun colour balance, highlight protection and improved backlit foliage.

@@ -1,9 +1,5 @@
     ivec3 auEmissionTile = ivec3(ivec2(fragTexCoords * vec2(textureSize(uTexture, 0).xy) / 32.0), int(fragAtlasPages.x + 0.5));
     vec3 auSelfEmission = AU_NativeEmission(auEmissionTile, fragTintColorFixed);
-    if (!hasBloom && max(auSelfEmission.r, max(auSelfEmission.g, auSelfEmission.b)) > 0.0) {
-        hasBloom = true;
-        light = auSelfEmission * 2.0;
-    }
     vec2 auFoliageSSS = vec2(1.0, 0.0);
 #if AU_SSS && ALPHA_TEST
     if (!hasBloom && shadingMode != SHADING_REFLECTIVE) {

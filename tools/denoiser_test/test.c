@@ -1162,6 +1162,74 @@ static void tonemap_domain_test(void)
     puts("PASS: negative reconstructed HDR channels cannot turn saturated emissives into black or nonfinite pixels");
 }
 
+static void native_emission_surface_test(void)
+{
+    const char *vertex = "#version 410 core\nuniform int testShading;out vec2 fragTexCoords,fragMaskTexCoords;"
+        "flat out int fragPackedData;flat out vec3 fragNormalWS;flat out vec2 fragAtlasPages;"
+        "out vec4 fragStaticLight;out vec3 fragTintColor;void main(){"
+        "vec2 corner=vec2(float(gl_VertexID&1),float(gl_VertexID>>1));fragTexCoords=corner;"
+        "fragMaskTexCoords=vec2(0);fragPackedData=(testShading<<6)|2;fragNormalWS=vec3(0,1,0);"
+        "fragAtlasPages=vec2(0);fragStaticLight=vec4(.15,.2,.25,.7);fragTintColor=vec3(1);"
+        "gl_Position=vec4(corner*2-1,0,1);}";
+    PFN_matTexImage3D image3D = (void *)real_wglGetProcAddress("glTexImage3D");
+    GLuint framebuffer, output, arrays[2];
+    generateFramebuffer(1, &framebuffer); bindFramebuffer(0x8d40, framebuffer);
+    ov.GenTextures(1, &output); r_glBindTexture(GL_TEXTURE_2D, output);
+    ov.TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, 4, 4, 0, GL_RGBA, GL_FLOAT, NULL);
+    attachTexture(0x8d40, 0x8ce0, GL_TEXTURE_2D, output, 0);
+    unsigned char atlas[32 * 32 * 4];
+    for (int pixel = 0; pixel < 1024; pixel++) {
+        atlas[pixel * 4] = 54; atlas[pixel * 4 + 1] = 41;
+        atlas[pixel * 4 + 2] = 40; atlas[pixel * 4 + 3] = 255;
+    }
+    float emission[32 * 4] = {1.0f / 3.0f, 0, 0, 1};
+    ov.GenTextures(2, arrays);
+    const unsigned units[] = {0, EMISSION_UNIT};
+    const char *samplers[] = {"uTexture", "uHookEmission"};
+    for (int index = 0; index < 2; index++) {
+        r_glActiveTexture(GL_TEXTURE0 + units[index]); r_glBindTexture(GL_TEXTURE_2D_ARRAY_, arrays[index]);
+        r_glBindSampler(units[index], 0);
+        image3D(GL_TEXTURE_2D_ARRAY_, 0, index ? GL_RGBA32F : GL_RGBA8, index ? 1 : 32, index ? 1 : 32,
+            index ? 32 : 1, 0, GL_RGBA, index ? GL_FLOAT : GL_UNSIGNED_BYTE, index ? (void *)emission : (void *)atlas);
+        ov.TexParameteri(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        ov.TexParameteri(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        ov.TexParameteri(GL_TEXTURE_2D_ARRAY_, GL_TEXTURE_MAX_LEVEL, 0);
+    }
+    for (int enabled = 0; enabled < 2; enabled++) {
+        Str source = {0}; str_cstr(&source, "#version 410 core\n#define AU_SETTINGS\n#define DEFERRED 1\n"
+            "#define USE_SCENE_DATA_OVERRIDE 1\n#define SHADING_FLAT 1\n#define SHADING_FULLBRIGHT 2\n#define SHADING_REFLECTIVE 3\n"
+            "#define EFFECT_WIND 1\n#define EFFECT_WATER 4\n#define EFFECT_WATERENVIRONMENTCOLOR 5\n"
+            "#define EFFECT_WATERENVIRONMENTTRANSITION 6\n#define AU_NATIVE_EMISSION_STRENGTH 1.0\n#define main auTerrainMain\n");
+        str_cstr(&source, enabled ? "#define AU_NATIVE_EMISSION 1\n" : "#define AU_NATIVE_EMISSION 0\n");
+        char *generated = read_file("programs/MapChunkFS.glsl", NULL); assert(generated);
+        expand(&source, generated, 0); free(generated);
+        str_cstr(&source, "\n#undef main\nuniform int testOutput;void main(){auTerrainMain();"
+            "if(testOutput==1)outColor0=vec4(outColor2,1);"
+            "if(testOutput==2)outColor0=vec4(AU_NativeEmission(ivec3(0),vec3(1)),1);}");
+        GLuint program = test_program_stages(vertex, source.p); free(source.p);
+        r_glUseProgram(program); ov.BindVertexArray(ov.vao); ov.Viewport(0, 0, 4, 4);
+        for (int index = 0; index < 2; index++) r_glUniform1i(r_glGetUniformLocation(program, samplers[index]), units[index]);
+        for (int ready = 0; ready < 2; ready++)
+        for (int shading = 1; shading <= 2; shading++)
+        for (int target = 0; target < 3; target++) {
+            r_glUniform1i(r_glGetUniformLocation(program, "uHookEmissionReady"), ready);
+            r_glUniform1i(r_glGetUniformLocation(program, "testShading"), shading);
+            r_glUniform1i(r_glGetUniformLocation(program, "testOutput"), target);
+            r_glDrawArrays(OV_GL_TRIANGLE_STRIP, 0, 4);
+            float actual[4]; readPixels(2, 2, 1, 1, GL_RGBA, GL_FLOAT, actual);
+            const float expected[3] = {target == 0 ? 54.0f / 255 : target == 1 ? .15f : enabled && ready ? 1.0f / 3 : 0,
+                target == 0 ? 41.0f / 255 : target == 1 ? .2f : 0,
+                target == 0 ? 40.0f / 255 : target == 1 ? .25f : 0};
+            for (int channel = 0; channel < 3; channel++) assert(fabsf(actual[channel] - expected[channel]) < .00001f);
+            if (target == 0) assert((int)roundf(actual[3] * 255) == (shading == 2 ? 130 : 129));
+        }
+        r_glDeleteProgram(program);
+    }
+    PFN_glDeleteTextures deleteTextures = (void *)GetProcAddress(g_real, "glDeleteTextures");
+    deleteTextures(2, arrays); deleteTextures(1, &output); assert(!getError());
+    puts("PASS: native red emission preserves terrain albedo, surface lighting and genuine full-bright flags");
+}
+
 static void foliage_shadow_test(void)
 {
     const char *vertex = "#version 410 core\nout vec2 fragTexCoords;flat out float fragAtlasPage;flat out uint auSSSShadowSeed;flat out int auSSSShadowPass;"
@@ -1322,6 +1390,7 @@ int wmain(int count, wchar_t **arguments)
     subsurface_depth_test();
     native_light_colour_test();
     tonemap_domain_test();
+    native_emission_surface_test();
     foliage_shadow_test();
     puts("PASS: Original moving-camera denoising and geometry/light rejection");
     return 0;
