@@ -138,7 +138,7 @@ static void linux_init(void)
 
 static void linux_input(void *window)
 {
-    static const int keys[] = {74, 82, 81, 80, 79, 41, 75, 78, 72};
+    const int keys[] = {menu_hotkey_scan(g_menuHotkey), 82, 81, 80, 79, 41, 75, 78, 72};
     static bool down[9];
     static double next[9];
     double t = now_sec();
@@ -161,6 +161,19 @@ static void linux_input(void *window)
     int count = 0;
     const bool *state = linux_sdl_keys(&count);
     bool focus = linux_sdl_focus() == window;
+    if (g_menuBinding) {
+        unsigned char pressed[256] = {0};
+        for (int key = 8; state && key < 256; key++) {
+            int scan = menu_hotkey_scan(key);
+            pressed[key] = scan > 0 && scan < count && state[scan];
+        }
+        menu_bind_poll(pressed, focus);
+        for (int index = 0; index < 9; index++) {
+            int scan = index == 0 ? menu_hotkey_scan(g_menuHotkey) : keys[index];
+            down[index] = focus && state && scan < count && state[scan];
+        }
+        return;
+    }
     if (focus && state && g_menuOpen && (g_menuPresetNaming || (g_menuMouseMode && g_menuSearchFocus))) {
         static bool textDown[58];
         bool shifted = count > 229 && (state[225] || state[229]);

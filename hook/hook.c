@@ -2726,9 +2726,12 @@ static double settings_num(const char *txt, const char *name, double def)
     return def;
 }
 
+#include "menu_hotkey.h"
+
 static void settings_load(void)
 {
     char *txt = read_file("include\\AU_Settings.glsl", NULL);
+    menu_hotkey_set(settings_num(txt, "AU_MENU_KEY", 36));
     g_setDlssJitter = settings_num(txt, "AU_DLSS_JITTER", 1);
     g_setJitterSX = settings_num(txt, "AU_DLSS_JITTER_SX", 1);
     g_setJitterSY = settings_num(txt, "AU_DLSS_JITTER_SY", 1);
@@ -2878,7 +2881,7 @@ static DWORD WINAPI watcher_thread(LPVOID arg)
         if (r == WAIT_TIMEOUT) {
             // Pause key toggles the shaderpack on/off (only while the game has focus).
             int down = (GetAsyncKeyState(VK_PAUSE) & 0x8000) != 0;
-            if (down && !pauseDown && is_game_foreground()) {
+            if (down && !pauseDown && is_game_foreground() && !g_menuBinding) {
                 g_toggleOff = !g_toggleOff;
                 logf_("shaderpack %s (Pause key)", g_toggleOff ? "OFF" : "ON");
                 InterlockedExchange(&g_reloadRequested, 1);
@@ -2908,7 +2911,7 @@ static DWORD WINAPI watcher_thread(LPVOID arg)
 #define MENU_MAX 256
 #define MENU_TAB_MAX 24
 #define MENU_SETTINGS "include\\AU_Settings.glsl"
-enum { MO_HEADER, MO_BOOL, MO_ENUM, MO_RANGE, MO_PACK, MO_INFO, MO_ACTION, MO_INTERNAL, MO_SECTION, MO_PROFILE };
+enum { MO_HEADER, MO_BOOL, MO_ENUM, MO_RANGE, MO_PACK, MO_INFO, MO_ACTION, MO_INTERNAL, MO_SECTION, MO_PROFILE, MO_KEY };
 #define MENU_SELECTABLE(m) ((m)->kind != MO_HEADER && (m)->kind != MO_INFO && (m)->kind != MO_INTERNAL && (m)->kind != MO_SECTION)
 typedef struct {
     int kind;
@@ -2961,6 +2964,9 @@ static const int g_menuKeys[] = {VK_HOME, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_
 static int g_menuDirty = 1;
 static double g_menuWriteAt;
 static wchar_t g_menuStatus[96];
+static int g_menuBindReady;
+static volatile LONG g_menuBindEvent;
+static unsigned char g_menuBindDown[256];
 static CRITICAL_SECTION g_menuLock;
 #ifdef _WIN32
 static HWND g_gameHwnd;
@@ -3086,6 +3092,7 @@ static char *find_define_value(char *txt, const char *name, char **tokEnd)
 //   DEFINE "!PACK" is the shaderpack on/off switch (same as the Pause key).
 static void menu_load(void)
 {
+    g_menuBinding = 0;
     menu_profile_disarm_delete();
     char *opt = read_file("options.txt", NULL);
     char *set = read_file(MENU_SETTINGS, NULL);
@@ -3146,7 +3153,9 @@ static void menu_load(void)
             g_nMo++;
             continue;
         }
-        if (!strcmp(kind, "internal")) {
+        if (!strcmp(kind, "key")) {
+            m->kind = MO_KEY;
+        } else if (!strcmp(kind, "internal")) {
             m->kind = MO_INTERNAL;
         } else if (!strncmp(kind, "bool", 4)) {
             m->kind = MO_BOOL;
@@ -3196,6 +3205,11 @@ static void menu_load(void)
             if (strchr(tok, '.')) m->isFloat = 1;
             if (decimals_of(tok) > m->decimals) m->decimals = decimals_of(tok);
         }
+        if (!strcmp(m->define, "AU_MENU_KEY")) {
+            menu_hotkey_set(m->present ? m->value : 36);
+            m->value = g_menuHotkey;
+            m->present = 1;
+        }
         if (nf < 4 || !*f[3]) m->def = m->value;
         g_nMo++;
     }
@@ -3214,6 +3228,12 @@ static void format_value(const MenuOpt *m, double v, char *out, size_t cap)
 
 static void display_value(const MenuOpt *m, wchar_t *out, int cap)
 {
+    if (m->kind == MO_KEY) {
+        if (g_menuBinding && g_moSel >= 0 && m == &g_mo[g_moSel]) _snwprintf(out, cap, L"Press a key...");
+        else menu_hotkey_name((int)m->value, out, cap);
+        out[cap - 1] = 0;
+        return;
+    }
     if (m->kind == MO_ACTION) {
         if (!strcmp(m->define, "!PROFILE_APPLY")) {
             _snwprintf(out, cap, L"Apply profile");
@@ -3296,7 +3316,19 @@ static void menu_save(void)
             || m->kind == MO_SECTION || m->kind == MO_PROFILE || !m->present) continue;
         char *e = NULL;
         char *v = find_define_value(set, m->define, &e);
-        if (!v) continue;
+        if (!v) {
+            if (!strcmp(m->define, "AU_MENU_KEY")) {
+                char line[64];
+                int length = snprintf(line, sizeof line, "\n#define AU_MENU_KEY %d\n", (int)m->value);
+                char *updated = realloc(set, n + length + 1);
+                if (!updated) { free(set); return; }
+                set = updated;
+                memcpy(set + n, line, length + 1);
+                n += length;
+                changed++;
+            }
+            continue;
+        }
         // Same number already there (maybe written differently, "3.0" vs "3.00"): leave it.
         char tok[32];
         size_t tl = (size_t)(e - v) < 31 ? (size_t)(e - v) : 31;
@@ -3319,7 +3351,57 @@ static void menu_save(void)
         write_file(MENU_SETTINGS, set, n);
         logf_("menu: wrote %d setting(s)", changed);
     }
+    menu_hotkey_set(settings_num(set, "AU_MENU_KEY", 36));
     free(set);
+}
+
+static void menu_bind_key_event(int key)
+{
+    int scan = menu_hotkey_scan(key);
+    if (g_menuBinding && (g_menuBindReady || key == 0x1b) && scan > 0 && scan < 224)
+        InterlockedExchange(&g_menuBindEvent, key);
+}
+
+static int menu_bind_poll(const unsigned char *pressed, int focused)
+{
+    if (!g_menuBinding) return 0;
+    int eventKey = (int)InterlockedExchange(&g_menuBindEvent, 0);
+    if (!focused || !g_menuOpen || pressed[0x1b] || eventKey == 0x1b) {
+        g_menuBinding = 0;
+        _snwprintf(g_menuStatus, 96, L"Key binding cancelled");
+        g_menuDirty = 1;
+        return 1;
+    }
+    if (!g_menuBindReady) {
+        for (int key = 8; key < 256; key++) if (pressed[key]) return 1;
+        memset(g_menuBindDown, 0, sizeof g_menuBindDown);
+        g_menuBindReady = 1;
+        _snwprintf(g_menuStatus, 96, L"Press a key; Escape cancels");
+        g_menuDirty = 1;
+        return 1;
+    }
+    for (int key = 8; key < 256; key++) {
+        int edge = (pressed[key] && !g_menuBindDown[key]) || eventKey == key;
+        g_menuBindDown[key] = pressed[key];
+        if (!edge) continue;
+        if (menu_hotkey_valid(key)) {
+            for (int index = 0; index < g_nMo; index++)
+                if (g_mo[index].kind == MO_KEY) g_mo[index].value = key;
+            g_menuBinding = 0;
+            g_menuWriteAt = 0;
+            menu_save();
+            wchar_t name[32]; menu_hotkey_name(key, name, 32);
+            _snwprintf(g_menuStatus, 96, L"Menu hotkey saved: %ls", name);
+        } else {
+            if (key == 0x13 || (key >= 0x21 && key <= 0x22) || (key >= 0x25 && key <= 0x28))
+                _snwprintf(g_menuStatus, 96, L"That key is reserved. Choose another; Escape cancels");
+            g_menuDirty = 1;
+            continue;
+        }
+        g_menuDirty = 1;
+        break;
+    }
+    return 1;
 }
 
 static void menu_reset_all(void)
@@ -3385,6 +3467,18 @@ static void menu_change(int dir, int reset)
         return;
     }
     if (!m->present || !MENU_SELECTABLE(m) || m->kind == MO_ACTION) return;
+    if (m->kind == MO_KEY && !reset) {
+        if (dir > 0) {
+            g_menuBinding = 1;
+            g_menuBindReady = 0;
+            InterlockedExchange(&g_menuBindEvent, 0);
+            g_menuSearchFocus = 0;
+            g_menuDragging = -1;
+            _snwprintf(g_menuStatus, 96, L"Release held keys, then press your new menu key");
+            g_menuDirty = 1;
+        }
+        return;
+    }
     double v = m->value;
     if (reset) {
         v = m->def;
@@ -3404,7 +3498,7 @@ static void menu_change(int dir, int reset)
     }
     if (fabs(v - m->value) < 1e-9) return;
     m->value = v;
-    g_menuProfileChoice = -1;
+    if (strcmp(m->define, "AU_MENU_KEY")) g_menuProfileChoice = -1;
     if (!strcmp(m->define, "AU_PATH_TRACING") && v > 0.5) menu_profile_set("AU_PRESET", 2);
     if (m->kind == MO_PACK) {
         g_toggleOff = v < 0.5;
@@ -3419,6 +3513,7 @@ static void menu_change(int dir, int reset)
 
 static void menu_scroll(int direction)
 {
+    if (g_menuBinding) return;
     int maximum = g_menuVisibleCount - g_menuLayout.rows;
     if (maximum < 0) maximum = 0;
     g_moTop += direction;
@@ -3475,6 +3570,7 @@ static void menu_pointer(int clicked)
         g_menuDragging = -1;
         return;
     }
+    if (g_menuBinding) return;
     if (pointerX < layout->rail && pointerY >= layout->title) {
         int tabHeight = (layout->height - layout->title - layout->footer - layout->pad) / (g_menuTabCount > 0 ? g_menuTabCount : 1);
         if (tabHeight < 1) tabHeight = 1;
@@ -3543,7 +3639,7 @@ static void menu_pointer(int clicked)
 #ifdef _WIN32
 static int menu_edit_mode(int foreground, SHORT altState)
 {
-    return g_menuOpen && foreground && (altState & 0x8000) != 0;
+    return g_menuOpen && foreground && (g_menuBinding || (altState & 0x8000) != 0);
 }
 
 #include "menu_sdl.h"
@@ -3590,14 +3686,17 @@ static void render_ui_end(RenderUIState state)
 #ifdef _WIN32
 static LRESULT CALLBACK menu_wndproc(HWND window, UINT message, WPARAM parameter, LPARAM data)
 {
-    if ((message == WM_KEYDOWN || message == WM_SYSKEYDOWN) && !(data & ((LPARAM)1 << 30)))
+    if (g_menuBinding && (message == WM_KEYDOWN || message == WM_SYSKEYDOWN) && !(data & ((LPARAM)1 << 30)))
+        menu_bind_key_event((int)parameter);
+    if (!g_menuBinding && (message == WM_KEYDOWN || message == WM_SYSKEYDOWN) && !(data & ((LPARAM)1 << 30)))
         for (int index = 0; index < (int)(sizeof(g_menuKeys) / sizeof(g_menuKeys[0])); index++)
-            if (parameter == (WPARAM)g_menuKeys[index] && (menu_shortcut_key((int)parameter) || g_menuOpen))
+            if (parameter == (WPARAM)(index == 0 ? g_menuHotkey : g_menuKeys[index]) && (menu_shortcut_key((int)parameter) || g_menuOpen))
                 InterlockedOr(&g_menuKeyEdges, (LONG)1 << index);
     if (message == WM_SYSKEYDOWN && parameter == VK_F4) {
         g_menuOpen = 0;
         g_menuDragging = -1;
     }
+    if (g_menuBinding && (message == WM_CHAR || message == WM_SYSCHAR)) return 0;
     if (g_menuOpen && message == WM_SYSCOMMAND && (parameter & 0xfff0) == SC_KEYMENU) return 0;
     if (g_menuSDLReady && (message == WM_INPUT || message == WM_MOUSEMOVE || message == WM_MOUSEWHEEL
         || message == WM_LBUTTONDOWN || message == WM_LBUTTONUP || message == WM_RBUTTONDOWN
@@ -3681,8 +3780,9 @@ static LRESULT CALLBACK menu_wndproc(HWND window, UINT message, WPARAM parameter
 static DWORD WINAPI menu_input_thread(LPVOID argument)
 {
     (void)argument;
-    const int *keys = g_menuKeys;
     enum { KEY_COUNT = sizeof(g_menuKeys) / sizeof(g_menuKeys[0]) };
+    int keys[KEY_COUNT];
+    memcpy(keys, g_menuKeys, sizeof keys);
     int down[KEY_COUNT] = {0};
     double next[KEY_COUNT] = {0};
     for (;;) {
@@ -3705,6 +3805,12 @@ static DWORD WINAPI menu_input_thread(LPVOID argument)
         int foreground = is_game_foreground();
         LONG edges = InterlockedExchange(&g_menuKeyEdges, 0);
         EnterCriticalSection(&g_menuLock);
+        int binding = g_menuBinding;
+        if (binding) {
+            unsigned char pressed[256] = {0};
+            for (int key = 8; key < 256; key++) pressed[key] = foreground && (GetAsyncKeyState(key) & 0x8000) != 0;
+            menu_bind_poll(pressed, foreground);
+        }
         int mouseMode = menu_edit_mode(foreground, GetAsyncKeyState(VK_MENU));
         if (mouseMode != g_menuMouseMode) {
             g_menuMouseMode = mouseMode;
@@ -3714,6 +3820,12 @@ static DWORD WINAPI menu_input_thread(LPVOID argument)
             g_menuDirty = 1;
         }
         LeaveCriticalSection(&g_menuLock);
+        keys[0] = g_menuHotkey;
+        if (binding) {
+            for (int index = 0; index < KEY_COUNT; index++) down[index] = foreground && (GetAsyncKeyState(keys[index]) & 0x8000) != 0;
+            InterlockedExchange(&g_menuKeyEdges, 0);
+            continue;
+        }
         for (int index = 0; index < KEY_COUNT; index++) {
             int pressed = foreground && (GetAsyncKeyState(keys[index]) & 0x8000) != 0;
             int fire = foreground && (edges & ((LONG)1 << index)), repeat = 0;
@@ -3725,7 +3837,7 @@ static DWORD WINAPI menu_input_thread(LPVOID argument)
             down[index] = pressed;
             if (!fire) continue;
             EnterCriticalSection(&g_menuLock);
-            if (keys[index] == VK_HOME) {
+            if (index == 0 && !g_menuPresetNaming && !g_menuSearchFocus) {
                 g_menuOpen = !g_menuOpen;
                 if (g_menuOpen) {
                     menu_load();
@@ -3996,14 +4108,14 @@ static void menu_render(int screenWidth, int screenHeight)
         wchar_t value[64];
         display_value(option, value, 64);
         COLORREF valueColor = modified ? RGB(156, 229, 211) : RGB(246, 209, 105);
-        if (option->kind == MO_ACTION) {
+        if (option->kind == MO_ACTION || option->kind == MO_KEY) {
             int buttonLeft = contentLeft + pad, buttonRight = contentRight - pad;
             int buttonTop = top + layout->row / 2, buttonBottom = top + layout->row - (int)(8 * scale);
             int confirming = !strcmp(option->define, "!PROFILE_DELETE") ? menu_profile_delete_armed()
                            : !strcmp(option->define, "!RESET_ALL") && now_sec() < g_menuResetUntil;
             menu_round(dc, buttonLeft, buttonTop, buttonRight, buttonBottom, (int)(8 * scale),
                        confirming ? RGB(126, 52, 44) : RGB(83, 69, 39));
-            menu_text(dc, value, buttonLeft, buttonTop, buttonRight, buttonBottom, g_fSmall, RGB(246, 209, 105), DT_CENTER);
+            menu_text(dc, value, buttonLeft, buttonTop, buttonRight, buttonBottom, g_fSmall, valueColor, DT_CENTER);
         } else if (option->present && (option->kind == MO_BOOL || option->kind == MO_PACK)) {
             int toggleWidth = (int)(58 * scale), toggleHeight = (int)(24 * scale);
             int toggleLeft = contentRight - pad - toggleWidth, toggleTop = top + (layout->row - toggleHeight) / 2;
@@ -4369,7 +4481,7 @@ static void menu_frame(HDC hdc)
             g_gameHwnd = w;
             g_prevWndProc = (WNDPROC)GetWindowLongPtrW(w, GWLP_WNDPROC);
             SetWindowLongPtrW(w, GWLP_WNDPROC, (LONG_PTR)menu_wndproc);
-            logf_("menu: game window %p, Home opens the options", (void *)w);
+            logf_("menu: game window %p, menu hotkey 0x%x", (void *)w, (unsigned)g_menuHotkey);
         }
     }
     if (!g_menuOpen || !g_gameHwnd) return;

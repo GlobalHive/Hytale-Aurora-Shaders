@@ -5,6 +5,7 @@
 
 @ General
 !TAA_INFO | REMINDER/WARNING: | info | 0 | REMINDER/WARNING: Disable TAA in Hytale Graphics settings. It can cause shaking and ghosting. Aurora TAA and NVIDIA DLSS settings are separate.
+AU_MENU_KEY | Menu hotkey | key | 36 | Click or press Right, release held keys, then press a key. Escape cancels. Arrows, PgUp/PgDn and Pause are reserved. Saved across restarts; profiles keep it. Reset restores Home.
 !PACK | Shaders | bool
 AU_PRESET | Profile family | internal | 2
 AU_SCREEN_BRIGHTNESS | Brightness | range 0.0 2.0 0.05 | 1.0

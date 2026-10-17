@@ -309,5 +309,5 @@ try {
 }
 Write-Host "Aurora Shaders clean-installed ($packMode). Game shaders regenerated; DLL checksum verified."
 Write-Host 'Disable TAA in Hytale graphics settings.'
-Write-Host 'Home opens the panel. Arrow keys and PgUp/PgDn edit; hold Alt for mouse editing.'
+Write-Host 'Your menu hotkey (Home by default) opens the panel. Rebind it under General. Arrow keys and PgUp/PgDn edit; hold Alt for mouse editing.'
 if ($packMode -eq 'Copy') { Write-Host "Edit shaders and settings in $link; the original package is not linked on this drive." }

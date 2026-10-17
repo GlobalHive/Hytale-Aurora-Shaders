@@ -106,7 +106,7 @@ def main():
                 import shlex
                 print(shlex.join(argv))
                 return
-            print("Starting Hytale with Aurora. Home opens options; Pause toggles shaders.", flush=True)
+            print("Starting Hytale with Aurora. Your menu hotkey (Home by default) opens options; Pause toggles shaders.", flush=True)
             os.execvpe(argv[0], argv, env)
         client, backend = detect(args.client_dir, args.backend)
         executable = client / "HytaleClient"
@@ -130,7 +130,7 @@ def main():
         pending.write_text(json.dumps(config, indent=2) + "\n")
         pending.replace(CONFIG)
         print(f"Aurora's automatic hook installed for {backend}: {client}\n"
-              "Start Hytale normally. Home opens the options; launch.sh is optional.\n"
+              "Start Hytale normally. Your menu hotkey (Home by default) opens options; rebind it under General. launch.sh is optional.\n"
               f"Live shader settings: {installed_pack / 'include/AU_Settings.glsl'}\n"
               "Run ./install.sh again after game updates. Use ./install.sh --uninstall to restore vanilla.")
     except (OSError, ValueError, KeyError, ImportError, subprocess.CalledProcessError) as error:

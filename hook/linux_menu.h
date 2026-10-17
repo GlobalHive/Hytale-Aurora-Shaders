@@ -44,7 +44,7 @@ static void linux_menu_sync(void)
     int count = 0;
     const bool *keys = lm_keys(&count);
     bool capture = g_menuOpen && lm_window && lm_focus() == lm_window && keys
-        && ((count > 224 && keys[224]) || (count > 228 && keys[228])); // Left / right Ctrl.
+        && (g_menuBinding || (count > 224 && keys[224]) || (count > 228 && keys[228]));
     if (lm_captured_window && (!capture || lm_captured_window != lm_window)) {
         void *window = lm_captured_window;
         lm_captured_window = NULL;
@@ -103,6 +103,13 @@ static bool linux_menu_filter(LinuxMenuEvent *event)
     // Leave events for other SDL windows untouched.
     if (!lm_window || (event->type >= 0x300 && event->type <= 0x403
         && linux_menu_u32(event, 16) != lm_id(lm_window))) return true;
+    if (g_menuBinding && event->type == 0x300) {
+        int scan = (int)linux_menu_u32(event, 24);
+        for (int key = 8; key < 256; key++)
+            if (menu_hotkey_scan(key) == scan) { menu_bind_key_event(key); break; }
+    }
+    if (event->type == 0x300 && !g_menuPresetNaming && !g_menuSearchFocus
+        && linux_menu_u32(event, 24) == (uint32_t)menu_hotkey_scan(g_menuHotkey)) return false;
     if (event->type >= 0x400 && event->type <= 0x403) {
         uint32_t button = (event->type == 0x401 || event->type == 0x402) && event->bytes[24] >= 1
             && event->bytes[24] <= 32 ? 1u << (event->bytes[24] - 1) : 0;
@@ -166,7 +173,16 @@ __declspec(dllexport) const bool *SDL_GetKeyboardState(int *count)
     int size = 0;
     const bool *keys = lm_keys ? lm_keys(&size) : NULL;
     if (count) *count = size;
-    if (lm_captured_window && size <= (int)sizeof lm_empty_keys) return lm_empty_keys;
+    if (keys && size <= (int)sizeof lm_empty_keys) {
+        int scan = menu_hotkey_scan(g_menuHotkey);
+        if (!lm_captured_window && (scan >= size || !keys[scan] || g_menuPresetNaming || g_menuSearchFocus)) return keys;
+        if (lm_captured_window) memset(lm_empty_keys, 0, sizeof lm_empty_keys);
+        else {
+            memcpy(lm_empty_keys, keys, size);
+            lm_empty_keys[scan] = false;
+        }
+        return lm_empty_keys;
+    }
     return keys;
 }
 

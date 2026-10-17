@@ -39,8 +39,9 @@ static int menu_sdl_capture(void)
 
 static int menu_shortcut_key(int key)
 {
-    if (!g_menuOpen) return key == VK_HOME;
-    return key == VK_HOME || key == VK_ESCAPE || key == VK_UP || key == VK_DOWN
+    int toggle = key == g_menuHotkey && !g_menuPresetNaming && !g_menuSearchFocus;
+    if (!g_menuOpen) return toggle;
+    return toggle || key == VK_ESCAPE || key == VK_UP || key == VK_DOWN
         || key == VK_LEFT || key == VK_RIGHT || key == VK_PRIOR || key == VK_NEXT;
 }
 
@@ -100,7 +101,8 @@ static int menu_sdl_filter(MenuSDLEvent *event, int capture)
     render_scale_event(event);
     if (event->type == 0x300) {
         uint32_t scan = menu_sdl_u32(event, 24);
-        if (scan == 74 || (g_menuOpen && ((scan >= 79 && scan <= 82) || scan == 75 || scan == 78
+        if ((scan == (uint32_t)menu_hotkey_scan(g_menuHotkey) && !g_menuPresetNaming && !g_menuSearchFocus)
+            || (g_menuOpen && ((scan >= 79 && scan <= 82) || scan == 75 || scan == 78
             || scan == 41))) return 0;
         if (capture) return 0;
     }
@@ -157,9 +159,14 @@ static const bool *menu_sdl_keyboard(int *count)
     int size = 0;
     const bool *state = menu_sdl_keyboard_real(&size);
     if (count) *count = size;
-    if (!menu_sdl_capture()) return state;
-    if (size > (int)sizeof(g_menuSDLKeys)) return state;
-    memset(g_menuSDLKeys, 0, sizeof(g_menuSDLKeys));
+    if (!state || size > (int)sizeof(g_menuSDLKeys)) return state;
+    int capture = menu_sdl_capture(), scan = menu_hotkey_scan(g_menuHotkey);
+    if (!capture && (scan >= size || !state[scan] || g_menuPresetNaming || g_menuSearchFocus)) return state;
+    if (capture) memset(g_menuSDLKeys, 0, sizeof(g_menuSDLKeys));
+    else {
+        memcpy(g_menuSDLKeys, state, size);
+        g_menuSDLKeys[scan] = false;
+    }
     return g_menuSDLKeys;
 }
 

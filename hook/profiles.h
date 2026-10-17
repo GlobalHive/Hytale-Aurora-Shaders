@@ -90,7 +90,7 @@ static void menu_profile_builtin(int selected)
     int rtx = selected < 6;
     for (int index = 0; index < g_nMo; index++) {
         MenuOpt *entry = &g_mo[index];
-        if (entry->present && !strncmp(entry->define, "AU_", 3)) entry->value = entry->def;
+        if (entry->present && !strncmp(entry->define, "AU_", 3) && strcmp(entry->define, "AU_MENU_KEY")) entry->value = entry->def;
     }
     menu_profile_set("AU_PRESET", rtx ? 2 : 1);
     menu_profile_set("AU_DLSS", rtx && AU_HAS_DLSS);
@@ -149,7 +149,7 @@ static void menu_profile_apply(void)
     if (!saved) menu_profile_builtin(selected);
     for (int index = 0; saved && index < g_nMo; index++) {
         MenuOpt *option = &g_mo[index];
-        if (!option->present || strncmp(option->define, "AU_", 3)) continue;
+        if (!option->present || strncmp(option->define, "AU_", 3) || !strcmp(option->define, "AU_MENU_KEY")) continue;
         char *end = NULL;
         char *token = find_define_value(saved, option->define, &end);
         if (!token) {

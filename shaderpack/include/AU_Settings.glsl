@@ -11,6 +11,7 @@
 #define AU_PRESET 2
 
 // ---- General -------------------------------------------------------------------------
+#define AU_MENU_KEY 36
 #define AU_SUN_MAX_ELEVATION 0.92   // sin(max sun elevation) of Hytale's sun path, maps time-of-day factors
 #define AU_SCREEN_BRIGHTNESS 1.0    // Minecraft "brightness" slider equivalent (0 = moody, 1 = bright)
 #define AU_TWILIGHT_SHIFT 0.10      // keeps daylight up longer to fit Hytale's long dusk

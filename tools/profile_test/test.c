@@ -20,6 +20,137 @@ static void select_profile(int selected)
     assert(g_menuProfileChoice == selected);
 }
 
+static bool hotkeyKeyboard[512];
+
+static const bool *hotkey_keyboard(int *count)
+{
+    *count = 512;
+    return hotkeyKeyboard;
+}
+
+static void menu_hotkey_test(void)
+{
+    char *original = read_file(MENU_SETTINGS, NULL);
+    assert(original);
+    const double invalid[] = {-1, 0, 27, 33, 37, 112.5, 256, 1e20, NAN, INFINITY};
+    for (int index = 0; index < (int)(sizeof invalid / sizeof invalid[0]); index++) {
+        menu_hotkey_set(invalid[index]);
+        assert(g_menuHotkey == 36);
+    }
+    char *start = strstr(original, "#define AU_MENU_KEY ");
+    if (start) {
+        char *end = strchr(start, '\n'); assert(end);
+        Str legacy = {0}; str_add(&legacy, original, start - original); str_cstr(&legacy, end + 1);
+        write_file(MENU_SETTINGS, legacy.p, legacy.n); free(legacy.p);
+    }
+    menu_load();
+    int optionIndex = -1;
+    for (int index = 0; index < g_nMo; index++)
+        if (!strcmp(g_mo[index].define, "AU_MENU_KEY")) optionIndex = index;
+    assert(optionIndex >= 0);
+    MenuOpt *option = &g_mo[optionIndex];
+    const int keyValues[] = {36, 45, 35, 46, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 192, 220};
+    const int scans[] = {74, 73, 77, 76, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 53, 49};
+    assert(option->present && option->kind == MO_KEY && option->def == 36 && option->value == 36 && option->nEnum == 0);
+    for (int index = 0; index < 18; index++) assert(menu_hotkey_scan(keyValues[index]) == scans[index]);
+    for (int key = 8; key < 256; key++) if (menu_hotkey_valid(key)) {
+        wchar_t name[32]; menu_hotkey_name(key, name, 32);
+        assert(*name && menu_hotkey_scan(key) > 0 && menu_hotkey_scan(key) < 224);
+    }
+    assert(menu_hotkey_scan('Q') == 20 && menu_hotkey_scan('5') == 34
+        && menu_hotkey_scan(0x60) == 98 && menu_hotkey_scan(0x87) == 115);
+    g_moSel = optionIndex; g_menuProfileChoice = 6;
+    g_menuOpen = 1;
+    menu_change(1, 0); assert(g_menuBinding);
+    wchar_t value[64]; display_value(option, value, 64); assert(!wcscmp(value, L"Press a key..."));
+    unsigned char pressed[256] = {0}; pressed[VK_RIGHT] = 1;
+    assert(menu_bind_poll(pressed, 1) && !g_menuBindReady);
+    pressed[VK_RIGHT] = 0; pressed[VK_MENU] = 1;
+    assert(menu_bind_poll(pressed, 1) && !g_menuBindReady);
+    memset(pressed, 0, sizeof pressed);
+    assert(menu_bind_poll(pressed, 1) && g_menuBindReady);
+    pressed[VK_UP] = 1;
+    assert(menu_bind_poll(pressed, 1) && g_menuBinding && option->value == 36);
+    pressed[VK_UP] = 0; menu_bind_poll(pressed, 1);
+    pressed[119] = 1;
+    assert(menu_bind_poll(pressed, 1) && !g_menuBinding && g_menuOpen);
+    assert(option->value == 119 && g_menuProfileChoice == 6);
+    menu_save(); expect_setting("AU_MENU_KEY", 119); assert(g_menuHotkey == 119);
+    display_value(option, value, 64); assert(!wcscmp(value, L"F8"));
+    const int captured[] = {'Q', '5', 0x60, 0x87, 0xdb, 0xe2, 119};
+    for (int index = 0; index < 7; index++) {
+        menu_change(1, 0); memset(pressed, 0, sizeof pressed); menu_bind_poll(pressed, 1);
+        pressed[captured[index]] = 1; menu_bind_poll(pressed, 1);
+        assert(!g_menuBinding && g_menuOpen && g_menuHotkey == captured[index]);
+        expect_setting("AU_MENU_KEY", captured[index]);
+    }
+    char *beforeCancel = read_file(MENU_SETTINGS, NULL); assert(beforeCancel);
+    menu_change(1, 0); memset(pressed, 0, sizeof pressed); menu_bind_poll(pressed, 1);
+    pressed[VK_ESCAPE] = 1; menu_bind_poll(pressed, 1);
+    assert(!g_menuBinding && g_menuOpen && g_menuHotkey == 119);
+    char *afterCancel = read_file(MENU_SETTINGS, NULL); assert(afterCancel && !strcmp(beforeCancel, afterCancel));
+    free(beforeCancel); free(afterCancel);
+    menu_change(1, 0); memset(pressed, 0, sizeof pressed); menu_bind_poll(pressed, 1);
+    menu_bind_key_event(VK_SHIFT); assert(g_menuBindEvent == 0);
+    menu_bind_key_event('Q'); menu_bind_poll(pressed, 1);
+    assert(!g_menuBinding && g_menuOpen && g_menuHotkey == 'Q');
+    menu_change(1, 0); menu_bind_key_event(VK_ESCAPE); menu_bind_poll(pressed, 1);
+    assert(!g_menuBinding && g_menuHotkey == 'Q');
+    menu_change(1, 0); menu_bind_poll(pressed, 1); menu_bind_key_event(119); menu_bind_poll(pressed, 1);
+    assert(!g_menuBinding && g_menuHotkey == 119);
+    menu_change(1, 0); menu_bind_poll(pressed, 0); assert(!g_menuBinding);
+    menu_change(1, 0); g_menuOpen = 0; menu_bind_poll(pressed, 1); assert(!g_menuBinding);
+    g_menuOpen = 1;
+    menu_load(); assert(g_menuHotkey == 119);
+    select_profile(0); expect_setting("AU_MENU_KEY", 119);
+    select_profile(AU_DEFAULT_PROFILE); expect_setting("AU_MENU_KEY", 119);
+    const char *custom = "// Aurora preset: Hotkey isolation\n#define AU_MENU_KEY 36\n";
+    write_file("presets/preset-00.glsl", custom, strlen(custom));
+    menu_load(); select_profile(12); expect_setting("AU_MENU_KEY", 119);
+    wchar_t path[MAX_PATH]; pack_path(path, "presets/preset-00.glsl"); assert(DeleteFileW(path));
+    menu_load();
+    g_menuOpen = 0; g_menuPresetNaming = g_menuSearchFocus = 0;
+    assert(menu_shortcut_key(119) && !menu_shortcut_key(VK_HOME));
+    MenuSDLEvent event = {0}; event.type = 0x300;
+    uint32_t scan = 65; memcpy(event.bytes + 24, &scan, sizeof scan);
+    assert(!menu_sdl_filter(&event, 0));
+    scan = 74; memcpy(event.bytes + 24, &scan, sizeof scan); assert(menu_sdl_filter(&event, 0));
+    g_menuOpen = 1; assert(menu_shortcut_key(VK_UP) && menu_shortcut_key(VK_ESCAPE));
+    g_menuPresetNaming = 1; assert(!menu_shortcut_key(119));
+    scan = 65; memcpy(event.bytes + 24, &scan, sizeof scan); assert(menu_sdl_filter(&event, 0));
+    g_menuPresetNaming = g_menuOpen = 0;
+    menu_sdl_keyboard_real = hotkey_keyboard;
+    hotkeyKeyboard[65] = hotkeyKeyboard[74] = hotkeyKeyboard[26] = true;
+    int count = 0; const bool *keys = menu_sdl_keyboard(&count);
+    assert(count == 512 && !keys[65] && keys[74] && keys[26]);
+    assert(hotkeyKeyboard[65]);
+    hotkeyKeyboard[65] = false;
+    assert(menu_sdl_keyboard(&count) == hotkeyKeyboard);
+    hotkeyKeyboard[65] = true; g_menuPresetNaming = 1;
+    assert(menu_sdl_keyboard(&count) == hotkeyKeyboard);
+    g_menuPresetNaming = 0;
+    g_menuOpen = 1; menu_load();
+    for (int index = 0; index < g_nMo; index++)
+        if (!strcmp(g_mo[index].define, "AU_MENU_KEY")) g_moSel = index;
+    menu_activate_tab(g_mo[g_moSel].tab);
+    for (int index = 0; index < g_nMo; index++)
+        if (!strcmp(g_mo[index].define, "AU_MENU_KEY")) g_moSel = index;
+    g_moTop = menu_visible_index(g_moSel);
+    g_menuLayout = (MenuLayout){0, 0, 500, 700, 12, 140, 50, 100, 38, 10, 100, 152};
+    g_menuPointerX = 220; g_menuPointerY = 126; g_menuLastClick = -1;
+    menu_pointer(1); assert(g_menuBinding);
+    assert(menu_edit_mode(1, 0) && !menu_edit_mode(0, 0));
+    menu_render(1920, 1080); assert(g_ovBits);
+    MenuOpt defaultKey = g_mo[g_moSel]; defaultKey.value = defaultKey.def;
+    display_value(&defaultKey, value, 64); assert(!wcscmp(value, L"Home"));
+    menu_bind_poll(pressed, 0); assert(!g_menuBinding);
+    menu_change(0, 1); menu_save(); expect_setting("AU_MENU_KEY", 36); assert(g_menuHotkey == 36);
+    assert(menu_shortcut_key(VK_HOME) && !menu_shortcut_key(119));
+    write_file(MENU_SETTINGS, original, strlen(original)); free(original);
+    g_menuOpen = 0; g_menuWriteAt = 0; menu_load();
+    puts("PASS: direct hotkey capture, held-key/modifier guards, reserved keys, Escape/focus/close cancellation, persistence, profile isolation, SDL filtering and reset");
+}
+
 static int profile_count(void)
 {
     int count = 0;
@@ -157,6 +288,7 @@ int wmain(int count, wchar_t **arguments)
     wcscpy(g_packDir, arguments[1]);
     g_log = stdout;
     QueryPerformanceFrequency(&g_freq);
+    menu_hotkey_test();
     menu_load();
     assert(profile_count() == 13 && g_nMo < MENU_MAX);
     int firstGeneral = -1;

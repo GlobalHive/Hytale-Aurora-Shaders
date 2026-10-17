@@ -41,7 +41,7 @@ https://github.com/user-attachments/assets/55316aae-4729-4537-8840-b3e5d5a30a6e
 
 # Aurora Shaders for Hytale
 
-[Download 1.4.1](../../releases/tag/v1.4.1) · [Changelog](CHANGELOG.md)
+[Download 1.4.2](../../releases/tag/v1.4.2) · [Changelog](CHANGELOG.md)
 
 A shader pack for Hytale: soft sun shadows, volumetric clouds, light shafts through trees and
 caves, reflective water, ray-traced bounce light and ambient occlusion, rain puddles, rainbows,
@@ -122,6 +122,10 @@ especially the RTX preset; see [Performance](#performance).
 
 Press **Home** to open the compact left-side menu. Mouse controls depend on your platform:
 
+Click **General → Menu hotkey** (or select it and press Right), release held keys, then press
+your preferred key. **Escape** cancels. Arrow keys, PgUp/PgDn and Pause remain reserved.
+The binding is saved across restarts and is not changed by profiles. **Reset selected** restores Home.
+
 | Platform | Mouse editing |
 |---|---|
 | **Windows** | Hold **Alt** to click tabs and switches, drag sliders, and scroll. |
@@ -135,7 +139,7 @@ These keyboard shortcuts do not require Alt or Ctrl:
 
 | Key | |
 |---|---|
-| **Home** | Opens / closes the options menu. |
+| **Menu hotkey** (Home by default) | Opens / closes the options menu. |
 | **Up / Down** | Select an option. |
 | **Left / Right** | Change it; hold to slide numbers. |
 | **PgUp / PgDn** | Switch category tabs. |

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.2
+
+- Added press-to-bind menu hotkeys under General. Bindings save across restarts and stay unchanged by profiles.
+- Fixed Linux menu size, clipping and click alignment with display scaling.
+- Added Ctrl+mouse editing on Linux, with normal input restored when releasing Ctrl, closing the menu or switching windows.
+
 ## 1.4.1
 
 - Fixed native glowing blocks, including Cracked Volcanic Rock, turning black while preserving their coloured light.
