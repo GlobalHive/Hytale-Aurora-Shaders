@@ -56,6 +56,7 @@ static VkCommandPool g_pool;
 static VkCommandBuffer g_cmd[AUD_FRAMES];
 static VkFence g_fence[AUD_FRAMES];
 static int g_frameIdx;
+static int g_bridgeFailed;
 static VkPhysicalDeviceMemoryProperties g_memProps;
 
 // ----------------------------------------------------------------------------------------
@@ -153,6 +154,8 @@ typedef void (GLAPI *PFN_glDeleteTextures)(GLsizei, const GLuint *);
 typedef void (GLAPI *PFN_glBindTexture)(GLenum, GLuint);
 typedef void (GLAPI *PFN_glTexParameteri)(GLenum, GLenum, GLint);
 typedef void (GLAPI *PFN_glGetIntegerv)(GLenum, GLint *);
+typedef void (GLAPI *PFN_glGetTexLevelParameteriv)(GLenum, GLint, GLenum, GLint *);
+typedef GLenum (GLAPI *PFN_glGetError)(void);
 typedef void (GLAPI *PFN_glFlush)(void);
 typedef void (GLAPI *PFN_glFinish)(void);
 
@@ -173,6 +176,8 @@ static struct {
     PFN_glBindTexture BindTexture;
     PFN_glTexParameteri TexParameteri;
     PFN_glGetIntegerv GetIntegerv;
+    PFN_glGetTexLevelParameteriv GetTexLevelParameteriv;
+    PFN_glGetError GetError;
     PFN_glFlush Flush;
     PFN_glFinish Finish;
 } gl;
@@ -200,6 +205,26 @@ static uint32_t find_memory_type(uint32_t bits, VkMemoryPropertyFlags want)
     for (uint32_t i = 0; i < g_memProps.memoryTypeCount; i++)
         if ((bits & (1u << i)) && (g_memProps.memoryTypes[i].propertyFlags & want) == want) return i;
     return UINT32_MAX;
+}
+
+static int gl_ok(const char *stage)
+{
+    int valid = 1;
+    for (int count = 0; count < 16; count++) {
+        GLenum error = gl.GetError();
+        if (!error) break;
+        LOG("dlss: %s: OpenGL error 0x%x", stage, error);
+        valid = 0;
+    }
+    return valid;
+}
+
+static int vk_ok(VkResult result, const char *stage)
+{
+    if (result == VK_SUCCESS) return 1;
+    LOG("dlss: %s: Vulkan error %d", stage, result);
+    g_bridgeFailed = 1;
+    return 0;
 }
 
 static void destroy_image(AudImage *im)
@@ -245,7 +270,7 @@ static int create_image(AudImage *im, unsigned w, unsigned h, VkFormat vkFmt, GL
         LOG("dlss: vkAllocateMemory failed");
         return 0;
     }
-    vkBindImageMemory_(g_dev, im->image, im->memory, 0);
+    if (!vk_ok(vkBindImageMemory_(g_dev, im->image, im->memory, 0), "bind shared image memory")) return 0;
 
     VkImageViewCreateInfo vci = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     vci.image = im->image;
@@ -262,11 +287,13 @@ static int create_image(AudImage *im, unsigned w, unsigned h, VkFormat vkFmt, GL
     HANDLE handle = NULL;
     if (vkGetMemoryWin32HandleKHR_(g_dev, &hi, &handle) != VK_SUCCESS || !handle) { LOG("dlss: memory export failed"); return 0; }
 
+    gl_ok("before shared image import");
     gl.CreateMemoryObjects(1, &im->glMem);
     GLint dedicated = 1;
     gl.MemoryObjectParameteriv(im->glMem, GL_DEDICATED_MEMORY_OBJECT_EXT, &dedicated);
     gl.ImportMemoryWin32Handle(im->glMem, req.size, GL_HANDLE_TYPE_OPAQUE_WIN32_EXT, handle);
     CloseHandle(handle);
+    if (!gl_ok("shared image import") || !im->glMem) return 0;
     GLint prev = 0;
     gl.GetIntegerv(GL_TEXTURE_BINDING_2D, &prev);
     gl.GenTextures(1, &im->glTex);
@@ -276,7 +303,14 @@ static int create_image(AudImage *im, unsigned w, unsigned h, VkFormat vkFmt, GL
     gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    GLint actualWidth = 0, actualHeight = 0;
+    gl.GetTexLevelParameteriv(GL_TEXTURE_2D, 0, 0x1000, &actualWidth);
+    gl.GetTexLevelParameteriv(GL_TEXTURE_2D, 0, 0x1001, &actualHeight);
     gl.BindTexture(GL_TEXTURE_2D, (GLuint)prev);
+    if (!gl_ok("shared texture storage") || actualWidth != (GLint)w || actualHeight != (GLint)h) {
+        LOG("dlss: invalid shared texture %u: requested %ux%u format 0x%x, got %dx%d", im->glTex, w, h, glFmt, actualWidth, actualHeight);
+        return 0;
+    }
 
     im->format = vkFmt;
     im->w = w;
@@ -304,10 +338,11 @@ static int create_semaphore(VkSemaphore *vk, GLuint *glSem)
     hi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
     HANDLE handle = NULL;
     if (vkGetSemaphoreWin32HandleKHR_(g_dev, &hi, &handle) != VK_SUCCESS || !handle) return 0;
+    gl_ok("before shared semaphore import");
     gl.GenSemaphores(1, glSem);
     gl.ImportSemaphoreWin32Handle(*glSem, GL_HANDLE_TYPE_OPAQUE_WIN32_EXT, handle);
     CloseHandle(handle);
-    return 1;
+    return gl_ok("shared semaphore import") && *glSem != 0;
 }
 
 // ----------------------------------------------------------------------------------------
@@ -377,6 +412,8 @@ static int aud_init_context(AudLogFn log, AudGetProcFn glGetProc, const wchar_t 
     GLP(BindTexture, "glBindTexture")
     GLP(TexParameteri, "glTexParameteri")
     GLP(GetIntegerv, "glGetIntegerv")
+    GLP(GetTexLevelParameteriv, "glGetTexLevelParameteriv")
+    GLP(GetError, "glGetError")
     GLP(Flush, "glFlush")
     GLP(Finish, "glFinish")
 #undef GLP
@@ -587,13 +624,14 @@ int aud_init_shared(AudLogFn log, AudGetProcFn glGetProc, const wchar_t *dllDir,
 
 static VkCommandBuffer begin_cmd(void)
 {
+    if (g_bridgeFailed) return VK_NULL_HANDLE;
     VkCommandBuffer cb = g_cmd[g_frameIdx];
-    vkWaitForFences_(g_dev, 1, &g_fence[g_frameIdx], VK_TRUE, UINT64_MAX);
-    vkResetFences_(g_dev, 1, &g_fence[g_frameIdx]);
-    vkResetCommandBuffer_(cb, 0);
+    if (!vk_ok(vkWaitForFences_(g_dev, 1, &g_fence[g_frameIdx], VK_TRUE, UINT64_MAX), "wait for DLSS command buffer") ||
+        !vk_ok(vkResetFences_(g_dev, 1, &g_fence[g_frameIdx]), "reset DLSS fence") ||
+        !vk_ok(vkResetCommandBuffer_(cb, 0), "reset DLSS command buffer")) return VK_NULL_HANDLE;
     VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer_(cb, &bi);
+    if (!vk_ok(vkBeginCommandBuffer_(cb, &bi), "begin DLSS command buffer")) return VK_NULL_HANDLE;
     return cb;
 }
 
@@ -628,6 +666,7 @@ static void barrier_all(VkCommandBuffer cb, int acquire)
 static void release_feature(void)
 {
     if (!g_dev) return;
+    gl.Finish();
     vkDeviceWaitIdle_(g_dev);
     if (g_feature) { ngxReleaseFeature(g_feature); g_feature = NULL; }
     for (int i = 0; i < AUD_TEX_COUNT; i++) destroy_image(&g_img[i]);
@@ -635,7 +674,7 @@ static void release_feature(void)
 
 int aud_configure(int renderW, int renderH, int outW, int outH, int quality, int hdr, int rr, int preset)
 {
-    if (!g_ngxReady || !g_params) return 0;
+    if (!g_ngxReady || !g_params || g_bridgeFailed) return 0;
     release_feature();
     g_rr = rr && g_rrAvailable;
     g_renderW = renderW;
@@ -656,6 +695,7 @@ int aud_configure(int renderW, int renderH, int outW, int outH, int quality, int
 
     // First use: the images go from UNDEFINED to GENERAL and stay there.
     VkCommandBuffer cb = begin_cmd();
+    if (!cb) { release_feature(); return 0; }
     VkImageMemoryBarrier b[AUD_TEX_COUNT];
     unsigned nb = 0;
     for (int i = 0; i < AUD_TEX_COUNT; i++) {
@@ -707,12 +747,24 @@ int aud_configure(int renderW, int renderH, int outW, int outH, int quality, int
     ngx_set_ui(p, NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraPerformance, rp);
     ngx_set_ui(p, NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraQuality, rp);
     NVSDK_NGX_Result r = ngxCreateFeature1(g_dev, cb, g_rr ? NVSDK_NGX_Feature_RayReconstruction : NVSDK_NGX_Feature_SuperSampling, p, &g_feature);
-    vkEndCommandBuffer_(cb);
+    barrier_all(cb, 0);
+    if (!vk_ok(vkEndCommandBuffer_(cb), "end DLSS creation commands")) { release_feature(); return 0; }
     VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cb;
-    vkQueueSubmit_(g_queue, 1, &si, g_fence[g_frameIdx]);
-    vkQueueWaitIdle_(g_queue);
+    si.signalSemaphoreCount = 1;
+    si.pSignalSemaphores = &g_semVKDone;
+    if (!vk_ok(vkQueueSubmit_(g_queue, 1, &si, g_fence[g_frameIdx]), "submit DLSS creation commands") ||
+        !vk_ok(vkQueueWaitIdle_(g_queue), "finish DLSS creation commands")) { release_feature(); return 0; }
+    GLuint textures[AUD_TEX_COUNT];
+    GLenum layouts[AUD_TEX_COUNT];
+    GLuint textureCount = 0;
+    for (int index = 0; index < AUD_TEX_COUNT; index++) if (g_img[index].glTex) {
+        textures[textureCount] = g_img[index].glTex;
+        layouts[textureCount++] = GL_LAYOUT_GENERAL_EXT;
+    }
+    gl.WaitSemaphore(g_glSemVKDone, 0, NULL, textureCount, textures, layouts);
+    if (!gl_ok("initial shared image acquisition")) { release_feature(); return 0; }
     g_frameIdx = (g_frameIdx + 1) % AUD_FRAMES;
     if (NVSDK_NGX_FAILED(r) || !g_feature) {
         LOG("dlss: CreateFeature failed 0x%x", r);
@@ -731,7 +783,9 @@ unsigned aud_texture(int which)
 
 int aud_evaluate(float jitterX, float jitterY, float mvScaleX, float mvScaleY, int reset)
 {
-    if (!g_feature) return 0;
+    if (!g_feature || g_bridgeFailed) return 0;
+    VkCommandBuffer cb = begin_cmd();
+    if (!cb) return 0;
     GLuint texs[AUD_TEX_COUNT];
     GLenum layouts[AUD_TEX_COUNT];
     GLuint ntex = 0;
@@ -739,7 +793,6 @@ int aud_evaluate(float jitterX, float jitterY, float mvScaleX, float mvScaleY, i
     gl.SignalSemaphore(g_glSemGLDone, 0, NULL, ntex, texs, layouts);
     gl.Flush();
 
-    VkCommandBuffer cb = begin_cmd();
     barrier_all(cb, 1);
     NVSDK_NGX_Parameter *p = g_params;
     ngx_set_ptr(p, NVSDK_NGX_Parameter_Color, &g_img[AUD_TEX_COLOR].res);
@@ -767,7 +820,7 @@ int aud_evaluate(float jitterX, float jitterY, float mvScaleX, float mvScaleY, i
     }
     NVSDK_NGX_Result r = ngxEvaluateFeature(cb, g_feature, p, NULL);
     barrier_all(cb, 0);
-    vkEndCommandBuffer_(cb);
+    if (!vk_ok(vkEndCommandBuffer_(cb), "end DLSS evaluation commands")) return 0;
 
     VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
     VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
@@ -778,7 +831,7 @@ int aud_evaluate(float jitterX, float jitterY, float mvScaleX, float mvScaleY, i
     si.pCommandBuffers = &cb;
     si.signalSemaphoreCount = 1;
     si.pSignalSemaphores = &g_semVKDone;
-    vkQueueSubmit_(g_queue, 1, &si, g_fence[g_frameIdx]);
+    if (!vk_ok(vkQueueSubmit_(g_queue, 1, &si, g_fence[g_frameIdx]), "submit DLSS evaluation commands")) return 0;
     g_frameIdx = (g_frameIdx + 1) % AUD_FRAMES;
 
     gl.WaitSemaphore(g_glSemVKDone, 0, NULL, ntex, texs, layouts);
@@ -818,4 +871,5 @@ void aud_shutdown(void)
     g_dev = VK_NULL_HANDLE; g_inst = VK_NULL_HANDLE; g_phys = VK_NULL_HANDLE; g_queue = VK_NULL_HANDLE;
     g_pool = VK_NULL_HANDLE; g_semGLDone = g_semVKDone = VK_NULL_HANDLE;
     g_glSemGLDone = g_glSemVKDone = 0; g_frameIdx = 0;
+    g_bridgeFailed = 0;
 }

@@ -41,7 +41,7 @@ https://github.com/user-attachments/assets/55316aae-4729-4537-8840-b3e5d5a30a6e
 
 # Aurora Shaders for Hytale
 
-[Download 1.4.2](../../releases/tag/v1.4.2) · [Changelog](CHANGELOG.md)
+[Download 1.4.3](../../releases/tag/v1.4.3) · [Changelog](CHANGELOG.md)
 
 A shader pack for Hytale: soft sun shadows, volumetric clouds, light shafts through trees and
 caves, reflective water, ray-traced bounce light and ambient occlusion, rain puddles, rainbows,
@@ -350,6 +350,9 @@ made through the menu or shader files reload while you play.
 
 ## Troubleshooting
 
+- **Black world with DLSS enabled, but the UI is visible:** update to 1.4.3, which includes
+  the tested capture and synchronization fixes. If it still happens, follow the
+  [DLSS diagnostic steps](docs/dlss-diagnostics.md#one-shot-diagnostic) and attach `hook.log` to your issue.
 - **Linux looks like vanilla:** close Hytale and run `./install.sh`, then start it normally.
   Check `Client/.aurora/shaderpack/hook.log` for `automatic proxy`. Run `./install.sh` again
   after game updates. `./launch.sh --print-command` shows the optional launcher command.

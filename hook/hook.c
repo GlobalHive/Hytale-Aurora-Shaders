@@ -2155,6 +2155,7 @@ static int framegen_swap(void) { return 0; }
 // PostEffectFS: writes the DLSS inputs at render size (image units 2-4).
 static void dlss_draw(GLenum mode, GLint first, GLsizei count)
 {
+    if (g_dlssDiagnosticFrames == 1) dlss_diagnostic_errors("before capture");
 #if AU_HAS_FRAMEGEN
     GLint inputViewport[4];
     r_glGetIntegerv(GL_VIEWPORT, inputViewport);
@@ -2170,6 +2171,7 @@ static void dlss_draw(GLenum mode, GLint first, GLsizei count)
         } else framegen = 0;
         if (program && program->locDlssActive >= 0) r_glUniform1i(program->locDlssActive, framegen);
         if (program && program->locDlssRR >= 0) r_glUniform1i(program->locDlssRR, 0);
+        if (framegen) dlss_set_viewport(g_curProg, inputViewport);
         r_glDrawArrays(mode, first, count);
         if (framegen) framegen_inputs(afg_texture(AFG_DEPTH), afg_texture(AFG_MOTION), 0);
         framegen_after_scene(program);
@@ -2248,15 +2250,18 @@ static void dlss_draw(GLenum mode, GLint first, GLsizei count)
     if (pp && pp->locDlssActive >= 0) r_glUniform1i(pp->locDlssActive, active);
     if (pp && pp->locDlssRR >= 0) r_glUniform1i(pp->locDlssRR, active && g_dlssRR);
     if (active) {
+        dlss_set_viewport(g_curProg, vp);
         GLint vertexArray = 0;
         r_glGetIntegerv(0x85b5, &vertexArray);
         g_dlssInputVAO = (GLuint)vertexArray;
         g_dlssInputMode = mode;
         g_dlssInputFirst = first;
         g_dlssInputCount = count;
+        memcpy(g_dlssInputViewport, vp, sizeof g_dlssInputViewport);
     }
     r_glDrawArrays(mode, first, count);
     dlss_mask_end(maskState);
+    if (g_dlssDiagnosticFrames == 1) dlss_diagnostic_errors("capture");
 #if AU_HAS_FRAMEGEN
     if (framegen && active) framegen_inputs(aud_texture(AUD_TEX_DEPTH), aud_texture(AUD_TEX_MOTION), g_dlssRR);
 #endif
@@ -2301,10 +2306,17 @@ static int dlss_present_rect(int x, int y, int w, int h, const char *how)
     dl.FbTex(GL_READ_FRAMEBUFFER_, GL_COLOR_ATTACHMENT0_, GL_TEXTURE_2D, aud_texture(g_setDlssDebug == 1 ? AUD_TEX_COLOR : g_setDlssDebug == 3 ? AUD_TEX_DEPTH : g_setDlssDebug == 4 ? AUD_TEX_MOTION : AUD_TEX_OUTPUT), 0);
     GLboolean scissor = dl.IsEnabled(GL_SCISSOR_TEST);
     if (scissor) dl.Disable(GL_SCISSOR_TEST);
-    if (g_setDlssDebug != 0 || !dlss_resolve(aud_texture(AUD_TEX_OUTPUT), vp))
-        dl.Blit(0, 0, g_dlssOW, g_dlssOH, vp[0], vp[1], vp[0] + vp[2], vp[1] + vp[3], GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    if (g_setDlssDebug != 0 || !dlss_resolve(aud_texture(AUD_TEX_OUTPUT), vp)) {
+        int inputView = g_setDlssDebug == 1 || g_setDlssDebug == 3 || g_setDlssDebug == 4;
+        dl.Blit(0, 0, inputView ? g_dlssW : g_dlssOW, inputView ? g_dlssH : g_dlssOH,
+            vp[0], vp[1], vp[0] + vp[2], vp[1] + vp[3], GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    }
     if (scissor) dl.Enable(GL_SCISSOR_TEST);
     dl.BindFb(GL_READ_FRAMEBUFFER_, (GLuint)readFb);
+    if (g_dlssDiagnosticFrames > 0 && --g_dlssDiagnosticFrames == 0) {
+        dlss_diagnostic_errors("evaluate and resolve");
+        dlss_diagnose(vp);
+    }
 #if AU_HAS_FRAMEGEN
     if (g_setFrameGen && g_framegenCaptured == g_frame) afg_capture_hudless();
 #endif
@@ -2808,6 +2820,15 @@ static void do_reload(void)
         DeleteFileW(path);
         g_traceRemaining = 800;
     }
+#if AU_HAS_DLSS
+    if (pack_flag("programs\\_dlss_diagnose")) {
+        wchar_t path[MAX_PATH];
+        pack_path(path, "programs\\_dlss_diagnose");
+        DeleteFileW(path);
+        g_dlssDiagnosticFrames = 3;
+        logf_("dlss diagnostic: armed for the third DLSS frame");
+    }
+#endif
     vox_clear();
     gi_release();
     int relinked = 0, failed = 0;

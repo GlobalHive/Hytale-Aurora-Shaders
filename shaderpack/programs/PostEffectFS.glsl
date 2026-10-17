@@ -35,6 +35,7 @@ layout(r32f) uniform writeonly image2D auDlssDepth;
 layout(rg16f) uniform writeonly image2D auDlssMotion;
 uniform int uHookDlssActive;    // 1 only while the hook has the DLSS textures bound to units 2-4
 uniform int uHookDlssResolve;
+uniform vec4 uHookDlssViewport;
 uniform sampler2D uHookDlssOutput;
 uniform float uHookDlssSharpness;
 #if AU_DLSS
@@ -344,13 +345,15 @@ void main()
 {
 #if AU_DLSS
     if (uHookDlssResolve == 1) {
+        vec2 resolveUV = uHookDlssViewport.z > 0.0
+            ? (gl_FragCoord.xy - uHookDlssViewport.xy) / uHookDlssViewport.zw : fragTexCoords;
         vec2 outputPixel = 1.0 / vec2(textureSize(uHookDlssOutput, 0));
-        vec3 resolved = texture(uHookDlssOutput, fragTexCoords).rgb;
+        vec3 resolved = texture(uHookDlssOutput, resolveUV).rgb;
         if (uHookDlssSharpness > 0.0) {
-            vec3 north = texture(uHookDlssOutput, fragTexCoords + vec2(0.0, outputPixel.y)).rgb;
-            vec3 south = texture(uHookDlssOutput, fragTexCoords - vec2(0.0, outputPixel.y)).rgb;
-            vec3 east = texture(uHookDlssOutput, fragTexCoords + vec2(outputPixel.x, 0.0)).rgb;
-            vec3 west = texture(uHookDlssOutput, fragTexCoords - vec2(outputPixel.x, 0.0)).rgb;
+            vec3 north = texture(uHookDlssOutput, resolveUV + vec2(0.0, outputPixel.y)).rgb;
+            vec3 south = texture(uHookDlssOutput, resolveUV - vec2(0.0, outputPixel.y)).rgb;
+            vec3 east = texture(uHookDlssOutput, resolveUV + vec2(outputPixel.x, 0.0)).rgb;
+            vec3 west = texture(uHookDlssOutput, resolveUV - vec2(outputPixel.x, 0.0)).rgb;
             vec3 low = min(resolved, min(min(north, south), min(east, west)));
             vec3 high = max(resolved, max(max(north, south), max(east, west)));
             resolved = clamp(resolved + (resolved - (north + south + east + west) * 0.25) * uHookDlssSharpness * 2.0, low, high);
@@ -358,11 +361,11 @@ void main()
         DoTonemap(resolved);
 #if AU_LENSFLARE
         AU_InitCommon();
-        DoLensFlare(resolved, fragTexCoords, GetDither(gl_FragCoord.xy), uColorTexture);
+        DoLensFlare(resolved, resolveUV, GetDither(gl_FragCoord.xy), uColorTexture);
 #endif
         DoBSLColorSaturation(resolved);
 #if AU_VIGNETTE
-        DoVignette(resolved, fragTexCoords);
+        DoVignette(resolved, resolveUV);
 #endif
         outColor = vec4(clamp(resolved, 0.0, 1.0), 1.0);
         return;
@@ -524,9 +527,8 @@ void main()
 #if AU_DLSS || AU_DLSS_FRAMEGEN
     if (uHookDlssActive == 1) {
         ivec2 inputSize = imageSize(auDlssColor);
-        ivec2 pix = clamp(ivec2(fragTexCoords * vec2(inputSize)), ivec2(0), inputSize - 1);
-        ivec2 representative = ivec2(floor((vec2(pix) + 0.5) / (vec2(inputSize) * uPixelSize)));
-        if (any(notEqual(ivec2(gl_FragCoord.xy), representative))) return;
+        ivec2 pix = ivec2(gl_FragCoord.xy) - ivec2(uHookDlssViewport.xy);
+        if (any(lessThan(pix, ivec2(0))) || any(greaterThanEqual(pix, inputSize))) return;
         // The finished frame, its depth and the camera motion (where each pixel's surface was
         // last frame, in pixels; the first-person hand moves with the camera).
         float lin = min(texture(uHookDepth, fragTexCoords).r, 1.0);

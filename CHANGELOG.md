@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.3
+
+- Fixed DLSS black screens affecting some RTX GPUs, including Super Resolution and Ray Reconstruction.
+- Fixed DLSS frame capture and presentation with flipped texture coordinates or offset viewports.
+- Improved shared-image synchronization and resizing; added one-shot DLSS diagnostics.
+
 ## 1.4.2
 
 - Added press-to-bind menu hotkeys under General. Bindings save across restarts and stay unchanged by profiles.
