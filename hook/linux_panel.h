@@ -13,10 +13,10 @@ typedef unsigned COLORREF;
 
 static int linux_panel_resize(int w, int h)
 {
-    if (g_ovBmp && g_ovW == w && g_ovH == h) return 1;
+    if (g_ovBmp && g_ovBits && g_ovW == w && g_ovH == h) return 1;
     if (g_ovDC) cairo_destroy(g_ovDC);
     if (g_ovBmp) cairo_surface_destroy(g_ovBmp);
-    g_ovBmp = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
+    g_ovBmp = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w * 2, h * 2);
     g_ovDC = cairo_create(g_ovBmp);
     cairo_font_options_t *options = cairo_font_options_create();
     cairo_font_options_set_antialias(options, CAIRO_ANTIALIAS_GRAY);
@@ -25,6 +25,7 @@ static int linux_panel_resize(int w, int h)
     g_ovBits = NULL;
     if (cairo_status(g_ovDC) != CAIRO_STATUS_SUCCESS) return 0;
     g_ovBits = cairo_image_surface_get_data(g_ovBmp);
+    // Display size stays in menu coordinates; the backing surface is supersampled.
     g_ovW = w; g_ovH = h;
     return 1;
 }

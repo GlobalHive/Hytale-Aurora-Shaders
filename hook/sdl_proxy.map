@@ -1,4 +1,7 @@
 SDL3_0.0.0 {
     global: SDL_GL_GetProcAddress; SDL_GL_SwapWindow;
+        SDL_PollEvent; SDL_PeepEvents; SDL_GetKeyboardState;
+        SDL_GetMouseState; SDL_GetGlobalMouseState; SDL_GetRelativeMouseState;
+        SDL_SetWindowRelativeMouseMode; SDL_SetWindowMouseGrab;
     local: *;
 };

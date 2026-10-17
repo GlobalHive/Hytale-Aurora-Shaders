@@ -118,19 +118,21 @@ especially the RTX preset; see [Performance](#performance).
 
 ## In game
 
+The mouse-editing modifier is **Alt on Windows** and **Ctrl on Linux** (either Ctrl key).
+
 | Key | |
 |---|---|
 | **Home** | Opens / closes the options menu. |
-| **Hold Alt** | Edit the small left-side panel; release to move and look normally. |
-| **Up / Down** | Select an option, without Alt. |
-| **Left / Right** | Change it (hold to slide numbers), without Alt. |
-| **PgUp / PgDn** | Switch category tabs, without Alt. |
-| **Alt + Mouse** | Click tabs and switches; drag sliders; scroll the current category. |
+| **Hold Alt / Ctrl** | Edit the small left-side panel; release to move and look normally. |
+| **Up / Down** | Select an option, without the mouse modifier. |
+| **Left / Right** | Change it (hold to slide numbers), without the mouse modifier. |
+| **PgUp / PgDn** | Switch category tabs, without the mouse modifier. |
+| **Alt / Ctrl + Mouse** | Click tabs and switches; drag sliders; scroll the current category. |
 | **Escape** | Close the menu. |
 | **Pause** | Shaders off / on, for quick comparisons. |
 
 Changes apply instantly; default values and slider markers are yellow, including On/Off switches.
-Click the search box while holding Alt to search by setting label or define; Backspace edits
+Click the search box while holding the mouse modifier to search by setting label or define; Backspace edits
 the search text only. Tab, Enter and Space do not navigate or change settings.
 Enter only confirms text entry when naming a saved preset.
 Changed values are mint, and the selected option's default is always shown in the footer. Settings are saved in
@@ -139,7 +141,7 @@ the file reloads the shaders). On Linux, edit the installed copy at
 `Client/.aurora/shaderpack/include/AU_Settings.glsl`.
 
 The compact left-side menu leaves the centre of the game visible and does not capture movement
-or camera input unless Alt is held. Keyboard shortcuts remain available without Alt;
+or camera input unless the mouse modifier is held. Keyboard shortcuts remain available without it;
 typing in search captures keys until Enter or an arrow key leaves the search field.
 The vertically centred panel has category tabs, global search, per-category scrolling, and help for
 the selected setting. **Reset selected** resets only that option, never the entire pack.
@@ -150,7 +152,8 @@ Ore blink strength and speed control a coloured glow pulse; zero strength restor
 **Ore animation** selects blinking plus the soft glint, the original Hytale glint without
 blinking, or entirely steady glow. None of these choices disables the base coloured glow.
 
-Linux currently uses the keyboard controls; Alt-mouse editing and input capture are Windows features.
+On Linux, hold **Ctrl** to click tabs and switches, drag sliders, and scroll the current category.
+Release Ctrl to restore normal mouse control; Alt remains available to the window manager.
 
 ### Profiles
 
@@ -167,9 +170,9 @@ Generation or path tracing. Those remain available as manual settings. Builds wi
 NVIDIA support use Original as the fallback for RTX profiles.
 Coloured area lights are enabled only by **Ultra** in either quality list; you can still toggle them manually.
 
-**Save current settings as...** lets you name and save up to 16 custom presets. Hold Alt to type
+**Save current settings as...** lets you name and save up to 16 custom presets. Hold the mouse modifier to type
 a name, then press Enter or click **Save name**. Presets are stored in `shaderpack/presets/`
-and retained during updates. On Linux, use the keyboard to enter the name. Applying a built-in profile resets other
+and retained during updates. On Linux, preset names can also be entered with the keyboard without holding Ctrl. Applying a built-in profile resets other
 shader-menu settings to their defaults; saving a custom preset keeps your current settings.
 
 To manage a custom preset, apply it, then choose **Export saved profile** or **Delete saved profile**.
