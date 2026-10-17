@@ -80,6 +80,8 @@ folder for reinstalling after game updates; it is no longer needed to launch the
 
 - **After a game update:** close Hytale and run `./install.sh` again. If an update replaces
   the whole Client folder, restore any custom settings from your own backup.
+- **Update Aurora:** download the current source or run `git pull` in your checkout, close
+  Hytale, then run `./install.sh --build` to rebuild and install the updated Linux hook.
 - **Custom game location:** `./install.sh --client-dir "/path/to/Client"`.
 - **Custom native launcher:** add `--launcher "/path/to/hytale-launcher"`.
 - **Both versions installed:** select `--backend flatpak` or `--backend native`.
@@ -118,16 +120,25 @@ especially the RTX preset; see [Performance](#performance).
 
 ## In game
 
-The mouse-editing modifier is **Alt on Windows** and **Ctrl on Linux** (either Ctrl key).
+Press **Home** to open the compact left-side menu. Mouse controls depend on your platform:
+
+| Platform | Mouse editing |
+|---|---|
+| **Windows** | Hold **Alt** to click tabs and switches, drag sliders, and scroll. |
+| **Linux** | Hold either **Ctrl** key for the same controls. **Alt** stays available to your window manager. |
+
+While editing, mouse input goes to the menu instead of moving the camera. Release the modifier
+to resume normal control. On Linux, closing the menu or switching away from the game also
+restores normal input; pointer positions account for display scaling.
+
+These keyboard shortcuts do not require Alt or Ctrl:
 
 | Key | |
 |---|---|
 | **Home** | Opens / closes the options menu. |
-| **Hold Alt / Ctrl** | Edit the small left-side panel; release to move and look normally. |
-| **Up / Down** | Select an option, without the mouse modifier. |
-| **Left / Right** | Change it (hold to slide numbers), without the mouse modifier. |
-| **PgUp / PgDn** | Switch category tabs, without the mouse modifier. |
-| **Alt / Ctrl + Mouse** | Click tabs and switches; drag sliders; scroll the current category. |
+| **Up / Down** | Select an option. |
+| **Left / Right** | Change it; hold to slide numbers. |
+| **PgUp / PgDn** | Switch category tabs. |
 | **Escape** | Close the menu. |
 | **Pause** | Shaders off / on, for quick comparisons. |
 
@@ -152,9 +163,6 @@ Ore blink strength and speed control a coloured glow pulse; zero strength restor
 **Ore animation** selects blinking plus the soft glint, the original Hytale glint without
 blinking, or entirely steady glow. None of these choices disables the base coloured glow.
 
-On Linux, hold **Ctrl** to click tabs and switches, drag sliders, and scroll the current category.
-Release Ctrl to restore normal mouse control; Alt remains available to the window manager.
-
 ### Profiles
 
 Open **Profiles** and click an entry, or highlight it with the arrow keys and press Right.
@@ -170,9 +178,10 @@ Generation or path tracing. Those remain available as manual settings. Builds wi
 NVIDIA support use Original as the fallback for RTX profiles.
 Coloured area lights are enabled only by **Ultra** in either quality list; you can still toggle them manually.
 
-**Save current settings as...** lets you name and save up to 16 custom presets. Hold the mouse modifier to type
-a name, then press Enter or click **Save name**. Presets are stored in `shaderpack/presets/`
-and retained during updates. On Linux, preset names can also be entered with the keyboard without holding Ctrl. Applying a built-in profile resets other
+**Save current settings as...** lets you name and save up to 16 custom presets. On Windows,
+hold **Alt** while typing the name; on Linux, type without holding Ctrl. Press Enter to confirm,
+or hold your platform's mouse modifier and click **Save name**. Presets are stored in
+`shaderpack/presets/` and retained during updates. Applying a built-in profile resets other
 shader-menu settings to their defaults; saving a custom preset keeps your current settings.
 
 To manage a custom preset, apply it, then choose **Export saved profile** or **Delete saved profile**.
@@ -342,6 +351,8 @@ made through the menu or shader files reload while you play.
   after game updates. `./launch.sh --print-command` shows the optional launcher command.
 - **Linux build dependencies missing:** install the Ubuntu packages listed above. The installer
   does not install system packages or download a compiler for you.
+- **Linux menu too large or clicks misaligned:** update the source, close Hytale and run
+  `./install.sh --build`. Use **Ctrl**, not Alt, for mouse editing.
 - **Flatpak reports a missing library or glibc version:** rebuild with `./install.sh --build` on
   the machine where you play and ensure the Hytale Flatpak runtime is up to date.
 - **Looks like vanilla:** press Pause once (the shaders may be toggled off), and check that
