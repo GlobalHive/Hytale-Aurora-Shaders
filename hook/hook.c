@@ -2930,6 +2930,7 @@ typedef struct {
 
 typedef struct {
     int x, y, width, height, pad, rail, title, footer, row, rows, contentTop, controlX;
+    int footerButtonTop, footerButtonBottom;
 } MenuLayout;
 
 static MenuOpt g_mo[MENU_MAX];
@@ -3486,8 +3487,8 @@ static void menu_pointer(int clicked)
         return;
     }
     if (pointerY >= layout->height - layout->footer) {
-        int resetTop = layout->height - layout->row * 31 / 58;
-        int resetBottom = layout->height - layout->row * 7 / 58;
+        int resetTop = layout->footerButtonTop;
+        int resetBottom = layout->footerButtonBottom;
         if (pointerX > layout->width - layout->row * 3 && pointerX < layout->width - layout->pad
             && pointerY >= resetTop && pointerY <= resetBottom) {
             if (g_moSel >= 0 && g_mo[g_moSel].kind == MO_PROFILE) menu_change(1, 0);
@@ -3815,6 +3816,8 @@ static void menu_render(int screenWidth, int screenHeight)
     if (layout->width > screenWidth - layout->pad * 2) layout->width = screenWidth - layout->pad * 2;
     layout->height = (int)(640 * scale);
     if (layout->height > screenHeight - layout->pad * 2) layout->height = screenHeight - layout->pad * 2;
+    layout->footerButtonTop = layout->height - (int)(31 * scale);
+    layout->footerButtonBottom = layout->height - (int)(7 * scale);
     layout->rail = (int)(148 * scale);
     layout->title = (int)(60 * scale);
     layout->footer = (int)(104 * scale);
@@ -3878,7 +3881,7 @@ static void menu_render(int screenWidth, int screenHeight)
     HDC dc = g_ovDC;
     SetBkMode(dc, TRANSPARENT);
 #else
-    if (!linux_panel_resize(width * 2, height * 2)) return;
+    if (!linux_panel_resize(width, height)) return;
     cairo_identity_matrix(g_ovDC);
     cairo_scale(g_ovDC, 2.0, 2.0);
     g_ovTexW = width * 2;
@@ -4051,7 +4054,12 @@ static void menu_render(int screenWidth, int screenHeight)
     }
     int footerTop = height - layout->footer;
     menu_fill(dc, pad, footerTop, width - pad, footerTop + 1, RGB(37, 57, 73));
-    menu_text(dc, L"Hold ALT: mouse   |   Arrows: edit   |   PgUp / PgDn: tabs", pad, footerTop + 3,
+#ifdef _WIN32
+    const wchar_t *mouseHelp = L"Hold ALT: mouse   |   Arrows: edit   |   PgUp / PgDn: tabs";
+#else
+    const wchar_t *mouseHelp = L"Hold CTRL: mouse   |   Arrows: edit   |   PgUp / PgDn: tabs";
+#endif
+    menu_text(dc, mouseHelp, pad, footerTop + 3,
               width - pad, footerTop + (int)(25 * scale), g_fSmall, RGB(130, 161, 185), DT_LEFT);
     if (g_moSel >= 0) {
         MenuOpt *option = &g_mo[g_moSel];
@@ -4082,9 +4090,9 @@ static void menu_render(int screenWidth, int screenHeight)
     }
     menu_text(dc, defaultText, pad, height - (int)(30 * scale),
               width - layout->row * 3, height - 4, g_fSmall, RGB(246, 209, 105), DT_LEFT);
-    menu_round(dc, width - layout->row * 3, height - (int)(31 * scale), width - pad, height - (int)(7 * scale), (int)(12 * scale), RGB(30, 47, 62));
+    menu_round(dc, width - layout->row * 3, layout->footerButtonTop, width - pad, layout->footerButtonBottom, (int)(12 * scale), RGB(30, 47, 62));
     menu_text(dc, g_moSel >= 0 && g_mo[g_moSel].kind == MO_PROFILE ? L"Apply profile"
-              : g_moSel >= 0 && g_mo[g_moSel].kind == MO_ACTION ? L"Run action" : L"Reset selected", width - layout->row * 3, height - (int)(31 * scale), width - pad, height - (int)(7 * scale),
+              : g_moSel >= 0 && g_mo[g_moSel].kind == MO_ACTION ? L"Run action" : L"Reset selected", width - layout->row * 3, layout->footerButtonTop, width - pad, layout->footerButtonBottom,
               g_fSmall, RGB(164, 199, 218), DT_CENTER);
     int pointerX = (int)g_menuPointerX - layout->x, pointerY = (int)g_menuPointerY - layout->y;
 #ifdef _WIN32

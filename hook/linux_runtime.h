@@ -29,6 +29,8 @@ static void *linux_real_dlsym(void *handle, const char *name)
     return lookup ? lookup(handle, name) : NULL;
 }
 
+#include "linux_menu.h"
+
 #if !AU_SDL_PROXY
 __declspec(dllexport) void *dlsym(void *handle, const char *name)
 {
@@ -43,6 +45,11 @@ __declspec(dllexport) void *dlsym(void *handle, const char *name)
         linux_sdl_swap = (bool (*)(void *))p;
         linux_sdl_handle = handle;
         return (void *)SDL_GL_SwapWindow;
+    }
+    void *menuHook = linux_menu_lookup(name);
+    if (menuHook && p != menuHook) {
+        linux_sdl_handle = handle;
+        return menuHook;
     }
     return p;
 }
@@ -154,7 +161,7 @@ static void linux_input(void *window)
     int count = 0;
     const bool *state = linux_sdl_keys(&count);
     bool focus = linux_sdl_focus() == window;
-    if (focus && state && g_menuOpen && g_menuPresetNaming) {
+    if (focus && state && g_menuOpen && (g_menuPresetNaming || (g_menuMouseMode && g_menuSearchFocus))) {
         static bool textDown[58];
         bool shifted = count > 229 && (state[225] || state[229]);
         for (int key = 4; key < 58 && key < count; key++) {
@@ -162,7 +169,7 @@ static void linux_input(void *window)
             bool fire = pressed && !textDown[key];
             textDown[key] = pressed;
             if (!fire) continue;
-            if (key == 40) { menu_profile_finish(); break; }
+            if (key == 40) { if (g_menuPresetNaming) menu_profile_finish(); else g_menuSearchFocus = 0; break; }
             if (key == 41) { menu_profile_cancel(); break; }
             size_t length = wcslen(g_menuSearch);
             if (key == 42 && length) g_menuSearch[length - 1] = 0;
@@ -172,6 +179,8 @@ static void linux_input(void *window)
                     : key == 44 ? L' ' : key == 45 ? (shifted ? L'_' : L'-') : 0;
                 if (character) { g_menuSearch[length] = character; g_menuSearch[length + 1] = 0; }
             }
+            g_moTop = 0;
+            if (!g_menuPresetNaming) menu_rebuild_rows();
             g_menuDirty = 1;
         }
         return;
@@ -217,7 +226,11 @@ __declspec(dllexport) bool SDL_GL_SwapWindow(void *window)
 {
     pthread_once(&linux_init_once, linux_init);
     g_postPresent = 0;
+    linux_menu_init();
+    lm_window = window;
+    linux_menu_sync();
     linux_input(window);
+    linux_menu_sync();
     int sw = 0, sh = 0;
     if (g_menuOpen && linux_sdl_size && linux_sdl_size(window, &sw, &sh) && sw > 0 && sh > 0 && ov_init()) {
         if (g_menuDirty || sh != g_ovScreenH || sw != g_ovScreenW) {
