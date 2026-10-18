@@ -9,6 +9,7 @@ import tempfile
 
 OWNER = "aurora-shaders-sdl-proxy-v1"
 MARKER = b"AURORA_SDL_PROXY_V1"
+DLSS_MARKER = b"AURORA_LINUX_DLSS_V1"
 BACKUP = "libSDL3.aurora-original.so"
 
 
@@ -63,14 +64,27 @@ def atomic_copy(source, target):
         pending.unlink(missing_ok=True)
 
 
-def merge_settings(defaults, previous):
+def merge_settings(defaults, previous, dlss_supported=False):
     scalar = r"(?m)^(#define\s+(AU_\w+)\s+)([-+]?\d+(?:\.\d+)?)(?=\s|$)"
     values = {match[1]: match[2] for match in re.findall(scalar, previous)}
+    # Older Linux installers zeroed every DLSS option, including motion/jitter
+    # multipliers. Detect that signature without overwriting individual user edits.
+    legacy_motion = ("AU_DLSS_JITTER", "AU_DLSS_JITTER_SX", "AU_DLSS_JITTER_SY",
+                     "AU_DLSS_MOTION_SX", "AU_DLSS_MOTION_SY")
+    legacy_dlss_zeroed = all(name in values and float(values[name]) == 0 for name in legacy_motion)
 
     def update(match):
         name = match[2]
-        value = "0" if name.startswith("AU_DLSS") or name == "AU_RENDER_SCALE" else values.get(name, match[3])
-        if name == "AU_GI_DENOISER":
+        value = values.get(name, match[3])
+        if legacy_dlss_zeroed and name.startswith("AU_DLSS_") and float(value) == 0:
+            value = match[3]
+        # Disable the backend, not its tuning values: they must survive a later
+        # driver repair or an upgrade to a DLSS-capable installation.
+        if not dlss_supported and name in ("AU_DLSS", "AU_RENDER_SCALE"):
+            value = "0"
+        if name == "AU_DLSS_FRAMEGEN":
+            value = "0"
+        if not dlss_supported and name == "AU_GI_DENOISER":
             value = "1"
         return match[1] + value
 
@@ -137,7 +151,7 @@ def install(client, proxy, pack):
             shutil.copytree(previous_presets, stage / "shaderpack/presets", dirs_exist_ok=True)
         if staged_settings.is_file():
             previous = settings.read_text(encoding="utf-8-sig") if saved and settings.is_file() else ""
-            staged_settings.write_text(merge_settings(staged_settings.read_text(encoding="utf-8-sig"), previous), encoding="utf-8")
+            staged_settings.write_text(merge_settings(staged_settings.read_text(encoding="utf-8-sig"), previous, DLSS_MARKER in proxy.read_bytes()), encoding="utf-8")
         shutil.copy2(original, stage / "original.so")
         shutil.copy2(proxy, stage / "proxy.so")
         old_pack = stage / "previous-pack"

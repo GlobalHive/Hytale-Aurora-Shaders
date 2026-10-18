@@ -96,9 +96,14 @@ static float linux_menu_float(const LinuxMenuEvent *event, int offset)
     float value; memcpy(&value, event->bytes + offset, sizeof value); return value;
 }
 
+#include "linux_render_scale.h"
+
 static bool linux_menu_filter(LinuxMenuEvent *event)
 {
     linux_menu_sync();
+#if AU_HAS_DLSS
+    linux_render_scale_event(event);
+#endif
     bool capture = lm_captured_window != NULL;
     // Leave events for other SDL windows untouched.
     if (!lm_window || (event->type >= 0x300 && event->type <= 0x403
@@ -214,6 +219,9 @@ __declspec(dllexport) bool SDL_SetWindowMouseGrab(void *window, bool enabled)
 static void *linux_menu_lookup(const char *name)
 {
 #define LM_HOOK(fn) if (!strcmp(name, #fn)) return (void *)fn
+#if AU_HAS_DLSS
+    LM_HOOK(SDL_GetWindowSizeInPixels);
+#endif
     LM_HOOK(SDL_PollEvent); LM_HOOK(SDL_PeepEvents); LM_HOOK(SDL_GetKeyboardState);
     LM_HOOK(SDL_GetMouseState); LM_HOOK(SDL_GetGlobalMouseState); LM_HOOK(SDL_GetRelativeMouseState);
     LM_HOOK(SDL_SetWindowRelativeMouseMode); LM_HOOK(SDL_SetWindowMouseGrab);

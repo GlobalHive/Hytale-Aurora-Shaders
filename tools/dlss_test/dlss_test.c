@@ -1,17 +1,31 @@
 // Standalone check of the DLSS bridge (hook/aud_dlss.c) outside the game: a hidden OpenGL
 // window, DLSS upscaling a half red / half blue picture 2x, the result read back through GL.
 //   tools\dlss_test\build.ps1, then run dlss_test.exe (needs nvngx_dlss.dll next to it)
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#else
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#include <wchar.h>
+#include <limits.h>
+#include <unistd.h>
+#endif
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
+#include <string.h>
 #include <GL/gl.h>
 #include "../../hook/aud_dlss.h"
 
 #define GL_FRAMEBUFFER 0x8D40
 #define GL_COLOR_ATTACHMENT0 0x8CE0
+#undef GLAPI
+#ifdef _WIN32
 #define GLAPI __stdcall
+#else
+#define GLAPI
+#endif
 typedef void (GLAPI *PFN_glGenFramebuffers)(GLsizei, GLuint *);
 typedef void (GLAPI *PFN_glBindFramebuffer)(GLenum, GLuint);
 typedef void (GLAPI *PFN_glFramebufferTexture2D)(GLenum, GLenum, GLenum, GLuint, GLint);
@@ -27,12 +41,18 @@ static void logf_(const char *fmt, ...)
     fflush(stdout);
 }
 
+#ifdef _WIN32
 static HMODULE g_gl32;
+#endif
 static void *get_proc(const char *name)
 {
+#ifdef _WIN32
     void *p = (void *)wglGetProcAddress(name);
     if (!p || p == (void *)1 || p == (void *)2 || p == (void *)3 || p == (void *)-1) p = (void *)GetProcAddress(g_gl32, name);
     return p;
+#else
+    return (void *)eglGetProcAddress(name);
+#endif
 }
 
 static void clear_tex(GLuint fbo, GLuint tex, int x, int y, int w, int h, float r, float g, float b, float a)
@@ -88,6 +108,7 @@ static GLuint capture_program(void)
 
 int main(void)
 {
+#ifdef _WIN32
     wchar_t dir[MAX_PATH];
     GetModuleFileNameW(NULL, dir, MAX_PATH);
     *wcsrchr(dir, L'\\') = 0;
@@ -99,8 +120,33 @@ int main(void)
     HGLRC rc = wglCreateContext(dc);
     wglMakeCurrent(dc, rc);
     g_gl32 = GetModuleHandleW(L"opengl32.dll");
+#else
+    wchar_t dir[PATH_MAX]; char native[PATH_MAX];
+    if (!getcwd(native, sizeof native) || mbstowcs(dir, native, PATH_MAX) == (size_t)-1) return 1;
+    // Run from shaderpack/dlss, with NVIDIA's Linux runtime in that directory.
+    EGLDisplay display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (!eglInitialize(display, NULL, NULL)) {
+        PFNEGLGETPLATFORMDISPLAYEXTPROC platform = (void *)eglGetProcAddress("eglGetPlatformDisplayEXT");
+        display = platform ? platform(EGL_PLATFORM_SURFACELESS_MESA, NULL, NULL) : EGL_NO_DISPLAY;
+        if (!eglInitialize(display, NULL, NULL)) { logf_("SKIP: no EGL display"); return 77; }
+    }
+    EGLint attrs[] = {EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT, EGL_NONE};
+    EGLConfig config; EGLint count;
+    if (!eglBindAPI(EGL_OPENGL_API) || !eglChooseConfig(display, attrs, &config, 1, &count) || !count) return 77;
+    EGLint surface_attrs[] = {EGL_WIDTH, 64, EGL_HEIGHT, 64, EGL_NONE};
+    EGLSurface surface = eglCreatePbufferSurface(display, config, surface_attrs);
+    EGLint context_attrs[] = {EGL_CONTEXT_MAJOR_VERSION, 4, EGL_CONTEXT_MINOR_VERSION, 3,
+        EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT, EGL_NONE};
+    EGLContext context = eglCreateContext(display, config, EGL_NO_CONTEXT, context_attrs);
+    if (!eglMakeCurrent(display, surface, surface, context)) { logf_("SKIP: no OpenGL 4.3 context"); return 77; }
+#endif
     logf_("GL: %s / %s", glGetString(GL_VENDOR), glGetString(GL_RENDERER));
 
+#ifndef _WIN32
+    if (strcmp((const char *)glGetString(GL_VENDOR), "NVIDIA Corporation")) {
+        logf_("SKIP: test requires an NVIDIA RTX OpenGL context"); return 77;
+    }
+#endif
     if (!aud_init(logf_, get_proc, dir, dir)) { logf_("FAIL: aud_init"); return 1; }
     const int ow = 1920, oh = 1080;
     const int widths[] = {960, 1478, 1920}, heights[] = {540, 831, 1080}, qualities[] = {0, 2, 5};

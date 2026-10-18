@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- `./install.sh` now checks native DLSS support and automatically prepares and builds it on supported systems, with normal installation as the fallback.
+
+- Added native Linux DLSS Super Resolution, DLAA and capability-detected Ray Reconstruction through the Vulkan/OpenGL bridge. RTX gameplay validation remains pending.
+- Added Linux DLSS render scaling, native-size fallback, SDK/runtime preparation and standalone checks.
+- Preserve Linux DLSS settings across installation updates when the hook includes DLSS. Frame Generation remains Windows-only.
+
 ## 1.4.3
 
 - Fixed DLSS black screens affecting some RTX GPUs, including Super Resolution and Ray Reconstruction.

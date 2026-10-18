@@ -9,6 +9,7 @@ import subprocess
 
 from prepare_shaders import ROOT, prepare
 import linux_hook
+import linux_dlss
 
 APP_ID = "com.hypixel.HytaleLauncher"
 CONFIG = ROOT / "build" / "linux-install.json"
@@ -68,6 +69,18 @@ def launch_command(config, extra, env):
     return [launcher, *extra], env.copy()
 
 
+def build_proxy(force=False):
+    proxy = ROOT / "build/libaurora-sdl.so"
+    dlss_supported = linux_dlss.configure()
+    build_env = os.environ.copy()
+    build_env["AU_DLSS"] = "1" if dlss_supported else "0"
+    previous_dlss = proxy.is_file() and linux_hook.DLSS_MARKER in proxy.read_bytes()
+    inputs = [ROOT / "hook/aud_dlss.c", ROOT / "build.sh", *(ROOT / "hook").glob("*.h"), ROOT / "hook/hook.c", ROOT / "hook/sdl_proxy.map"]
+    if force or previous_dlss != dlss_supported or not proxy.is_file() or any(p.stat().st_mtime_ns > proxy.stat().st_mtime_ns for p in inputs):
+        subprocess.run(["bash", str(ROOT / "build.sh")], check=True, env=build_env)
+    return proxy
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--client-dir", type=Path, help="Folder containing the native HytaleClient")
@@ -116,10 +129,7 @@ def main():
         if backend == "native":
             if not launcher:
                 launcher = next((p / "hytale-launcher" for p in client.parents if (p / "hytale-launcher").is_file()), None)
-        proxy = ROOT / "build/libaurora-sdl.so"
-        inputs = [ROOT / "build.sh", *(ROOT / "hook").glob("*.h"), ROOT / "hook/hook.c", ROOT / "hook/sdl_proxy.map"]
-        if args.build or not proxy.is_file() or any(p.stat().st_mtime_ns > proxy.stat().st_mtime_ns for p in inputs):
-            subprocess.run(["bash", str(ROOT / "build.sh")], check=True)
+        proxy = build_proxy(args.build)
         prepare(executable, ROOT / "shaderpack")
         installed_pack = linux_hook.install(client, proxy, ROOT / "shaderpack")
         config = {"client_dir": str(client), "backend": backend,
