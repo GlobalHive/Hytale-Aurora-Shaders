@@ -29,3 +29,29 @@ Send `shaderpack/hook.log`. Lines starting `dlss diagnostic:` contain capture vi
 & tools/dlss_test/dlss_test.exe
 & tools/shader_test/build.ps1 -Run
 ```
+
+
+## Linux validation
+
+`./install.sh` automatically detects and prepares supported DLSS installations. For a standalone
+development build, prepare dependencies with `python3 tools/prepare_dlss_linux.py`, then build with
+`AU_DLSS=1 ./build.sh`. `tools/dlss_test/test_linux.sh` checks opaque-fd semaphore
+ownership on import success/failure, the installed NGX driver's parameter ABI (skipped
+when that library is absent), and SDL scaling, resizing, other windows and fallback.
+Installer coverage is in `python3 -m unittest discover -s tools/linux_test -p 'test_install.py'`.
+
+On an NVIDIA RTX Linux machine, install `libegl1-mesa-dev libgl-dev`, run
+`tools/dlss_test/build_linux.sh`, then run `../../build/dlss_test` from `shaderpack/dlss`.
+The EGL/OpenGL smoke test exercises HDR shader capture, shared images, GPU synchronization,
+Super Resolution/DLAA at three render sizes, and Ray Reconstruction when supported. It
+checks actual output pixel values. Exit 77 means the required display/GPU context is absent;
+it is a skip, not a rendering pass.
+
+For gameplay validation, install with `./install.sh` (or `AU_DLSS=1 ./install.sh` to require a
+successful DLSS support check), enable DLSS and
+try native size, 77% and 50%, window resizing, menu/UI sharpness, DLSS off/on, and RR where
+available. Repeat under X11 and Wayland when possible. On hybrid systems Hytale's OpenGL
+context must run on NVIDIA; the bridge requires an exact Vulkan/OpenGL device UUID match.
+Check `Client/.aurora/shaderpack/hook.log` for `dlss: ready`, feature creation and evaluation
+errors, and use the one-shot diagnostic above if pixels are incorrect. Do not treat a
+successful build, NGX parameter test, or feature creation as proof that gameplay works.

@@ -2,23 +2,28 @@
 //
 // Hytale renders with OpenGL 4.1, and DLSS only exists for D3D11/12 and Vulkan. This file
 // creates a Vulkan device on the same GPU, loads NVIDIA's NGX core from the driver
-// (_nvngx.dll) and creates the DLSS feature there. NVIDIA's SDK library only wraps the
-// driver's exports and is MSVC-only, so they are called directly: the signatures and the
-// NVSDK_NGX_Parameter method table order follow the SDK 310.9 library.
+// (_nvngx.dll on Windows, libnvidia-ngx.so.1 on Linux) and creates DLSS there.
+// Calls the driver's NGX core exports directly; these differ from the SDK wrappers.
+// Parameter dispatch follows the platform C++ ABI (SDK 310.9).
 //
 // The images DLSS reads and writes are Vulkan images with exportable memory, imported into
-// OpenGL as textures (EXT_memory_object_win32). Two shared semaphores (EXT_semaphore_win32)
+// OpenGL as textures (EXT_memory_object_win32 / EXT_memory_object_fd). Shared semaphores
 // order the work on the GPU: GL signals when the inputs are written, Vulkan runs DLSS and
 // signals back, GL waits before reading the output. The CPU never waits for the GPU.
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#define VK_USE_PLATFORM_WIN32_KHR
+#else
+#include <dlfcn.h>
+#include <unistd.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
 #include <wchar.h>
-#define VK_USE_PLATFORM_WIN32_KHR
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 #include "nvsdk_ngx_defs.h"
@@ -33,6 +38,15 @@ static AudLogFn g_log;
 // Vulkan entry points
 
 static PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr_;
+#ifdef _WIN32
+#define VK_INTEROP_FUNCS(X) X(vkGetMemoryWin32HandleKHR) X(vkGetSemaphoreWin32HandleKHR)
+#define AUD_MEMORY_HANDLE VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT
+#define AUD_SEMAPHORE_HANDLE VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT
+#else
+#define VK_INTEROP_FUNCS(X) X(vkGetMemoryFdKHR) X(vkGetSemaphoreFdKHR)
+#define AUD_MEMORY_HANDLE VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT
+#define AUD_SEMAPHORE_HANDLE VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT
+#endif
 #define VK_FUNCS(X) \
     X(vkCreateInstance) X(vkEnumerateInstanceExtensionProperties) X(vkDestroyInstance) \
     X(vkEnumeratePhysicalDevices) X(vkGetPhysicalDeviceProperties2) X(vkGetPhysicalDeviceQueueFamilyProperties) \
@@ -42,7 +56,7 @@ static PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr_;
     X(vkResetCommandBuffer) X(vkQueueSubmit) X(vkQueueWaitIdle) X(vkCreateFence) X(vkWaitForFences) \
     X(vkResetFences) X(vkDestroyFence) X(vkDestroySemaphore) X(vkCreateImage) X(vkDestroyImage) X(vkGetImageMemoryRequirements) X(vkAllocateMemory) \
     X(vkFreeMemory) X(vkBindImageMemory) X(vkCreateImageView) X(vkDestroyImageView) \
-    X(vkGetMemoryWin32HandleKHR) X(vkCreateSemaphore) X(vkGetSemaphoreWin32HandleKHR) X(vkCmdPipelineBarrier)
+    VK_INTEROP_FUNCS(X) X(vkCreateSemaphore) X(vkCmdPipelineBarrier)
 #define VK_DECL(n) static PFN_##n n##_;
 VK_FUNCS(VK_DECL)
 
@@ -73,7 +87,14 @@ typedef NVSDK_NGX_Result (*PFN_NGX_CreateFeature1)(VkDevice, VkCommandBuffer, NV
 typedef NVSDK_NGX_Result (*PFN_NGX_EvaluateFeature)(VkCommandBuffer, const NVSDK_NGX_Handle *, const NVSDK_NGX_Parameter *, void *);
 typedef NVSDK_NGX_Result (*PFN_NGX_ReleaseFeature)(NVSDK_NGX_Handle *);
 
-static HMODULE g_ngx;
+#ifdef _WIN32
+typedef HMODULE AudLibrary;
+#define aud_symbol GetProcAddress
+#else
+typedef void *AudLibrary;
+#define aud_symbol dlsym
+#endif
+static AudLibrary g_ngx, g_vulkan;
 static PFN_NGX_RequiredExtensions ngxRequiredExtensions;
 static PFN_NGX_Init_ProjectID_Ext ngxInit;
 static PFN_NGX_Shutdown1 ngxShutdown1;
@@ -83,6 +104,7 @@ static PFN_NGX_CreateFeature1 ngxCreateFeature1;
 static PFN_NGX_EvaluateFeature ngxEvaluateFeature;
 static PFN_NGX_ReleaseFeature ngxReleaseFeature;
 
+#ifdef _WIN32
 // NVSDK_NGX_Parameter is a C++ interface; MSVC lists overloaded virtuals in reverse order:
 // Set(void*) 0, Set(int) 3, Set(unsigned) 4, Set(float) 6, Get(void**) 8, Get(int*) 11,
 // Get(unsigned*) 12, Get(float*) 14.
@@ -93,6 +115,18 @@ static void ngx_set_ui(NVSDK_NGX_Parameter *p, const char *n, unsigned v) { ((vo
 static void ngx_set_f(NVSDK_NGX_Parameter *p, const char *n, float v) { ((void (*)(void *, const char *, float))NGX_VT(p)[6])(p, n, v); }
 static NVSDK_NGX_Result ngx_get_i(NVSDK_NGX_Parameter *p, const char *n, int *v) { return ((NVSDK_NGX_Result (*)(void *, const char *, int *))NGX_VT(p)[11])(p, n, v); }
 static NVSDK_NGX_Result ngx_get_ui(NVSDK_NGX_Parameter *p, const char *n, unsigned *v) { return ((NVSDK_NGX_Result (*)(void *, const char *, unsigned *))NGX_VT(p)[12])(p, n, v); }
+
+#else
+// Linux C++ ABI follows the declaration order in nvsdk_ngx_params.h.
+#define NGX_VT(p) (*(void ***)(p))
+static void ngx_set_ptr(NVSDK_NGX_Parameter *p, const char *n, void *v) { ((void (*)(void *, const char *, void *))NGX_VT(p)[7])(p, n, v); }
+static void ngx_set_i(NVSDK_NGX_Parameter *p, const char *n, int v) { ((void (*)(void *, const char *, int))NGX_VT(p)[4])(p, n, v); }
+static void ngx_set_ui(NVSDK_NGX_Parameter *p, const char *n, unsigned v) { ((void (*)(void *, const char *, unsigned))NGX_VT(p)[3])(p, n, v); }
+static void ngx_set_f(NVSDK_NGX_Parameter *p, const char *n, float v) { ((void (*)(void *, const char *, float))NGX_VT(p)[1])(p, n, v); }
+static NVSDK_NGX_Result ngx_get_i(NVSDK_NGX_Parameter *p, const char *n, int *v) { return ((NVSDK_NGX_Result (*)(void *, const char *, int *))NGX_VT(p)[12])(p, n, v); }
+static NVSDK_NGX_Result ngx_get_ui(NVSDK_NGX_Parameter *p, const char *n, unsigned *v) { return ((NVSDK_NGX_Result (*)(void *, const char *, unsigned *))NGX_VT(p)[11])(p, n, v); }
+
+#endif
 
 static NVSDK_NGX_Parameter *g_params;
 static NVSDK_NGX_Handle *g_feature;
@@ -137,15 +171,26 @@ typedef unsigned long long GLuint64;
 #define GL_LAYOUT_GENERAL_EXT 0x958D
 #define GL_NUM_DEVICE_UUIDS_EXT 0x9596
 #define GL_DEVICE_UUID_EXT 0x9597
+#ifdef _WIN32
 #define GLAPI __stdcall
+#else
+#define GLAPI
+#endif
+#define GL_HANDLE_TYPE_OPAQUE_FD_EXT 0x9586
 typedef void (GLAPI *PFN_glCreateMemoryObjectsEXT)(GLsizei, GLuint *);
 typedef void (GLAPI *PFN_glDeleteMemoryObjectsEXT)(GLsizei, const GLuint *);
 typedef void (GLAPI *PFN_glMemoryObjectParameterivEXT)(GLuint, GLenum, const GLint *);
-typedef void (GLAPI *PFN_glImportMemoryWin32HandleEXT)(GLuint, GLuint64, GLenum, void *);
+#ifdef _WIN32
+typedef void (GLAPI *PFN_glImportMemoryHandle)(GLuint, GLuint64, GLenum, void *);
+typedef void (GLAPI *PFN_glImportSemaphoreHandle)(GLuint, GLenum, void *);
+#else
+typedef void (GLAPI *PFN_glImportMemoryHandle)(GLuint, GLuint64, GLenum, int);
+typedef void (GLAPI *PFN_glImportSemaphoreHandle)(GLuint, GLenum, int);
+#endif
 typedef void (GLAPI *PFN_glTexStorageMem2DEXT)(GLenum, GLsizei, GLenum, GLsizei, GLsizei, GLuint, GLuint64);
 typedef void (GLAPI *PFN_glGenSemaphoresEXT)(GLsizei, GLuint *);
 typedef void (GLAPI *PFN_glDeleteSemaphoresEXT)(GLsizei, const GLuint *);
-typedef void (GLAPI *PFN_glImportSemaphoreWin32HandleEXT)(GLuint, GLenum, void *);
+
 typedef void (GLAPI *PFN_glSignalSemaphoreEXT)(GLuint, GLuint, const GLuint *, GLuint, const GLuint *, const GLenum *);
 typedef void (GLAPI *PFN_glWaitSemaphoreEXT)(GLuint, GLuint, const GLuint *, GLuint, const GLuint *, const GLenum *);
 typedef void (GLAPI *PFN_glGetUnsignedBytei_vEXT)(GLenum, GLuint, unsigned char *);
@@ -163,11 +208,11 @@ static struct {
     PFN_glCreateMemoryObjectsEXT CreateMemoryObjects;
     PFN_glDeleteMemoryObjectsEXT DeleteMemoryObjects;
     PFN_glMemoryObjectParameterivEXT MemoryObjectParameteriv;
-    PFN_glImportMemoryWin32HandleEXT ImportMemoryWin32Handle;
+    PFN_glImportMemoryHandle ImportMemoryHandle;
     PFN_glTexStorageMem2DEXT TexStorageMem2D;
     PFN_glGenSemaphoresEXT GenSemaphores;
     PFN_glDeleteSemaphoresEXT DeleteSemaphores;
-    PFN_glImportSemaphoreWin32HandleEXT ImportSemaphoreWin32Handle;
+    PFN_glImportSemaphoreHandle ImportSemaphoreHandle;
     PFN_glSignalSemaphoreEXT SignalSemaphore;
     PFN_glWaitSemaphoreEXT WaitSemaphore;
     PFN_glGetUnsignedBytei_vEXT GetUnsignedBytei_v;
@@ -240,7 +285,7 @@ static void destroy_image(AudImage *im)
 static int create_image(AudImage *im, unsigned w, unsigned h, VkFormat vkFmt, GLenum glFmt)
 {
     VkExternalMemoryImageCreateInfo ext = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO};
-    ext.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+    ext.handleTypes = AUD_MEMORY_HANDLE;
     VkImageCreateInfo ici = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, &ext};
     ici.imageType = VK_IMAGE_TYPE_2D;
     ici.format = vkFmt;
@@ -262,7 +307,7 @@ static int create_image(AudImage *im, unsigned w, unsigned h, VkFormat vkFmt, GL
     VkMemoryDedicatedAllocateInfo ded = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO};
     ded.image = im->image;
     VkExportMemoryAllocateInfo exp = {VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO, &ded};
-    exp.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+    exp.handleTypes = AUD_MEMORY_HANDLE;
     VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &exp};
     mai.allocationSize = req.size;
     mai.memoryTypeIndex = find_memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
@@ -281,18 +326,34 @@ static int create_image(AudImage *im, unsigned w, unsigned h, VkFormat vkFmt, GL
     vci.subresourceRange.layerCount = 1;
     if (vkCreateImageView_(g_dev, &vci, NULL, &im->view) != VK_SUCCESS) { LOG("dlss: vkCreateImageView failed"); return 0; }
 
+#ifdef _WIN32
     VkMemoryGetWin32HandleInfoKHR hi = {VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR};
     hi.memory = im->memory;
-    hi.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+    hi.handleType = AUD_MEMORY_HANDLE;
     HANDLE handle = NULL;
     if (vkGetMemoryWin32HandleKHR_(g_dev, &hi, &handle) != VK_SUCCESS || !handle) { LOG("dlss: memory export failed"); return 0; }
 
+#else
+    VkMemoryGetFdInfoKHR hi = {VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR};
+    hi.memory = im->memory;
+    hi.handleType = AUD_MEMORY_HANDLE;
+    int handle = -1;
+    if (vkGetMemoryFdKHR_(g_dev, &hi, &handle) != VK_SUCCESS || handle < 0) {
+        LOG("dlss: memory fd export failed"); return 0;
+    }
+#endif
     gl_ok("before shared image import");
     gl.CreateMemoryObjects(1, &im->glMem);
     GLint dedicated = 1;
     gl.MemoryObjectParameteriv(im->glMem, GL_DEDICATED_MEMORY_OBJECT_EXT, &dedicated);
-    gl.ImportMemoryWin32Handle(im->glMem, req.size, GL_HANDLE_TYPE_OPAQUE_WIN32_EXT, handle);
+#ifdef _WIN32
+    gl.ImportMemoryHandle(im->glMem, req.size, GL_HANDLE_TYPE_OPAQUE_WIN32_EXT, handle);
     CloseHandle(handle);
+#else
+    // A successful GL import consumes the fd; on failure it remains ours.
+    gl.ImportMemoryHandle(im->glMem, req.size, GL_HANDLE_TYPE_OPAQUE_FD_EXT, handle);
+    if (!gl_ok("shared image fd import")) { close(handle); return 0; }
+#endif
     if (!gl_ok("shared image import") || !im->glMem) return 0;
     GLint prev = 0;
     gl.GetIntegerv(GL_TEXTURE_BINDING_2D, &prev);
@@ -330,18 +391,31 @@ static int create_image(AudImage *im, unsigned w, unsigned h, VkFormat vkFmt, GL
 static int create_semaphore(VkSemaphore *vk, GLuint *glSem)
 {
     VkExportSemaphoreCreateInfo exp = {VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO};
-    exp.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+    exp.handleTypes = AUD_SEMAPHORE_HANDLE;
     VkSemaphoreCreateInfo sci = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, &exp};
     if (vkCreateSemaphore_(g_dev, &sci, NULL, vk) != VK_SUCCESS) return 0;
+#ifdef _WIN32
     VkSemaphoreGetWin32HandleInfoKHR hi = {VK_STRUCTURE_TYPE_SEMAPHORE_GET_WIN32_HANDLE_INFO_KHR};
     hi.semaphore = *vk;
-    hi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+    hi.handleType = AUD_SEMAPHORE_HANDLE;
     HANDLE handle = NULL;
     if (vkGetSemaphoreWin32HandleKHR_(g_dev, &hi, &handle) != VK_SUCCESS || !handle) return 0;
+#else
+    VkSemaphoreGetFdInfoKHR hi = {VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR};
+    hi.semaphore = *vk;
+    hi.handleType = AUD_SEMAPHORE_HANDLE;
+    int handle = -1;
+    if (vkGetSemaphoreFdKHR_(g_dev, &hi, &handle) != VK_SUCCESS || handle < 0) return 0;
+#endif
     gl_ok("before shared semaphore import");
     gl.GenSemaphores(1, glSem);
-    gl.ImportSemaphoreWin32Handle(*glSem, GL_HANDLE_TYPE_OPAQUE_WIN32_EXT, handle);
+#ifdef _WIN32
+    gl.ImportSemaphoreHandle(*glSem, GL_HANDLE_TYPE_OPAQUE_WIN32_EXT, handle);
     CloseHandle(handle);
+#else
+    gl.ImportSemaphoreHandle(*glSem, GL_HANDLE_TYPE_OPAQUE_FD_EXT, handle);
+    if (!gl_ok("shared semaphore fd import")) { close(handle); return 0; }
+#endif
     return gl_ok("shared semaphore import") && *glSem != 0;
 }
 
@@ -359,7 +433,8 @@ static void NVSDK_CONV ngx_log_cb(const char *message, NVSDK_NGX_Logging_Level l
     LOG("ngx: %s", line);
 }
 
-static HMODULE load_ngx_core(void)
+#ifdef _WIN32
+static AudLibrary load_ngx_core(void)
 {
     static const struct { const wchar_t *key, *value; } regs[] = {
         {L"SYSTEM\\CurrentControlSet\\Services\\nvlddmkm\\Parameters\\NGXCore", L"NGXPath"},
@@ -386,6 +461,13 @@ static HMODULE load_ngx_core(void)
     return NULL;
 }
 
+#else
+static AudLibrary load_ngx_core(void)
+{
+    return dlopen("libnvidia-ngx.so.1", RTLD_NOW | RTLD_LOCAL);
+}
+#endif
+
 static int has_ext(const char *name, const char **list, unsigned n)
 {
     for (unsigned i = 0; i < n; i++) if (!strcmp(list[i], name)) return 1;
@@ -399,11 +481,19 @@ static int aud_init_context(AudLogFn log, AudGetProcFn glGetProc, const wchar_t 
     GLP(CreateMemoryObjects, "glCreateMemoryObjectsEXT")
     GLP(DeleteMemoryObjects, "glDeleteMemoryObjectsEXT")
     GLP(MemoryObjectParameteriv, "glMemoryObjectParameterivEXT")
-    GLP(ImportMemoryWin32Handle, "glImportMemoryWin32HandleEXT")
+#ifdef _WIN32
+    GLP(ImportMemoryHandle, "glImportMemoryWin32HandleEXT")
+#else
+    GLP(ImportMemoryHandle, "glImportMemoryFdEXT")
+#endif
     GLP(TexStorageMem2D, "glTexStorageMem2DEXT")
     GLP(GenSemaphores, "glGenSemaphoresEXT")
     GLP(DeleteSemaphores, "glDeleteSemaphoresEXT")
-    GLP(ImportSemaphoreWin32Handle, "glImportSemaphoreWin32HandleEXT")
+#ifdef _WIN32
+    GLP(ImportSemaphoreHandle, "glImportSemaphoreWin32HandleEXT")
+#else
+    GLP(ImportSemaphoreHandle, "glImportSemaphoreFdEXT")
+#endif
     GLP(SignalSemaphore, "glSignalSemaphoreEXT")
     GLP(WaitSemaphore, "glWaitSemaphoreEXT")
     GLP(GetUnsignedBytei_v, "glGetUnsignedBytei_vEXT")
@@ -418,17 +508,22 @@ static int aud_init_context(AudLogFn log, AudGetProcFn glGetProc, const wchar_t 
     GLP(Finish, "glFinish")
 #undef GLP
 
-    HMODULE vk = LoadLibraryW(L"vulkan-1.dll");
-    if (!vk) { LOG("dlss: vulkan-1.dll not found"); return 0; }
-    vkGetInstanceProcAddr_ = (PFN_vkGetInstanceProcAddr)GetProcAddress(vk, "vkGetInstanceProcAddr");
+#ifdef _WIN32
+    if (!g_vulkan) g_vulkan = LoadLibraryW(L"vulkan-1.dll");
+#else
+    if (!g_vulkan) g_vulkan = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
+#endif
+    if (!g_vulkan) { LOG("dlss: Vulkan loader not found"); return 0; }
+    vkGetInstanceProcAddr_ = (PFN_vkGetInstanceProcAddr)aud_symbol(g_vulkan, "vkGetInstanceProcAddr");
+    if (!vkGetInstanceProcAddr_) return 0;
     vkCreateInstance_ = (PFN_vkCreateInstance)vkGetInstanceProcAddr_(NULL, "vkCreateInstance");
     vkEnumerateInstanceExtensionProperties_ = (PFN_vkEnumerateInstanceExtensionProperties)vkGetInstanceProcAddr_(NULL, "vkEnumerateInstanceExtensionProperties");
 
     // The NGX core must be found before the instance: it lists the extensions DLSS needs.
     // The driver's Vulkan ICD is not loaded yet, so the registry is the way to it here.
-    g_ngx = load_ngx_core();
-    if (!g_ngx) { LOG("dlss: NVIDIA NGX core (_nvngx.dll) not found"); return 0; }
-#define NGXP(var, name) var = (void *)GetProcAddress(g_ngx, name); if (!var) { LOG("dlss: NGX export %s missing", name); return 0; }
+    if (!g_ngx) g_ngx = load_ngx_core();
+    if (!g_ngx) { LOG("dlss: NVIDIA NGX driver library not found"); return 0; }
+#define NGXP(var, name) var = (void *)aud_symbol(g_ngx, name); if (!var) { LOG("dlss: NGX export %s missing", name); return 0; }
     NGXP(ngxRequiredExtensions, "NVSDK_NGX_VULKAN_RequiredExtensions")
     NGXP(ngxInit, "NVSDK_NGX_VULKAN_Init_ProjectID_Ext")
     NGXP(ngxShutdown1, "NVSDK_NGX_VULKAN_Shutdown1")
@@ -479,11 +574,12 @@ static int aud_init_context(AudLogFn log, AudGetProcFn glGetProc, const wchar_t 
         VkPhysicalDeviceIDProperties idp = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
         VkPhysicalDeviceProperties2 p2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &idp};
         vkGetPhysicalDeviceProperties2_(phys[i], &p2);
-        if (!memcmp(idp.deviceUUID, glUuid, VK_UUID_SIZE)) {
+        if (p2.properties.vendorID == 0x10DE && !memcmp(idp.deviceUUID, glUuid, VK_UUID_SIZE)) {
             g_phys = phys[i];
             LOG("dlss: Vulkan device %s (same GPU as the GL context)", p2.properties.deviceName);
         }
     }
+#ifdef _WIN32
     for (uint32_t i = 0; i < nPhys && !g_phys; i++) {
         VkPhysicalDeviceProperties2 p2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
         vkGetPhysicalDeviceProperties2_(phys[i], &p2);
@@ -492,7 +588,8 @@ static int aud_init_context(AudLogFn log, AudGetProcFn glGetProc, const wchar_t 
             LOG("dlss: Vulkan device %s (GL device UUID did not match)", p2.properties.deviceName);
         }
     }
-    if (!g_phys) { LOG("dlss: no NVIDIA Vulkan device"); return 0; }
+#endif
+    if (!g_phys) { LOG("dlss: no NVIDIA Vulkan device matching the GL context"); return 0; }
     vkGetPhysicalDeviceMemoryProperties_(g_phys, &g_memProps);
 
     uint32_t nq = 0;
@@ -512,12 +609,16 @@ static int aud_init_context(AudLogFn log, AudGetProcFn glGetProc, const wchar_t 
     vkEnumerateDeviceExtensionProperties_(g_phys, NULL, &nAvail, avail);
     const char *want[64];
     unsigned nWant = 0;
+#ifdef _WIN32
     const char *extra[] = {"VK_KHR_external_memory_win32", "VK_KHR_external_semaphore_win32"};
+#else
+    const char *extra[] = {"VK_KHR_external_memory_fd", "VK_KHR_external_semaphore_fd"};
+#endif
     for (unsigned i = 0; i < nDev + 2 && nWant < 64; i++) {
         const char *e = i < nDev ? devExts[i] : extra[i - nDev];
         int ok = 0;
         for (uint32_t k = 0; k < nAvail; k++) if (!strcmp(avail[k].extensionName, e)) ok = 1;
-        if (!ok) { LOG("dlss: device extension %s not available", e); continue; }
+        if (!ok) { LOG("dlss: device extension %s not available", e); free(avail); return 0; }
         if (!has_ext(e, want, nWant)) want[nWant++] = e;
     }
     free(avail);
@@ -549,28 +650,32 @@ static int aud_init_context(AudLogFn log, AudGetProcFn glGetProc, const wchar_t 
     if (context) vkGetDeviceProcAddr_ = (PFN_vkGetDeviceProcAddr)context->getDeviceProcAddr;
 #define VK_LOAD_D(n) { PFN_vkVoidFunction f = vkGetDeviceProcAddr_(g_dev, #n); if (f) n##_ = (PFN_##n)f; }
     VK_FUNCS(VK_LOAD_D)
+#define VK_CHECK_INTEROP(n) if (!n##_) { LOG("dlss: Vulkan entry point %s missing", #n); return 0; }
+    VK_INTEROP_FUNCS(VK_CHECK_INTEROP)
+#undef VK_CHECK_INTEROP
     vkGetDeviceQueue_(g_dev, g_qfam, 0, &g_queue);
     vkGetPhysicalDeviceMemoryProperties_(g_phys, &g_memProps);
 
     VkCommandPoolCreateInfo pci = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     pci.queueFamilyIndex = g_qfam;
-    vkCreateCommandPool_(g_dev, &pci, NULL, &g_pool);
+    if (!vk_ok(vkCreateCommandPool_(g_dev, &pci, NULL, &g_pool), "create command pool")) return 0;
     VkCommandBufferAllocateInfo cai = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     cai.commandPool = g_pool;
     cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cai.commandBufferCount = AUD_FRAMES;
-    vkAllocateCommandBuffers_(g_dev, &cai, g_cmd);
+    if (!vk_ok(vkAllocateCommandBuffers_(g_dev, &cai, g_cmd), "allocate command buffers")) return 0;
     for (int i = 0; i < AUD_FRAMES; i++) {
         VkFenceCreateInfo fci = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
         fci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-        vkCreateFence_(g_dev, &fci, NULL, &g_fence[i]);
+        if (!vk_ok(vkCreateFence_(g_dev, &fci, NULL, &g_fence[i]), "create command fence")) return 0;
     }
     if (!create_semaphore(&g_semGLDone, &g_glSemGLDone) || !create_semaphore(&g_semVKDone, &g_glSemVKDone)) {
         LOG("dlss: shared semaphores failed");
         return 0;
     }
 
+#ifdef _WIN32
     wchar_t framegenDirectory[MAX_PATH], framegenRuntime[MAX_PATH];
     _snwprintf(framegenDirectory, MAX_PATH, L"%ls", dllDir);
     framegenDirectory[MAX_PATH - 1] = 0;
@@ -582,10 +687,17 @@ static int aud_init_context(AudLogFn log, AudGetProcFn glGetProc, const wchar_t 
         framegenPath = length > 0 && length < MAX_PATH && GetFileAttributesW(framegenRuntime) != INVALID_FILE_ATTRIBUTES;
     }
     const wchar_t *paths[2] = {dllDir, framegenDirectory};
+#else
+    const wchar_t *paths[] = {dllDir};
+#endif
     NVSDK_NGX_FeatureCommonInfo info;
     memset(&info, 0, sizeof(info));
     info.PathListInfo.Path = paths;
+#ifdef _WIN32
     info.PathListInfo.Length = framegenPath ? 2 : 1;
+#else
+    info.PathListInfo.Length = 1;
+#endif
     info.LoggingInfo.LoggingCallback = ngx_log_cb;
     info.LoggingInfo.MinimumLoggingLevel = NVSDK_NGX_LOGGING_LEVEL_ON;
     r = context ? NVSDK_NGX_Result_Success : ngxInit("a3f1c9e2-7b4d-4e8a-9c6f-5d2b8e1a4f70", NVSDK_NGX_ENGINE_TYPE_CUSTOM, "1.0", dataDir,
@@ -610,7 +722,9 @@ static int aud_init_context(AudLogFn log, AudGetProcFn glGetProc, const wchar_t 
 
 int aud_init(AudLogFn log, AudGetProcFn glGetProc, const wchar_t *dllDir, const wchar_t *dataDir)
 {
-    return aud_init_context(log, glGetProc, dllDir, dataDir, NULL);
+    int ready = aud_init_context(log, glGetProc, dllDir, dataDir, NULL);
+    if (!ready) aud_shutdown();
+    return ready;
 }
 
 int aud_init_shared(AudLogFn log, AudGetProcFn glGetProc, const wchar_t *dllDir, const wchar_t *dataDir, const AudVulkanContext *context)
@@ -845,7 +959,11 @@ int aud_evaluate(float jitterX, float jitterY, float mvScaleX, float mvScaleY, i
 
 void aud_shutdown(void)
 {
-    if (!g_dev) return;
+    if (!g_dev) {
+        if (g_inst && g_ownsDevice && vkDestroyInstance_) vkDestroyInstance_(g_inst, NULL);
+        g_inst = VK_NULL_HANDLE; g_phys = VK_NULL_HANDLE;
+        return;
+    }
     gl.Finish();
     release_feature();
     if (g_params) { ngxDestroyParameters(g_params); g_params = NULL; }
@@ -872,4 +990,5 @@ void aud_shutdown(void)
     g_pool = VK_NULL_HANDLE; g_semGLDone = g_semVKDone = VK_NULL_HANDLE;
     g_glSemGLDone = g_glSemVKDone = 0; g_frameIdx = 0;
     g_bridgeFailed = 0;
+    g_rrAvailable = g_rr = 0;
 }

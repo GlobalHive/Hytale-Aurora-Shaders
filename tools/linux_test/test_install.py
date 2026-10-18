@@ -19,6 +19,15 @@ class LinuxInstallTests(unittest.TestCase):
         self.assertIn("AU_DLSS 0", merged)
         self.assertIn("AU_GI_DENOISER 1", merged)
 
+    def test_dlss_build_preserves_dlss_settings_but_disables_frame_generation(self):
+        defaults = "#define AU_DLSS 0\n#define AU_GI_DENOISER 1\n#define AU_RENDER_SCALE 100\n#define AU_DLSS_FRAMEGEN 0\n"
+        previous = "#define AU_DLSS 1\n#define AU_GI_DENOISER 2\n#define AU_RENDER_SCALE 77\n#define AU_DLSS_FRAMEGEN 2\n"
+        merged = linux_hook.merge_settings(defaults, previous, dlss_supported=True)
+        self.assertIn("AU_DLSS 1", merged)
+        self.assertIn("AU_GI_DENOISER 2", merged)
+        self.assertIn("AU_RENDER_SCALE 77", merged)
+        self.assertIn("AU_DLSS_FRAMEGEN 0", merged)
+
     def test_ice_material_has_transmission_tag(self):
         self.assertEqual(classify("Ice_Blue"), (1, 6))
         self.assertEqual(classify("Glass_Clear"), (1, 7))
@@ -57,6 +66,10 @@ class LinuxInstallTests(unittest.TestCase):
             self.assertIn("AU_DLSS 0", settings.read_text())
             self.assertEqual((presets / "preset-00.glsl").read_text(), custom)
             self.assertEqual((masks / "Oak.png").read_bytes(), b"custom mask fixture")
+            proxy.write_bytes(original + linux_hook.MARKER + linux_hook.DLSS_MARKER)
+            settings.write_text("#define AU_SCREEN_BRIGHTNESS 1.5\n#define AU_DLSS 1\n")
+            linux_hook.install(client, proxy, pack)
+            self.assertIn("AU_DLSS 1", settings.read_text())
             linux_hook.uninstall(client)
             self.assertEqual(library.read_bytes(), original)
             self.assertTrue(settings.is_file())
