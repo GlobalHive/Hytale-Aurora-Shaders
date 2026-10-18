@@ -1,19 +1,37 @@
+#define _GNU_SOURCE
 // Installer capability probe: dynamically load EGL so development packages are unnecessary.
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <wchar.h>
+#include <locale.h>
 #include "../../hook/aud_dlss.h"
 typedef void *Display;
 static void *egl;
 static void *(*get_proc)(const char *);
 static void *gl_proc(const char *name) { return get_proc(name); }
+static int decode_runtime_path(wchar_t *out, size_t capacity, const char *path)
+{
+    if (!capacity) return 0;
+    // Do not depend on the invoking shell's locale (or change NGX's numeric locale).
+    locale_t utf8 = newlocale(LC_CTYPE_MASK, "C.UTF-8", (locale_t)0);
+    if (!utf8) return 0;
+    locale_t previous = uselocale(utf8);
+    size_t length = mbstowcs(out, path, capacity);
+    uselocale(previous);
+    freelocale(utf8);
+    if (length == (size_t)-1 || length >= capacity) { out[0] = 0; return 0; }
+    return 1;
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 2) return 1;
     wchar_t directory[4096];
-    if (mbstowcs(directory, argv[1], 4096) == (size_t)-1) return 1;
-    directory[4095] = 0;
+    if (!decode_runtime_path(directory, sizeof directory / sizeof *directory, argv[1])) {
+        puts("Runtime directory is not valid UTF-8 or is too long");
+        return 1;
+    }
     egl = dlopen("libEGL.so.1", RTLD_NOW | RTLD_LOCAL);
     if (!egl) { puts("EGL runtime unavailable"); return 1; }
 #define LOAD(type, name, args) type (*name) args = (void *)dlsym(egl, #name); if (!name) return 1

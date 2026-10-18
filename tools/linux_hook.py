@@ -67,11 +67,20 @@ def atomic_copy(source, target):
 def merge_settings(defaults, previous, dlss_supported=False):
     scalar = r"(?m)^(#define\s+(AU_\w+)\s+)([-+]?\d+(?:\.\d+)?)(?=\s|$)"
     values = {match[1]: match[2] for match in re.findall(scalar, previous)}
+    # Older Linux installers zeroed every DLSS option, including motion/jitter
+    # multipliers. Detect that signature without overwriting individual user edits.
+    legacy_motion = ("AU_DLSS_JITTER", "AU_DLSS_JITTER_SX", "AU_DLSS_JITTER_SY",
+                     "AU_DLSS_MOTION_SX", "AU_DLSS_MOTION_SY")
+    legacy_dlss_zeroed = all(name in values and float(values[name]) == 0 for name in legacy_motion)
 
     def update(match):
         name = match[2]
         value = values.get(name, match[3])
-        if not dlss_supported and (name.startswith("AU_DLSS") or name == "AU_RENDER_SCALE"):
+        if legacy_dlss_zeroed and name.startswith("AU_DLSS_") and float(value) == 0:
+            value = match[3]
+        # Disable the backend, not its tuning values: they must survive a later
+        # driver repair or an upgrade to a DLSS-capable installation.
+        if not dlss_supported and name in ("AU_DLSS", "AU_RENDER_SCALE"):
             value = "0"
         if name == "AU_DLSS_FRAMEGEN":
             value = "0"

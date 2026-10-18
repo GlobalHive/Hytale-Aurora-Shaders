@@ -474,6 +474,36 @@ static int has_ext(const char *name, const char **list, unsigned n)
     return 0;
 }
 
+// NGX's legacy query still requests EXT_buffer_device_address. It cannot be
+// enabled alongside Vulkan 1.2 bufferDeviceAddress (VUID-pNext-04748). Prefer
+// the core feature when available; it needs no extension name on our Vulkan 1.3 device.
+static int select_device_extensions(const char **required, unsigned requiredCount,
+                                    const VkExtensionProperties *available, unsigned availableCount,
+                                    VkBool32 coreBufferAddress, const char **selected,
+                                    unsigned capacity, unsigned *selectedCount)
+{
+#ifdef _WIN32
+    const char *interop[] = {"VK_KHR_external_memory_win32", "VK_KHR_external_semaphore_win32"};
+#else
+    const char *interop[] = {"VK_KHR_external_memory_fd", "VK_KHR_external_semaphore_fd"};
+#endif
+    *selectedCount = 0;
+    for (unsigned i = 0; i < requiredCount + 2; i++) {
+        const char *name = i < requiredCount ? required[i] : interop[i - requiredCount];
+        if (coreBufferAddress && !strcmp(name, "VK_EXT_buffer_device_address")) continue;
+        if (has_ext(name, selected, *selectedCount)) continue;
+        int supported = 0;
+        for (unsigned k = 0; k < availableCount; k++)
+            if (!strcmp(available[k].extensionName, name)) supported = 1;
+        if (!supported || *selectedCount >= capacity) {
+            LOG("dlss: required device extension %s unavailable or extension list full", name);
+            return 0;
+        }
+        selected[(*selectedCount)++] = name;
+    }
+    return 1;
+}
+
 static int aud_init_context(AudLogFn log, AudGetProcFn glGetProc, const wchar_t *dllDir, const wchar_t *dataDir, const AudVulkanContext *context)
 {
     g_log = log;
@@ -602,27 +632,6 @@ static int aud_init_context(AudLogFn log, AudGetProcFn glGetProc, const wchar_t 
         if ((qf[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) == (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) { g_qfam = i; break; }
     if (g_qfam == UINT32_MAX) { LOG("dlss: no graphics queue"); return 0; }
 
-    // Extensions: NGX's plus the external memory / semaphore ones, those the device has.
-    uint32_t nAvail = 0;
-    vkEnumerateDeviceExtensionProperties_(g_phys, NULL, &nAvail, NULL);
-    VkExtensionProperties *avail = (VkExtensionProperties *)calloc(nAvail, sizeof(VkExtensionProperties));
-    vkEnumerateDeviceExtensionProperties_(g_phys, NULL, &nAvail, avail);
-    const char *want[64];
-    unsigned nWant = 0;
-#ifdef _WIN32
-    const char *extra[] = {"VK_KHR_external_memory_win32", "VK_KHR_external_semaphore_win32"};
-#else
-    const char *extra[] = {"VK_KHR_external_memory_fd", "VK_KHR_external_semaphore_fd"};
-#endif
-    for (unsigned i = 0; i < nDev + 2 && nWant < 64; i++) {
-        const char *e = i < nDev ? devExts[i] : extra[i - nDev];
-        int ok = 0;
-        for (uint32_t k = 0; k < nAvail; k++) if (!strcmp(avail[k].extensionName, e)) ok = 1;
-        if (!ok) { LOG("dlss: device extension %s not available", e); free(avail); return 0; }
-        if (!has_ext(e, want, nWant)) want[nWant++] = e;
-    }
-    free(avail);
-
     // Every feature the device supports (DLSS uses several), minus robust buffer access.
     VkPhysicalDeviceVulkan13Features f13 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     VkPhysicalDeviceVulkan12Features f12 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, &f13};
@@ -631,6 +640,21 @@ static int aud_init_context(AudLogFn log, AudGetProcFn glGetProc, const wchar_t 
     vkGetPhysicalDeviceFeatures2_(g_phys, &f2);
     f2.features.robustBufferAccess = VK_FALSE;
     f13.robustImageAccess = VK_FALSE;
+
+    // Extensions: NGX requirements plus platform resource sharing.
+    uint32_t nAvail = 0;
+    if (!vk_ok(vkEnumerateDeviceExtensionProperties_(g_phys, NULL, &nAvail, NULL), "enumerate device extensions")) return 0;
+    VkExtensionProperties *avail = (VkExtensionProperties *)calloc(nAvail, sizeof(*avail));
+    if (!avail) return 0;
+    if (!vk_ok(vkEnumerateDeviceExtensionProperties_(g_phys, NULL, &nAvail, avail), "read device extensions")) {
+        free(avail); return 0;
+    }
+    const char *want[64];
+    unsigned nWant = 0;
+    int extensionsReady = select_device_extensions(devExts, nDev, avail, nAvail,
+        f12.bufferDeviceAddress, want, sizeof want / sizeof *want, &nWant);
+    free(avail);
+    if (!extensionsReady) return 0;
 
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qci = {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};

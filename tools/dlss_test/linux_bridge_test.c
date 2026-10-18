@@ -24,8 +24,36 @@ static void mock_import(GLuint s, GLenum type, int fd)
     if (fail_import) error = 0x0502; else assert(close(fd) == 0);
 }
 static GLenum mock_error(void) { GLenum e = error; error = 0; return e; }
+static void test_extension_selection(void)
+{
+    const char *required[] = {"VK_NVX_binary_import", "VK_NVX_image_view_handle",
+        "VK_EXT_buffer_device_address", "VK_KHR_push_descriptor", "VK_NVX_binary_import"};
+    const char *names[] = {"VK_NVX_binary_import", "VK_NVX_image_view_handle",
+        "VK_KHR_push_descriptor", "VK_KHR_external_memory_fd", "VK_KHR_external_semaphore_fd",
+        "VK_EXT_buffer_device_address"};
+    VkExtensionProperties available[6] = {0};
+    for (unsigned i = 0; i < 6; i++) strcpy(available[i].extensionName, names[i]);
+    const char *selected[8]; unsigned count;
+    // Core BDA must work even when the deprecated extension is no longer advertised.
+    assert(select_device_extensions(required, 5, available, 5, VK_TRUE, selected, 8, &count));
+    assert(count == 5 && !has_ext("VK_EXT_buffer_device_address", selected, count));
+    assert(has_ext("VK_KHR_external_memory_fd", selected, count));
+    assert(has_ext("VK_KHR_external_semaphore_fd", selected, count));
+    // Even when advertised, EXT must never accompany an enabled core BDA feature.
+    assert(select_device_extensions(required, 5, available, 6, VK_TRUE, selected, 8, &count));
+    assert(!has_ext("VK_EXT_buffer_device_address", selected, count));
+    assert(select_device_extensions(required, 5, available, 6, VK_FALSE, selected, 8, &count));
+    assert(has_ext("VK_EXT_buffer_device_address", selected, count));
+    assert(!select_device_extensions(required, 5, available, 5, VK_FALSE, selected, 8, &count));
+    // Required interop remains mandatory; do not silently truncate the list.
+    assert(!select_device_extensions(required, 5, available, 4, VK_TRUE, selected, 8, &count));
+    assert(!select_device_extensions(required, 5, available, 6, VK_TRUE, selected, 4, &count));
+    puts("PASS: core/legacy Vulkan buffer address selection and required interop extensions");
+}
+
 int main(void)
 {
+    test_extension_selection();
     vkCreateSemaphore_ = mock_semaphore; vkGetSemaphoreFdKHR_ = mock_fd;
     gl.GenSemaphores = mock_gen; gl.ImportSemaphoreHandle = mock_import; gl.GetError = mock_error;
     VkSemaphore sem; GLuint glsem;

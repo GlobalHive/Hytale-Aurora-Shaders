@@ -11,3 +11,5 @@ flags=(-std=gnu11 -O1 -g -I"$sdk/include" -I"$vulkan/include" -Wno-missing-field
 "${CC:-cc}" "${flags[@]}" $(pkg-config --cflags cairo) "$root/tools/dlss_test/linux_scale_test.c" \
     "$root/hook/aud_dlss.c" -o "$stage/scale" $(pkg-config --libs cairo) -ldl -lpthread -lm
 "$stage/scale" "$root/shaderpack"
+"${CC:-cc}" "${flags[@]}" "$root/tools/dlss_test/linux_path_test.c" -o "$stage/path" -ldl
+"$stage/path"
