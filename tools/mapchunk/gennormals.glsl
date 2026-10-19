@@ -7,6 +7,24 @@
         if (auFoliageSSS.y > 0.5) { hasSSAO = false; useCleanShadowBackfaces = false; }
     }
 #endif
+    // Block materials: the hook recognises every tile of the block atlas (its pixels against
+    // the game's own block textures, classified by name at install) and hands the result over
+    // per tile: class 1 polished, 2 metal, 3 porous; level 0-7. Written to G-buffer meta: class
+    // in bits 5-6, level in bits 2-4 (the ore glow level's bits: ores are REFLECTIVE, these never).
+    float auMatClass = 0.0, auMatLevel = 0.0;
+#if AU_MATERIALS || AU_SSS
+    if (!hasBloom && shadingMode != SHADING_REFLECTIVE)
+    {
+        ivec3 auTile = ivec3(ivec2(fragTexCoords * vec2(textureSize(uTexture, 0).xy) / 32.0), int(fragAtlasPages.x + 0.5));
+        vec2 auMat = texelFetch(uHookMaterials, auTile, 0).rg * 255.0;
+        auMatClass = floor(auMat.x + 0.5);
+        auMatLevel = floor(auMat.y + 0.5);
+#if !AU_MATERIALS
+        if (auMatClass != 1.0 || auMatLevel != 6.0) { auMatClass = 0.0; auMatLevel = 0.0; }
+#endif
+    }
+#endif
+
 #if AU_GENERATED_NORMALS
     // Generated normals: compare the texel's brightness
     // with neighbours a fraction of a texel away, so only texel edges bevel, with a dead zone
@@ -37,7 +55,12 @@
         float auMeanHeight = auHeightWeight > 0.0 ? auHeightSum / auHeightWeight : lOriginal;
         vec2 auResolved = (tileSize / 32.0) / offsetR;
         albedo = AU_TextureDefinition(albedo, lOriginal, auMeanHeight, min(auResolved.x, auResolved.y));
-        nts.xy *= AU_GENERATED_NORMAL_MULT * 0.025 * sqrt(AU_GENERATED_NORMAL_RES / 128.0) * (originalOffsetR / offsetR);
+        // Smoother materials carry less relief: a polished slab, ice or a metal plate bevelled at
+        // every texel edge read as a bumpy surface and broke their reflections into grain.
+        float auRelief = auMatClass == 1.0 ? 1.0 - 0.6 * (auMatLevel / 7.0)
+                       : auMatClass == 2.0 ? 1.0 - 0.4 * (auMatLevel / 7.0) : 1.0;
+        auRelief = mix(1.0, auRelief, clamp(AU_MATERIAL_RELIEF, 0.0, 1.0));
+        nts.xy *= AU_GENERATED_NORMAL_MULT * 0.025 * sqrt(AU_GENERATED_NORMAL_RES / 128.0) * (originalOffsetR / offsetR) * auRelief;
         nts.xy = clamp(nts.xy, vec2(-1.0), vec2(1.0));
 
         if (nts.xy != vec2(0.0)) {
@@ -57,24 +80,6 @@
                 if (dot(bumped, normalWS) > 0.2) normalWS = bumped;
             }
         }
-    }
-#endif
-
-    // Block materials: the hook recognises every tile of the block atlas (its pixels against
-    // the game's own block textures, classified by name at install) and hands the result over
-    // per tile: class 1 polished, 2 metal, 3 porous; level 0-7. Written to G-buffer meta: class
-    // in bits 5-6, level in bits 2-4 (the ore glow level's bits: ores are REFLECTIVE, these never).
-    float auMatClass = 0.0, auMatLevel = 0.0;
-#if AU_MATERIALS || AU_SSS
-    if (!hasBloom && shadingMode != SHADING_REFLECTIVE)
-    {
-        ivec3 auTile = ivec3(ivec2(fragTexCoords * vec2(textureSize(uTexture, 0).xy) / 32.0), int(fragAtlasPages.x + 0.5));
-        vec2 auMat = texelFetch(uHookMaterials, auTile, 0).rg * 255.0;
-        auMatClass = floor(auMat.x + 0.5);
-        auMatLevel = floor(auMat.y + 0.5);
-#if !AU_MATERIALS
-        if (auMatClass != 1.0 || auMatLevel != 6.0) { auMatClass = 0.0; auMatLevel = 0.0; }
-#endif
     }
 #endif
 

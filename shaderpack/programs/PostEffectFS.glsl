@@ -18,7 +18,7 @@
 uniform vec2 uPixelSize;
 #include "DepthOfField_inc.glsl"
 #include "AU_Tonemap.glsl"
-#if AU_DEBUG || AU_LENSFLARE || AU_DLSS || AU_DLSS_FRAMEGEN
+#if AU_DEBUG || AU_LENSFLARE || AU_DLSS || AU_DLSS_FRAMEGEN || AU_ADAPTIVE_EXPOSURE
 #include "SceneData_inc.glsl"
 #include "AU_Common.glsl"
 #endif
@@ -46,6 +46,7 @@ layout(r8) uniform writeonly image2D auDlssResponsive;
 // units 5-7), worked out here from Hytale's G-buffer (shared by the hook).
 #include "Deferred_inc.glsl"
 #include "AU_Surface.glsl"
+#include "AU_Material.glsl"
 uniform sampler2D uHookGBuffer0;   // albedo + render flags
 uniform sampler2D uHookGBuffer1;   // world-space normal (encoded)
 layout(rgba8) uniform writeonly image2D auDlssAlbedo;
@@ -358,6 +359,9 @@ void main()
             vec3 high = max(resolved, max(max(north, south), max(east, west)));
             resolved = clamp(resolved + (resolved - (north + south + east + west) * 0.25) * uHookDlssSharpness * 2.0, low, high);
         }
+#if AU_ADAPTIVE_EXPOSURE
+        resolved *= AU_AdaptiveExposure();
+#endif
         DoTonemap(resolved);
 #if AU_LENSFLARE
         AU_InitCommon();
@@ -462,6 +466,9 @@ void main()
     }
     #endif
     vec3 dlssHDR = c;
+#if AU_ADAPTIVE_EXPOSURE
+    c *= AU_AdaptiveExposure();
+#endif
     DoTonemap(c);
 #if AU_LENSFLARE
     AU_InitCommon();
@@ -526,7 +533,9 @@ void main()
 
 #if AU_DLSS || AU_DLSS_FRAMEGEN
     if (uHookDlssActive == 1) {
-        ivec2 inputSize = imageSize(auDlssColor);
+        // The hook sizes the input images to this viewport. Not imageSize(): AMD's compiler
+        // does not offer it to #version 410 shaders, and the RTX profiles switch DLSS on (#17).
+        ivec2 inputSize = ivec2(uHookDlssViewport.zw);
         ivec2 pix = ivec2(gl_FragCoord.xy) - ivec2(uHookDlssViewport.xy);
         if (any(lessThan(pix, ivec2(0))) || any(greaterThanEqual(pix, inputSize))) return;
         // The finished frame, its depth and the camera motion (where each pixel's surface was
@@ -566,26 +575,23 @@ void main()
             vec4 normalRough = vec4(0.0);
             if (lin < 1.0) {
                 vec4 g0 = responseSurface;
-                vec3 normal = guideNormal;
-                // Matte blocks; the glowing ore crystals are glossy (DeferredFS gives them gloss).
+                // The same material DeferredFS lit (include/AU_Material.glsl): dry gloss, metal,
+                // ore crystals and the rain film / soaking.
                 uint meta = uint(round(g0.a * 255.0));
                 bool emissive = (meta & 2u) != 0u;
                 bool foliage = !emissive && (meta & 1u) == 0u;
-                uint cls = emissive || foliage ? 0u : (meta >> 5) & 3u;
-                float level = float((meta >> 2) & 7u) / 7.0;
-                float crystal = cls == 0u && !emissive && !foliage ? smoothstep(0.0, 0.4, level) * AU_ORE_GLOSS : 0.0;
-                float gloss = cls == 1u ? (level < 0.5 ? 0.0 : mix(0.12, 0.92, level)) : cls == 2u ? mix(0.35, 0.85, level) : 0.0;
-#if !AU_MATERIALS
-                gloss = 0.0;
-#endif
-                float materialGloss = AU_TextureSmoothness(min(gloss * AU_MATERIAL_GLOSS, 0.95), cls, g0.rgb, surfaceFootprint.y);
-                float roughness = 1.0 - AU_SpecularSmoothness(clamp(max(0.85 * crystal, materialGloss), 0.0, 0.95), surfaceFootprint.x);
+                AU_InitCommon();
+                AU_MaterialData mat = AU_GetMaterial(g0.a, g0.rgb, guideNormal, responseNormal.b, surfaceFootprint.y,
+                                                     emissive, foliage);
+                vec3 normal = AU_MaterialReflectionNormal(guideNormal, mat);
+                float roughness = 1.0 - AU_SpecularSmoothness(clamp(max(0.85 * mat.crystal, mat.smoothness), 0.0, 0.95), surfaceFootprint.x);
                 vec3 nVS = mat3(ViewMatrix) * normal;
                 float NdotV = clamp(dot(nVS, -normalize(posVS)), 0.0, 1.0);
-                diffuseAlbedo = pow(clamp(mix(vec3(GetLuminance(g0.rgb)), g0.rgb, AU_ALBEDO_SATURATION) * AU_ALBEDO_MULT, 0.0, 1.0), vec3(2.2));
-                specularAlbedo = AU_EnvBRDF(cls == 2u ? diffuseAlbedo : vec3(0.04 + 0.02 * crystal), roughness, NdotV);
+                vec3 albedo = AU_MaterialSoakedAlbedo(mix(vec3(GetLuminance(g0.rgb)), g0.rgb, AU_ALBEDO_SATURATION) * AU_ALBEDO_MULT, mat);
+                diffuseAlbedo = pow(clamp(albedo, 0.0, 1.0), vec3(2.2));
+                specularAlbedo = AU_EnvBRDF(mat.metal > 0.5 ? diffuseAlbedo : vec3(0.04 + 0.02 * mat.crystal), roughness, NdotV);
                 if (emissive) specularAlbedo = vec3(0.0);
-                if (cls == 2u) diffuseAlbedo *= 0.55;
+                if (mat.metal > 0.5) diffuseAlbedo *= 0.55;
                 normalRough = vec4(normal, roughness);
             }
             imageStore(auDlssAlbedo, pix, vec4(diffuseAlbedo, 1.0));

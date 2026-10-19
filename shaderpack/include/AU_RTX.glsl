@@ -119,7 +119,19 @@ vec3 AU_GetSSGI(sampler2D depthTex, vec3 playerPos, vec3 normal, vec3 geometricN
     return gi / float(rays);
 }
 
+// World-space normal of the opaque surface at a screen position (defined by the including
+// program, from its G-buffer): lets reflections reject the back of what a ray runs into.
+vec3 AU_SSRHitNormal(vec2 uv);
+
 // Screen-space reflection with sky fallback. Returns rgb + confidence (a).
+// The ray marches in growing steps against the depth buffer; a crossing is refined by bisection
+// to the actual surface (no stair-stepped reflections). A hit is trusted less where the guess is
+// weak - behind something thick, on the back of a surface, toward the screen edge, near the end
+// of the march, or on rays turning back to the camera (the screen holds nothing behind them) -
+// and the caller blends to the sky by that confidence. Rough reflections read a blurrier mip of
+// the previous frame the further the reflected surface is, like a widening cone.
+#if !AU_SSR_REFINED
+// The previous march (Reflections: Classic): first crossing, fixed roughness blur, edge fade.
 vec4 AU_GetSSR(sampler2D depthTex, vec3 playerPos, vec3 normal, float roughness, float dither)
 {
     vec3 nView = normalize(playerPos);
@@ -148,5 +160,59 @@ vec4 AU_GetSSR(sampler2D depthTex, vec3 playerPos, vec3 normal, float roughness,
     }
     return vec4(0.0);
 }
+#else
+vec4 AU_GetSSR(sampler2D depthTex, vec3 playerPos, vec3 normal, float roughness, float dither)
+{
+    vec3 nView = normalize(playerPos);
+    vec3 dir = reflect(nView, normal);
+    float lViewPos = length(playerPos);
+    const int steps = AU_RTX_SSR_STEPS;
+    float stepLen = 0.6 + lViewPos * 0.05;
+    vec3 start = playerPos + normal * 0.05;
+    vec3 p = start + dir * stepLen * dither;
+    float towardCamera = 1.0 - smoothstep(0.35, 0.85, dot(dir, -nView));
+    if (towardCamera <= 0.0) return vec4(0.0);
+    for (int i = 0; i < steps; i++) {
+        vec3 previous = p;
+        p += dir * stepLen;
+        stepLen *= 1.18;
+        vec2 uv = AU_ProjectToScreen(p);
+        if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) break;
+        float lin1 = AU_SceneLinAt(depthTex, uv);
+        float lin2 = AU_LinOf(p);
+        if (lin1 > 0.0 && lin2 > lin1) {
+            if (lin1 < AU_NEAR_IGNORE) continue;
+            // Bisect between the last point in front and this one behind the depth buffer.
+            vec3 front = previous, behind = p;
+            for (int r = 0; r < 5; r++) {
+                vec3 middle = (front + behind) * 0.5;
+                vec2 middleUV = AU_ProjectToScreen(middle);
+                float sceneLin = AU_SceneLinAt(depthTex, middleUV);
+                if (sceneLin > 0.0 && AU_LinOf(middle) > sceneLin) behind = middle; else front = middle;
+            }
+            vec2 hitUV = AU_ProjectToScreen(behind);
+            float hitScene = AU_SceneLinAt(depthTex, hitUV);
+            float hitRay = AU_LinOf(behind);
+            float thicknessLimit = stepLen * 2.0 + 0.5;
+            float thickness = hitRay - hitScene;
+            if (hitScene <= 0.0 || thickness > thicknessLimit) continue;   // passed behind a thin object
+            vec3 hitPos = behind * (hitScene / max(hitRay, 0.0001));
+            // The ray met the back of a surface: whatever it really reflects is hidden behind it.
+            if (dot(AU_SSRHitNormal(hitUV), dir) > 0.25) break;
+            float hitDistance = distance(hitPos, start);
+            float pixelsPerBlock = 0.5 * float(textureSize(uHookPrevScene, 0).y) * abs(ProjectionMatrix[1][1]) / max(hitScene, 0.05);
+            float lod = log2(max(roughness * roughness * hitDistance * 0.5 * pixelsPerBlock, 1.0));
+            vec3 rad = AU_PrevSceneAt(hitPos, clamp(lod, 0.0, 6.0));
+            if (rad.r < 0.0) break;
+            vec2 edge = abs(hitUV - 0.5) * 2.0;
+            float confidence = 1.0 - smoothstep(0.82, 1.0, max(edge.x, edge.y));
+            confidence *= 1.0 - smoothstep(0.5, 1.0, thickness / thicknessLimit);
+            confidence *= 1.0 - smoothstep(0.75, 1.0, float(i) / float(steps));
+            return vec4(rad, confidence * towardCamera);
+        }
+    }
+    return vec4(0.0);
+}
+#endif
 
 #endif // AU_RTX

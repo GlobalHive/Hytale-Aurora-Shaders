@@ -33,6 +33,7 @@ shaderpack/programs/BasicVS.glsl
 shaderpack/programs/BasicFogVS.glsl
 shaderpack/programs/BeamVS.glsl
 shaderpack/programs/TextVS.glsl
+shaderpack/programs/ScreenVS.glsl
 
 # The unmodified original pack, kept locally for reference only
 reference/

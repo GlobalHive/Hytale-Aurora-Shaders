@@ -49,6 +49,11 @@ float GetAtmFogAltitudeFactor(float altitude)
 
 void DoAtmosphericFog(inout vec3 color, vec3 playerPos, float lViewPos, float VdotS, float dither)
 {
+#if AU_ATMOSPHERE_MODEL == 1 && !AU_BIOME_ATMOSPHERE
+    float fog = AU_AtmosphereFogAmount(playerPos, lViewPos, GetEyeBrightness());
+    float viewUp = playerPos.y / max(lViewPos, 0.0001);
+    color = mix(color, GetSky(viewUp, VdotS, 0.5, false, false), fog);
+#else
     float renDisFactor = min1(192.0 / GetRenderDistance()) / AU_ATM_FOG_DISTANCE;
     float fog = 1.0 - exp(-pow(lViewPos * (0.001 - 0.0007 * rainFactor), 2.0 - rainFactor2) * lViewPos * renDisFactor);
 
@@ -69,6 +74,7 @@ void DoAtmosphericFog(inout vec3 color, vec3 playerPos, float lViewPos, float Vd
         fog = clamp(fog, 0.0, 1.0);
         color = mix(color, GetAtmFogColor(altitudeFactorRaw, VdotS), fog);
     }
+#endif
 }
 
 // Returns the fog amount (the sky fade) and blends `color` towards the sky.

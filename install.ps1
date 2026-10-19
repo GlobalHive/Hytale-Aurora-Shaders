@@ -198,8 +198,14 @@ $local = Join-Path $root 'build\opengl32.dll'
 if ($Build -or (-not (Test-Path -LiteralPath $prebuilt) -and -not (Test-Path -LiteralPath $local))) {
     & (Join-Path $root 'build.ps1')
     $source = $local
-} elseif (Test-Path -LiteralPath $prebuilt) { $source = $prebuilt }
-else { $source = $local }
+} elseif (-not (Test-Path -LiteralPath $local)) { $source = $prebuilt }
+elseif (-not (Test-Path -LiteralPath $prebuilt)) { $source = $local }
+else {
+    # Both: the newer one. A local build made after the shipped DLL is the one being worked on;
+    # a release unpacked over an old build ships the newer DLL.
+    $source = if ((Get-Item -LiteralPath $local).LastWriteTimeUtc -gt (Get-Item -LiteralPath $prebuilt).LastWriteTimeUtc) { $local } else { $prebuilt }
+}
+Write-Host "Hook DLL: $(Split-Path (Split-Path $source -Parent) -Leaf)\opengl32.dll"
 & (Join-Path $root 'tools\prepare_shaders.ps1') -Exe (Join-Path $ClientDir 'HytaleClient.exe')
 
 $rollbackDll = Client-Child ".aurora-dll-rollback.$stamp"

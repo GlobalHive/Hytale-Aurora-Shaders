@@ -6,7 +6,10 @@
 #ifndef AU_RAINBOW
 #define AU_RAINBOW
 
+#ifndef AU_HOOK_WETNESS
+#define AU_HOOK_WETNESS
 uniform float uHookWetness;
+#endif
 
 // Gamma-space colour to add. lViewPos: distance to the surface (ignored for the sky).
 vec3 AU_GetRainbow(vec3 nPlayerPos, float lViewPos, bool sky, float dither)

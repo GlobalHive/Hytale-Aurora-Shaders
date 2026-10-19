@@ -11,3 +11,5 @@ The setting follows the game's blended environment values, so it also applies to
 - **Night sky blue** applies to Aurora's atmosphere when this setting is Off.
 
 Changes apply immediately and can be saved in a custom profile.
+
+When enabled, this takes priority over [Atmosphere model](clouds-and-sky.md). Turn it off to compare Classic and Enhanced sky/haze.

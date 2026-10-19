@@ -395,10 +395,9 @@ static const char *type_tag(GLint type)
     }
 }
 
-// Compiles `src` into a fresh shader object. Returns 0 on failure (and logs the error).
-static GLuint compile_new(GLenum type, const char *src, const char *name)
+// Compiles `src` into the shader object `sh`. Returns 0 on failure (and logs the error).
+static int compile_into(GLuint sh, GLenum type, const char *src, const char *name)
 {
-    GLuint sh = r_glCreateShader(type);
     const GLchar *s = src;
     r_glShaderSource(sh, 1, &s, NULL);
     r_glCompileShader(sh);
@@ -417,6 +416,15 @@ static GLuint compile_new(GLenum type, const char *src, const char *name)
         snprintf(rel, sizeof(rel), "errors\\%s_%s.log", name, type_tag(type));
         write_file(rel, log, strlen(log));
         free(log);
+    }
+    return ok;
+}
+
+// Compiles `src` into a fresh shader object. Returns 0 on failure (and logs the error).
+static GLuint compile_new(GLenum type, const char *src, const char *name)
+{
+    GLuint sh = r_glCreateShader(type);
+    if (!compile_into(sh, type, src, name)) {
         r_glDeleteShader(sh);
         return 0;
     }
@@ -426,8 +434,9 @@ static GLuint compile_new(GLenum type, const char *src, const char *name)
 // ----------------------------------------------------------------------------------------
 // Shader / program bookkeeping
 
-// orig: the game's source; curHash: hash of the source currently compiled for this stage.
-typedef struct { GLenum type; char *orig; int idx; int overridden; uint64_t curHash; } ShaderRec;
+// orig: the game's source; curHash: hash of the source currently compiled for this stage;
+// id: in a program's copy, the game's shader object attached for this stage.
+typedef struct { GLenum type; char *orig; int idx; int overridden; uint64_t curHash; GLuint id; } ShaderRec;
 
 typedef struct {
     char *name;
@@ -499,6 +508,15 @@ static ShaderRec *shader_rec(GLuint id, int create)
         g_shaderCap = n;
     }
     return &g_shaders[id];
+}
+
+// The game's shader object `id` now holds a source with this hash (ours or the game's).
+static void shader_compiled(GLuint id, int overridden, uint64_t hash)
+{
+    ShaderRec *rec = shader_rec(id, 0);
+    if (!rec || !rec->orig) return;
+    rec->overridden = overridden;
+    rec->curHash = hash;
 }
 
 static ProgRec *prog_rec(GLuint id, int create)
@@ -656,19 +674,15 @@ static int validate_override_link(GLuint prog, ProgRec *p, GLint ok)
 
     logf_("OVERRIDE REJECTED for %s (program %u): %s%s - using the game's shaders", p->pname, prog,
           ok ? "attribute optimised away: " : "link failed", missing);
-    GLuint attached[8];
-    GLsizei na = 0;
-    r_glGetAttachedShaders(prog, 8, &na, attached);
-    for (GLsizei i = 0; i < na; i++) r_glDetachShader(prog, attached[i]);
-    GLuint fresh[4] = {0};
+    // The game's sources, compiled back into its own shader objects (see relink_program).
     for (int i = 0; i < p->nsh; i++) {
-        fresh[i] = compile_new(p->sh[i].type, p->sh[i].orig, p->pname);
-        if (fresh[i]) r_glAttachShader(prog, fresh[i]);
-        p->sh[i].overridden = 0;
-        p->sh[i].curHash = fnv1a(p->sh[i].orig, strlen(p->sh[i].orig));
+        ShaderRec *s = &p->sh[i];
+        uint64_t hash = fnv1a(s->orig, strlen(s->orig));
+        if (compile_into(s->id, s->type, s->orig, p->pname)) shader_compiled(s->id, 0, hash);
+        s->overridden = 0;
+        s->curHash = hash;
     }
     r_glLinkProgram(prog);
-    for (int i = 0; i < p->nsh; i++) if (fresh[i]) r_glDeleteShader(fresh[i]);
     return 0;
 }
 
@@ -691,6 +705,7 @@ static void APIENTRY hook_glLinkProgram(GLuint prog)
         d->idx = s->idx;
         d->overridden = s->overridden;
         d->curHash = s->curHash;
+        d->id = ids[i];
     }
     p->pname[0] = 0;
     for (int i = 0; i < p->nsh; i++) {
@@ -851,56 +866,58 @@ static void replay_uniform(UniformRec *u)
 // Live reload
 
 // Returns 1 = unchanged, 2 = relinked, 0 = compile failure, -1 = link failure.
+// The new sources are compiled into the game's own shader objects, which stay attached. The game
+// links those objects into new programs later (when a world loads) without sending their source
+// again. Swapping in fresh objects freed the game's (it flags them for deletion right after
+// attaching), the driver handed their names to other passes' shaders, and the world loaded black
+// after a settings change (issue #12).
 static int relink_program(GLuint prog, ProgRec *p, int useOverrides)
 {
     char *src[4] = {0};
     int isOvr[4] = {0};
+    uint64_t hash[4] = {0};
     int changed = 0;
     for (int i = 0; i < p->nsh; i++) {
         ShaderRec *s = &p->sh[i];
         char *ovr = useOverrides ? build_override(s->orig, s->idx) : NULL;
         isOvr[i] = ovr != NULL;
         src[i] = ovr ? ovr : _strdup(s->orig);
-        if (fnv1a(src[i], strlen(src[i])) != s->curHash) changed = 1;
+        hash[i] = fnv1a(src[i], strlen(src[i]));
+        if (hash[i] != s->curHash) changed = 1;
     }
     if (!changed) {
         for (int i = 0; i < p->nsh; i++) free(src[i]);
         return 1;
     }
 
-    GLuint fresh[4] = {0};
     for (int i = 0; i < p->nsh; i++) {
         ShaderRec *s = &p->sh[i];
+        // Objects shared between programs (one vertex shader for several passes) compile once.
+        ShaderRec *object = shader_rec(s->id, 0);
+        if (object && object->orig && object->curHash == hash[i]) continue;
         const char *name = s->idx >= 0 ? g_index[s->idx].name : "unknown";
-        fresh[i] = compile_new(s->type, src[i], name);
-        if (!fresh[i] && isOvr[i]) {
+        int compiled = compile_into(s->id, s->type, src[i], name);
+        if (!compiled && isOvr[i]) {
             // Override broke: fall back to the game's source for this stage.
             free(src[i]);
             src[i] = _strdup(s->orig);
             isOvr[i] = 0;
-            fresh[i] = compile_new(s->type, src[i], name);
+            hash[i] = fnv1a(src[i], strlen(src[i]));
+            compiled = compile_into(s->id, s->type, src[i], name);
         }
-        if (!fresh[i]) {
-            for (int k = 0; k < i; k++) if (fresh[k]) r_glDeleteShader(fresh[k]);
+        if (!compiled) {
             for (int k = 0; k < p->nsh; k++) free(src[k]);
             return 0;
         }
+        shader_compiled(s->id, isOvr[i], hash[i]);
     }
 
-    // Whatever is attached now (the game's shaders or our previous ones) gets detached;
-    // the new ones stay attached and are flagged for deletion with the program.
-    GLuint attached[8];
-    GLsizei na = 0;
-    r_glGetAttachedShaders(prog, 8, &na, attached);
-    for (GLsizei i = 0; i < na; i++) r_glDetachShader(prog, attached[i]);
-    for (int i = 0; i < p->nsh; i++) r_glAttachShader(prog, fresh[i]);
     r_glLinkProgram(prog);
     GLint ok = 0;
     r_glGetProgramiv(prog, GL_LINK_STATUS, &ok);
     for (int i = 0; i < p->nsh; i++) {
-        r_glDeleteShader(fresh[i]);
         p->sh[i].overridden = isOvr[i];
-        p->sh[i].curHash = fnv1a(src[i], strlen(src[i]));
+        p->sh[i].curHash = hash[i];
         free(src[i]);
     }
     if (!ok) {
@@ -1087,7 +1104,7 @@ static int g_dlssState, g_dlssRR;
 static int g_dlssPending; // inputs written this frame, DLSS runs at the present (dlss_present)
 static void dlss_draw(GLenum mode, GLint first, GLsizei count);
 static int dlss_present(void);
-static int dlss_present_rect(int x, int y, int w, int h, const char *how);
+static int dlss_present_rect(int x, int y, int w, int h, const char *how, int direct);
 static float g_jitterNdc[2], g_jitterPx[2], g_jitterNextPx[2];   // see jitter_next_frame
 static float g_sceneJitter[2];
 // Hook-side settings (AU_Settings.glsl, read at every reload): DLSS jitter on/off and the signs
@@ -2224,6 +2241,7 @@ static void dlss_draw(GLenum mode, GLint first, GLsizei count)
         g_dlssOW = g_presentW;
         g_dlssOH = g_presentH;
         g_dlssReset = 2;
+        dlss_check_arm(10);
     }
     // Units 2-4 hold the path tracer's history between its passes: they must get the DLSS
     // textures or nothing (writes to an empty unit are dropped), never stay as they are.
@@ -2267,7 +2285,7 @@ static void dlss_draw(GLenum mode, GLint first, GLsizei count)
 #endif
     if (direct) {
         g_dlssPending = 1;
-        if (active) dlss_present_rect(vp[0], vp[1], vp[2], vp[3], "PostEffectFS (straight into the window)");
+        if (active) dlss_present_rect(vp[0], vp[1], vp[2], vp[3], "PostEffectFS (straight into the window)", 1);
         g_dlssPending = 0;
     } else {
         g_dlssPending = 1;
@@ -2277,7 +2295,7 @@ static void dlss_draw(GLenum mode, GLint first, GLsizei count)
 // Hytale puts the finished frame on the window either with a BasicFS draw (scaling it, Render
 // Scale below 100) or a framebuffer blit; the first of those after PostEffectFS is replaced
 // by DLSS's output. Returns 1 when it did.
-static int dlss_present_rect(int x, int y, int w, int h, const char *how)
+static int dlss_present_rect(int x, int y, int w, int h, const char *how, int direct)
 {
     if (render_physical_size(&w, &h)) x = y = 0;
     g_dlssPending = 0;
@@ -2291,6 +2309,7 @@ static int dlss_present_rect(int x, int y, int w, int h, const char *how)
     }
     if (g_dlssState != 1 || g_dlssOW != w || g_dlssOH != h) return 0;
     GLint vp[4] = {x, y, w, h};
+    dlss_check_before(vp, direct);
     r_glMemoryBarrier(0xFFFFFFFFu);
     g_jitterPx[0] = g_sceneJitter[0] * g_dlssW * 0.5f;
     g_jitterPx[1] = g_sceneJitter[1] * g_dlssH * 0.5f;
@@ -2317,6 +2336,7 @@ static int dlss_present_rect(int x, int y, int w, int h, const char *how)
         dlss_diagnostic_errors("evaluate and resolve");
         dlss_diagnose(vp);
     }
+    dlss_check_frame(vp);
 #if AU_HAS_FRAMEGEN
     if (g_setFrameGen && g_framegenCaptured == g_frame) afg_capture_hudless();
 #endif
@@ -2334,7 +2354,7 @@ static int dlss_present(void)
     if (fbo != 0) return 0;
     GLint vp[4] = {0};
     r_glGetIntegerv(GL_VIEWPORT, vp);
-    return dlss_present_rect(vp[0], vp[1], vp[2], vp[3], p && p->pname[0] ? p->pname : "a draw");
+    return dlss_present_rect(vp[0], vp[1], vp[2], vp[3], p && p->pname[0] ? p->pname : "a draw", 0);
 }
 
 static int dlss_present_blit(GLint x0, GLint y0, GLint x1, GLint y1)
@@ -2342,7 +2362,7 @@ static int dlss_present_blit(GLint x0, GLint y0, GLint x1, GLint y1)
     GLint fbo = -1;
     r_glGetIntegerv(0x8CA6 /*GL_DRAW_FRAMEBUFFER_BINDING*/, &fbo);
     if (fbo != 0) return 0;
-    return dlss_present_rect(x0 < x1 ? x0 : x1, y0 < y1 ? y0 : y1, abs(x1 - x0), abs(y1 - y0), "a framebuffer blit");
+    return dlss_present_rect(x0 < x1 ? x0 : x1, y0 < y1 ? y0 : y1, abs(x1 - x0), abs(y1 - y0), "a framebuffer blit", 0);
 }
 #else
 static void dlss_draw(GLenum mode, GLint first, GLsizei count) { r_glDrawArrays(mode, first, count); }
@@ -2828,6 +2848,7 @@ static void do_reload(void)
         g_dlssDiagnosticFrames = 3;
         logf_("dlss diagnostic: armed for the third DLSS frame");
     }
+    dlss_check_arm(30);
 #endif
     vox_clear();
     gi_release();

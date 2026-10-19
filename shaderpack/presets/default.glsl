@@ -17,7 +17,11 @@
 #define AU_TWILIGHT_SHIFT 0.10      // keeps daylight up longer to fit Hytale's long dusk
 #define AU_SUNSET_SHIFT 0.0         // sun height (sin) offset for the sunset colour palette
 #define AU_POLISH_ENABLE 1
+#define AU_SKY_LIGHTING 0
+#define AU_SKY_LIGHT_GROUND 0.35
+#define AU_SKY_LIGHT_STRENGTH 1.0
 #define AU_BIOME_ATMOSPHERE 0
+#define AU_ATMOSPHERE_MODEL 0
 
 // ---- Lighting ------------------------------------------------------------------------
 #define AU_ALBEDO_MULT 0.78          // Hytale textures are painted brighter than Minecraft's
@@ -43,8 +47,13 @@
 #define AU_MATERIALS 1                // block materials: polished stone/bricks/planks/ice gloss, metal reflections, rain soaking
 #define AU_MATERIAL_GLOSS 1.0
 #define AU_RAIN_WETNESS 1.0           // how wet and glossy rain makes everything open to the sky
+#define AU_RAIN_SOAKING 1.0
 #define AU_ORE_GLOSS 1.0              // ore crystals glossy like gems (sun glints, reflections)
 #define AU_SSAO_STRENGTH 1.25
+#define AU_AO_METHOD 0
+#define AU_GTAO_QUALITY 2
+#define AU_GTAO_RADIUS 1.5
+#define AU_GTAO_BENT_NORMALS 1
 #define AU_CAVE_LIGHTING 250.0        // minimum light underground, %
 #define AU_SUBSURFACE 1              // foliage translucency
 #define AU_SUBSURFACE_GLOW 0.35
@@ -62,6 +71,7 @@
 #define AU_GENERATED_NORMALS 1        // per-texel relief from block textures
 #define AU_GENERATED_NORMAL_MULT 100.0  // relief strength (25-400)
 #define AU_GENERATED_NORMAL_RES 128.0   // relief resolution (16-512)
+#define AU_MATERIAL_RELIEF 1.0
 #define AU_LIGHT_HIGHLIGHT 1         // soft GGX sun highlight
 
 // ---- Shadows -------------------------------------------------------------------------
@@ -84,11 +94,22 @@
 #define AU_STARS 2                    // 0 off, 1 procedural, 2 Hytale's star texture (turning with the sky)
 #define AU_STARS_BRIGHTNESS 2.0
 #define AU_MOON_GLOW 1.0              // Hytale's halo around the moon
+#define AU_AURORA 0
+#define AU_AURORA_STYLE 2
+#define AU_AURORA_STRENGTH 1.0
+#define AU_AURORA_SPEED 1.0
 #define AU_STARS_SCALE 1.0             // star texture size on the sky (lower = bigger stars)
 #define AU_NIGHT_SKY_SATURATION 3.0   // night horizon colour (1 = grey-blue, higher = deep blue)
 #define AU_ATMOSPHERIC_FOG 1
 #define AU_ATM_FOG_MULT 0.95
 #define AU_ATM_FOG_DISTANCE 1.0
+#define AU_MIST 0
+#define AU_MIST_DENSITY 1.0
+#define AU_MIST_ALTITUDE 118.0
+#define AU_MIST_HEIGHT 6.0
+#define AU_MIST_NOON 0.15
+#define AU_MIST_DISTANCE 160.0
+#define AU_MIST_SAMPLES 12
 #define AU_BORDER_FOG 1
 #define AU_CAVE_ALTITUDE 95.0        // below this height with no sky light around = cave (cave fog)
 #define AU_RAINBOWS 1                // rainbow opposite the sun after rain (morning / evening)
@@ -100,6 +121,8 @@
 #define AU_CLOUD_ALT1 300.0          // world height of the first cloud layer
 #define AU_CLOUD_ALT2 340.0          // second layer (set AU_CLOUD_LAYERS 1 to disable)
 #define AU_CLOUD_LAYERS 2
+#define AU_CLOUD_LIGHTING 0
+#define AU_CLOUD_LIGHT_SAMPLES 1
 #define AU_CLOUD_AMOUNT 1.0
 #define AU_CLOUD_SPEED 1.0
 #define AU_CLOUD_STEP 14.0
@@ -118,6 +141,10 @@
 #define AU_LIGHTSHAFT_SUNSET_I 0.5    // low-sun haze (the low sun's light colour is strong; 1.0 drowned the land)
 #define AU_LIGHTSHAFT_NIGHT_I 0.35     // moonlight haze (1.0 washes Hytale nights out)
 #define AU_LIGHTSHAFT_SCENE_BOOST 1.0  // extra shaft strength under canopies / in caves (0 = off)
+#define AU_LIGHT_FOG 0
+#define AU_LIGHT_FOG_DENSITY 1.0
+#define AU_LIGHT_FOG_DISTANCE 24.0
+#define AU_LIGHT_FOG_SAMPLES 6
 
 // ---- Water ---------------------------------------------------------------------------
 #define AU_WATER 1
@@ -126,6 +153,8 @@
 #define AU_GLASS_ABSORB 0.35            // how much light glass takes away from the view through it
 #define AU_GLASS_REFLECT 0.8
 #define AU_WATER_FOG_MULT 1.0
+#define AU_WATER_MODEL 0
+#define AU_WATER_CLARITY 1.0
 #define AU_WATER_SSR_STEPS 48
 #define AU_WATER_REFRACTION 2.0       // refraction strength
 #define AU_WATER_FOAM 0.5              // shoreline foam
@@ -145,6 +174,7 @@
 #define AU_RTX_AO_RADIUS 2.5        // reach (blocks) of the ray-traced AO
 #define AU_RTX_GI_AO 0.55          // how much the GI rays darken occluded ambient
 #define AU_RTX_SSR_STEPS 32
+#define AU_SSR_REFINED 1
 #define AU_RTX_SMOOTHNESS 0.0          // dry surfaces stay matte (only rain makes them reflective)
 #define AU_SSGI_DENOISE 1
 #define AU_GI_DENOISER 1
@@ -194,6 +224,11 @@
 #define AU_TM_CONTRAST 1.10
 #define AU_TM_WHITE_PATH 1.00
 #define AU_TM_DARK_DESATURATION 0.25
+#define AU_TM_HIGHLIGHT_PROTECT 0.0
+#define AU_WB_TEMPERATURE 0.0
+#define AU_WB_TINT 0.0
+#define AU_ADAPTIVE_EXPOSURE 0
+#define AU_ADAPT_STRENGTH 0.6
 #define AU_SATURATION 1.00
 #define AU_VIBRANCE 1.00
 #define AU_BLOOM 1

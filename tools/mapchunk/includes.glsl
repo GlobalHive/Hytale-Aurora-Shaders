@@ -22,12 +22,17 @@ in vec3 auEmitterPositionWS;
 #include "AU_Fog.glsl"
 #include "AU_Shadow.glsl"
 #include "AU_VL.glsl"
+#include "AU_Mist.glsl"
 #ifndef AU_HAS_CLOUDWATER
 #define AU_HAS_CLOUDWATER
 uniform sampler2D cloudWaterTex;
 #endif
 #include "AU_Caustics.glsl"
+#include "AU_Water.glsl"
+#ifndef AU_HAS_NOISETEX
+#define AU_HAS_NOISETEX
 uniform sampler2D noisetex;
+#endif
 
 // Screen-space reflection for water: view-space march against Hytale's linear depth with a
 // binary refinement, so reflections stay crisp. Rays that leave the

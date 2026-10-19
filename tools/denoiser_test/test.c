@@ -267,6 +267,18 @@ static void outdoor_lighting_integration_test(void)
     puts("PASS: shared lighting integration, unchanged cave/torch/emissive/night/underwater response, compass-independent outdoor faces and continuous daylight palette");
 }
 
+#include "clouds.h"
+#include "atmosphere.h"
+#include "skylight.h"
+#include "material.h"
+#include "gtao.h"
+#include "water.h"
+#include "ssr.h"
+#include "skypreview.h"
+#include "finishing.h"
+#include "lightfog.h"
+#include "reload.h"
+
 static void cloud_shadow_test(void)
 {
     GLuint framebuffer, output, noiseTexture;
@@ -281,6 +293,7 @@ static void cloud_shadow_test(void)
     generateMipmaps(GL_TEXTURE_2D);
     ov.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, 0x2703);
     ov.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    for (int layers = 1; layers <= 2; layers++)
     for (int atmosphere = 0; atmosphere < 2; atmosphere++) {
         Str source = {0}; str_cstr(&source, "#version 410 core\n");
         expand(&source, "#include \"AU_Settings.glsl\"\n", 0);
@@ -288,6 +301,8 @@ static void cloud_shadow_test(void)
             "#undef AU_CLOUD_ALT1\n#undef AU_CLOUD_SHADOW_STRENGTH\n#define AU_CLOUDS 1\n#define AU_CLOUD_SHADOWS 1\n"
             "#define AU_CLOUD_AMOUNT 1.0\n#define AU_CLOUD_ALT1 300.0\n#define AU_CLOUD_SHADOW_STRENGTH 1.0\n");
         str_cstr(&source, atmosphere ? "#define AU_BIOME_ATMOSPHERE 1\n" : "#define AU_BIOME_ATMOSPHERE 0\n");
+        str_cstr(&source, "#undef AU_CLOUD_LAYERS\n#undef AU_CLOUD_ALT2\n#define AU_CLOUD_ALT2 340.0\n");
+        str_cstr(&source, layers == 1 ? "#define AU_CLOUD_LAYERS 1\n" : "#define AU_CLOUD_LAYERS 2\n");
         str_cstr(&source, "vec3 SunPositionWS,CameraPosition,AmbientFrontColor,AmbientBackColor;float AmbientIntensity,IsCameraUnderwater,Time;"
             "vec4 SunLightColor,SunColor,FogTopColor,FogFrontColor,FogBackColor,FogParams,SceneBrightness;mat4 SunShadowMatrix[4];"
             "uniform float testHeight,testElevation;out vec4 outColor;\n");
@@ -303,7 +318,7 @@ static void cloud_shadow_test(void)
         r_glUniform4fv(r_glGetUniformLocation(program, "uHookCloudColors"), 1, cloudColour);
         r_glUniform1f(r_glGetUniformLocation(program, "testElevation"), .05f);
         float previous = 0;
-        for (int sample = 0; sample <= 160; sample++) {
+        for (int sample = 0; sample <= (layers == 1 ? 160 : 320); sample++) {
             r_glUniform1f(r_glGetUniformLocation(program, "testHeight"), 280 + sample * .25f);
             r_glDrawArrays(OV_GL_TRIANGLE_STRIP, 0, 4);
             float value[4]; readPixels(4, 4, 1, 1, GL_RGBA, GL_FLOAT, value);
@@ -1374,10 +1389,22 @@ int wmain(int count, wchar_t **arguments)
     assert(ov_init()); readPixels = (void *)GetProcAddress(g_real, "glReadPixels"); getError = (void *)GetProcAddress(g_real, "glGetError");
     generateFramebuffer = (void *)real_wglGetProcAddress("glGenFramebuffers"); bindFramebuffer = (void *)real_wglGetProcAddress("glBindFramebuffer");
     attachTexture = (void *)real_wglGetProcAddress("glFramebufferTexture2D");
+    if (getenv("AU_SKY_PREVIEW_ONLY")) { sky_preview_test(); return 0; }   // fast iteration on sky effects
+    reload_test();
     surface_polish_test();
     outdoor_sunlight_test();
     outdoor_lighting_integration_test();
     cloud_shadow_test();
+    cloud_volume_test();
+    enhanced_atmosphere_test();
+    sky_light_test();
+    surface_material_test();
+    gtao_test();
+    water_absorption_test();
+    ssr_test();
+    sky_preview_test();
+    finishing_test();
+    light_fog_test();
     biome_atmosphere_test();
     original_noise_test(0);
     original_noise_test(1);

@@ -1,5 +1,11 @@
 # DLSS black-screen investigation
 
+## Root cause (found after 1.4.3)
+
+The black world was not DLSS. Every settings change hot-reloads the shaders, and the reload swapped freshly compiled shader objects into the game's programs. The game flags its shader objects for deletion right after attaching them, so detaching them freed them, and the driver gave their names to other passes' shaders. When a world loads, the game links its programs again from the shader objects it kept, without sending any source, and got the wrong shaders: the world rendered black while the UI stayed. Turning DLSS on from the menu is a settings change, which is why it looked like DLSS. It was reproduced on an RTX 5080 by changing two settings in the main menu and then loading a world. The hook log showed the same `OVERRIDE REJECTED ... attribute optimised away` lines at world load as the reporters' logs.
+
+The reload now compiles the new sources into the game's own shader objects, which stay attached (`relink_program` in `hook/hook.c`). `tools/denoiser_test/reload.h` reproduces the game's pattern and fails on the 1.4.3 hook. As a safety net, the hook also compares the frame DLSS was given with what reached the window a few frames after DLSS starts or the pack reloads. If a lit frame arrives black twice, it logs the samples below and switches DLSS off for the session.
+
 ## Reports reviewed
 
 - [Issue 12](https://github.com/Kristijan1001/Hytale-Aurora-Shaders/issues/12), including the original logs and follow-up reports: RTX 4060, Windows 10. Both Super Resolution and Ray Reconstruction create successfully, but the world is black while the UI remains visible. No NGX evaluation failure is logged. Successful creation alone does not establish that the captured or displayed pixels are valid.

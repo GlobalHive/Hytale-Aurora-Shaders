@@ -21,11 +21,18 @@ AU_CAVE_LIGHTING | Cave lighting % | range 0.0 500.0 25.0 | 250.0
 @ Lighting
 AU_POLISH_SUNLIGHT | Outdoor sunlight | bool | 1 | Requires Surface detail & shading. On in Medium through Ultra for both profile families; off in Lowest and Low. Directional sky fill, sun colour, highlight protection and foliage. Individual controls below and in Shadows.
 AU_POLISH_SKY_FILL | Directional sky fill | range 0.0 1.0 0.05 | 0.65 | Requires Outdoor sunlight. Sky-facing surfaces receive more sky fill than walls and undersides. Sky hue is bounded; caves, night and underwater lighting keep their existing fill. Zero restores the previous ambient response.
+AU_SKY_LIGHTING | Sky lighting | enum 0:Classic 1:Sky-derived | 0 | Sky-derived lights each surface with the sky actually drawn (either atmosphere model, or biome atmosphere): walls facing a bright horizon or a sunset get more and warmer fill, undersides get light bounced off the ground. Worked out once per frame; keeps the ambient brightness of upward faces. Replaces the classic sky fill rather than adding to it. Rooms, caves and underwater keep their existing fill.
+AU_SKY_LIGHT_GROUND | Sky light ground bounce | range 0.0 1.0 0.05 | 0.35 | Requires Sky-derived sky lighting. How much sky light the ground passes up to walls and undersides (the ground's brightness). Zero leaves undersides to the sky alone.
+AU_SKY_LIGHT_STRENGTH | Sky light strength | range 0.0 1.0 0.05 | 1.0 | Requires Sky-derived sky lighting. How fully the sky-derived light replaces the classic directional fill outdoors. Zero is the classic look.
 AU_POLISH_SUN_COLOUR | Sun / sky colour balance | range 0.0 1.0 0.05 | 0.5 | Requires Outdoor sunlight. More neutral midday sun and warm low sun against cool sky fill, without boosting light energy. Smooths the daylight palette transition. Zero restores the previous sun palette.
 AU_POLISH_SUN_HIGHLIGHTS | Sunlit highlight protection | range 0.0 1.0 0.05 | 0.6 | Requires Outdoor sunlight. Gently compresses bright sunlit diffuse surfaces while keeping texture hue. Does not alter the tonemapper, emissive glow, torch light, reflections or bloom. Zero disables it.
 AU_POLISH_FOLIAGE_SUN | Sunlit foliage detail | range 0.0 1.0 0.05 | 0.65 | Requires Outdoor sunlight. Refines grass/leaf wrapped lighting and broadens backlit transmission, rather than adding a second scattering layer. Keeps leaf masks and measured voxel thickness; does not add gloss. Zero restores the previous response.
 AU_POLISH_SUN_BOUNCE | Sunlight bounce intensity | range 0.0 2.0 0.05 | 1.0 | Requires Outdoor sunlight and the RTX family or path tracing. Reuses existing GI rays to gather texture-coloured, shadowed sunlight. Zero removes sun bounce, not torch/ore light. Does not enable GI in Non-RTX profiles or increase ray counts.
 AU_SSAO_STRENGTH | Ambient occlusion | range 0.0 3.0 0.05 | 1.25
+AU_AO_METHOD | Ambient occlusion method | enum 0:Hytale_SSAO 1:GTAO | 0 | GTAO measures how much of the hemisphere above each surface is open, from the depth buffer: corners, recesses and objects resting on the ground are shaded by their real geometry, bright materials lose less light, and only indirect light (sky fill, torch light) is darkened - the sun is left to the shadows. Foliage keeps Hytale's SSAO. Noise is resolved by Aurora TAA or DLSS. Strength follows Ambient occlusion.
+AU_GTAO_QUALITY | GTAO quality | enum 1:Low 2:Medium 3:High | 2 | Requires GTAO. Low traces 2 directions x 4 steps per pixel, Medium 2 x 6, High 3 x 8 (sharper, steadier, costlier).
+AU_GTAO_RADIUS | GTAO radius (blocks) | range 0.5 4.0 0.25 | 1.5 | Requires GTAO. How far around a surface occluders count. Larger radii darken whole rooms and cliff bases; occluders fade out smoothly toward the edge.
+AU_GTAO_BENT_NORMALS | Sky light from open directions | bool | 1 | Requires GTAO and Sky-derived sky lighting. Sky light arrives from where the sky is actually open (GTAO's bent normal) instead of from where the surface faces: walls in recesses and under overhangs are lit from the opening. No extra samples.
 AU_POLISH_AMBIENT | Directional ambient depth | range 0.0 1.0 0.05 | 0.4 | Requires Surface detail & shading. Gently separates upward faces, walls and undersides without changing sun, torch or emissive brightness. Foliage receives half strength. No extra tracing.
 AU_POLISH_FOLIAGE_MATTE | Matte foliage highlights | range 0.0 1.0 0.05 | 0.65 | Requires Surface detail & shading. Reduces broad plastic-like sun highlights on grass and leaves without reducing subsurface transmission or affecting ice and polished blocks.
 AU_BLOCKLIGHT_STRENGTH | Torch light | range 0.0 3.0 0.1 | 1.0
@@ -75,8 +82,10 @@ AU_POLISH_TEXTURE_DETAIL | Texture definition | range 0.0 1.0 0.05 | 0.7 | Requi
 AU_POLISH_ROUGHNESS | Texture roughness detail | range 0.0 1.0 0.05 | 0.35 | Requires Surface detail & shading. Roughness variation on polished and metal textures; fades unresolved detail. Dry wood, soil and ordinary stone stay matte. Shared with DLSS RR guides.
 AU_POLISH_SPECULAR_AA | Specular antialiasing | bool | 1 | Requires Surface detail & shading. Broadens unresolved normal highlights to reduce shimmering without blurring textures or adding a fullscreen pass. Shared with DLSS RR guides.
 AU_RAIN_WETNESS | Rain wetness | range 0.0 2.0 0.1 | 1.0
+AU_RAIN_SOAKING | Rain soaking | range 0.0 2.0 0.05 | 1.0 | How much rain darkens what absorbs it: soil, grass, moss, cloth and hay most, wood a little, polished stone and metal not at all. The water film on top is set by Rain wetness.
 AU_GENERATED_NORMALS | Block relief | bool | 1
 AU_GENERATED_NORMAL_MULT | Relief strength | range 25.0 400.0 25.0 | 100.0
+AU_MATERIAL_RELIEF | Smooth material relief | range 0.0 1.0 0.05 | 1.0 | Requires Block relief. How much polished stone, ice and metal give up the generated texel relief so they reflect cleanly. Zero bevels them like rough blocks.
 
 @ Shadows
 AU_POLISH_SUN_SHADOWS | Sun-sized soft shadows | bool | 1 | Requires Outdoor sunlight and Contact-hardening shadows. Computes penumbrae from blocker distance and shadow-matrix scale rather than cascade index. Uses the existing sample budget. Contact shadow strength below also uses this switch.
@@ -98,6 +107,7 @@ AU_RTX_GI_AO | Ray-traced AO | range 0.0 1.0 0.05 | 0.55
 AU_RTX_GI_RAYS | Screen-space rays (no PT) | range 4 32 4 | 8
 AU_RTX_GI_RADIUS | Screen-space reach (no PT) | range 2.0 16.0 0.5 | 8.0
 AU_RTX_SSR_STEPS | Material reflection steps | range 8 64 4 | 32
+AU_SSR_REFINED | Refined reflections | bool | 1 | Pins every reflection hit to the surface (no stepping), rejects the backs of surfaces, fades uncertain hits to the sky, and blurs rough reflections more the further the reflected surface is. Off restores the previous reflections.
 
 @ Path tracing
 AU_PATH_TRACING | Path tracing | bool | 0 | Voxel GI. Choose Original or NVIDIA DLSS Ray Reconstruction in the GI denoising tab.
@@ -126,21 +136,35 @@ AU_PT_HISTORY | History frames (PT) | range 1.0 63.0 1.0 | 24.0 | PT history len
 AU_SSGI_SELF_HIT_FIX | Non-PT GI self-hit correction | bool | 1
 
 @ Sky & atmosphere
+AU_ATMOSPHERE_MODEL | Atmosphere model | enum 0:Classic 1:Enhanced | 0 | Enhanced uses wavelength-dependent scattering for sky, distant haze, cloud ambience and reflection fallback. Does not change sunlight, surface ambient light, exposure or denoising. Biome & weather atmosphere takes priority.
 AU_BIOME_ATMOSPHERE | Biome & weather atmosphere | bool | 0 | Optional biome/weather fog, sky and cloud colours. Does not replace Aurora sunlight, ambient lighting, exposure or colour grading. Off by default in profiles. Denoisers and coloured lights are unchanged.
 AU_STARS | Stars | enum 0:Off 1:Procedural 2:Hytale | 2
 AU_MOON_GLOW | Moon glow | range 0.0 2.0 0.1 | 1.0
+AU_AURORA | Aurora | bool | 0 | Complementary's aurora borealis, ported as is: curtains of green and violet light in the night sky. Hytale has no moon phase or snowy-biome signal for shaders, so it shows on every clear night rather than only full moons in snowy places. Drawn with the sky (water reflects it); no effect on the lighting.
+AU_AURORA_STYLE | Aurora style | enum 1:Reimagined 2:Unbound | 2 | Requires Aurora. Complementary's two styles: Reimagined's blocky aurora or Unbound's smooth one.
+AU_AURORA_STRENGTH | Aurora brightness | range 0.1 3.0 0.1 | 1.0 | Requires Aurora. 1 is Complementary's brightness.
+AU_AURORA_SPEED | Aurora drift speed | range 0.0 4.0 0.25 | 1.0 | Requires Aurora.
 AU_STARS_BRIGHTNESS | Star brightness | range 0.0 3.0 0.1 | 2.0
 AU_STARS_SCALE | Star density | range 0.5 2.0 0.1 | 1.0
 AU_NIGHT_SKY_SATURATION | Night sky blue | range 1.0 4.0 0.1 | 3.0 | Applies to Aurora's previous atmosphere. Biome & weather atmosphere keeps Hytale's authored night colours instead.
 AU_RAINBOWS | Rainbows | bool | 1
 AU_ATMOSPHERIC_FOG | Atmospheric fog | bool | 1 | Controls atmospheric haze, or native weather/biome fog when Biome & weather atmosphere is enabled. Underwater depth fog stays active.
 AU_ATM_FOG_MULT | Fog density | range 0.0 2.0 0.05 | 0.95
+AU_MIST | Ground mist | bool | 0 | Patches of mist that settle in valleys, over lakes and low ground and thin out above a set altitude. Thickest at dawn and dusk and after rain, burning off toward midday; morning light falls through it in beams and it glows around a low sun. Fades out in caves and rooms. Costs a short march per pixel - see Mist quality.
+AU_MIST_DENSITY | Mist density | range 0.1 3.0 0.1 | 1.0 | Requires Ground mist.
+AU_MIST_ALTITUDE | Mist altitude | range 0.0 320.0 2.0 | 118.0 | Requires Ground mist. World height the mist settles below; set it near the level of your valleys or lakes.
+AU_MIST_HEIGHT | Mist depth | range 1.0 24.0 0.5 | 6.0 | Requires Ground mist. How far above the altitude the mist reaches before thinning out.
+AU_MIST_NOON | Midday mist | range 0.0 1.0 0.05 | 0.15 | Requires Ground mist. How much of the mist is left at midday (1 = as much as at dawn).
+AU_MIST_DISTANCE | Mist range | range 48.0 320.0 8.0 | 160.0 | Requires Ground mist. How far from the camera mist is gathered.
+AU_MIST_SAMPLES | Mist quality | enum 8:Low 12:Medium 16:High | 12 | Requires Ground mist. Samples per pixel along the view ray.
 
 @ Clouds
 AU_CLOUDS | Volumetric clouds | bool | 1
 AU_CLOUD_AMOUNT | Cloud amount | range 0.0 2.0 0.1 | 1.0
 AU_CLOUD_SPEED | Cloud speed | range 0.0 4.0 0.25 | 1.0
 AU_CLOUD_LAYERS | Cloud layers | range 1 2 1 | 2
+AU_CLOUD_LIGHTING | Cloud lighting | enum 0:Classic 1:Detailed | 0 | Classic keeps the original palette. Detailed adds cloud self-shadowing and sunlit rims. Both layers share one ray budget; no extra history buffers.
+AU_CLOUD_LIGHT_SAMPLES | Cloud light samples | range 1 2 1 | 1 | Used by Detailed cloud lighting. More light samples trade view-ray samples for finer self-shadowing within the same noise-fetch budget.
 AU_CLOUD_STEP | Cloud ray step | range 4.0 64.0 2.0 | 14.0 | Smaller steps produce finer clouds at a higher GPU cost.
 AU_CLOUD_SHADOWS | Cloud shadows | bool | 1
 
@@ -153,6 +177,10 @@ AU_LIGHTSHAFT_SCENE_AWARE | Forest / cave beams | range 0.0 1.0 0.05 | 1.0
 AU_LIGHTSHAFT_SCENE_BOOST | Beam boost | range 0.0 3.0 0.1 | 1.0
 AU_LIGHTSHAFT_SUNSET_I | Sunrise / sunset haze | range 0.0 1.0 0.05 | 0.5
 AU_LIGHTSHAFT_NIGHT_I | Moonlight haze | range 0.0 1.0 0.05 | 0.35
+AU_LIGHT_FOG | Coloured light fog | bool | 0 | Requires Colored area lights. Torches, lanterns, glowing ores and coloured bulbs light the air around them in their own colour - a warm glow in a torch-lit cave, coloured haze around a bulb. Walls block it (checked against the voxel grid); a doorway lets a beam through. Removed lights leave no coloured air. Mostly visible in caves, interiors and at night.
+AU_LIGHT_FOG_DENSITY | Light fog density | range 0.1 4.0 0.1 | 1.0 | Requires Coloured light fog.
+AU_LIGHT_FOG_DISTANCE | Light fog range | range 8.0 64.0 4.0 | 24.0 | Requires Coloured light fog. How far from the camera glowing air is gathered.
+AU_LIGHT_FOG_SAMPLES | Light fog quality | enum 4:Low 6:Medium 8:High | 6 | Requires Coloured light fog. Steps along each view ray (one wall check per step).
 
 @ Water & glass
 AU_WATER | Shader water | bool | 1
@@ -160,6 +188,8 @@ AU_WATER_SSR_STEPS | Water reflection steps | range 8 64 4 | 48
 AU_GLASS | Shader glass | bool | 1
 AU_GLASS_TINT | Glass tint | range 0.0 1.0 0.05 | 0.7
 AU_GLASS_ABSORB | Glass darkness | range 0.0 0.9 0.05 | 0.35
+AU_WATER_MODEL | Water colour model | enum 0:Classic 1:Enhanced | 0 | Enhanced absorbs light per colour along its path through the water, keeping Hytale's water tint as the colour that survives longest: clear shallow edges, deep water in the lake's own colour, and a dimmer bed in deep pools. Reflections keep their strength in shallow water. Underwater views are unchanged.
+AU_WATER_CLARITY | Water clarity | range 0.25 3.0 0.05 | 1.0 | Requires the Enhanced water colour model. Higher values let light travel further through the water before it takes the water's colour.
 AU_WATER_REFRACTION | Refraction | range 0.0 4.0 0.25 | 2.0
 AU_WATER_FOAM | Shore foam | range 0.0 2.0 0.1 | 0.5
 AU_WATER_CAUSTICS | Underwater caustics | bool | 1
@@ -169,6 +199,11 @@ AU_RAIN_PUDDLE_STRENGTH | Puddle strength | range 0.0 2.0 0.1 | 1.0
 @ Post-processing
 AU_TM_EXPOSURE | Exposure | range 0.5 2.0 0.05 | 1.00
 AU_TM_CONTRAST | Contrast | range 0.80 1.40 0.01 | 1.10
+AU_TM_HIGHLIGHT_PROTECT | Highlight colour protection | range 0.0 1.0 0.05 | 0.0 | Keeps very bright coloured light - lava, coloured lanterns, a low sun - in its colour instead of draining to white. Only affects highlights; brightness is unchanged.
+AU_WB_TEMPERATURE | White balance: temperature | range -1.0 1.0 0.05 | 0.0 | Cooler (negative) or warmer (positive) image at the same brightness. Glowing blocks keep their own colour.
+AU_WB_TINT | White balance: tint | range -1.0 1.0 0.05 | 0.0 | Greener (negative) or more magenta (positive) image at the same brightness.
+AU_ADAPTIVE_EXPOSURE | Adaptive exposure | bool | 0 | The eye adjusting to the dark: the image brightens where little sky is in view - caves, deep interiors - following Hytale's own smoothed eye brightness, so it eases in without flicker. Night outdoors stays dark. Glowing blocks keep their colour.
+AU_ADAPT_STRENGTH | Adaptation strength | range 0.0 1.5 0.05 | 0.6 | Requires Adaptive exposure. How much brighter the darkest places get (0.6 = up to 60 percent).
 AU_SATURATION | Saturation | range 0.0 2.0 0.05 | 1.00
 AU_VIBRANCE | Vibrance | range 0.0 2.0 0.05 | 1.00
 AU_BLOOM | Bloom | bool | 1

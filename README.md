@@ -337,7 +337,8 @@ from the C source in `hook/` and installs that. The compiler (Zig) is downloaded
 ziglang.org and checked against the checksum ziglang.org publishes; no Visual Studio needed.
 
 From PowerShell: `.\build.ps1` builds `build\opengl32.dll`, `.\install.ps1 -Build` builds and
-installs.
+installs. Without `-Build` the installer takes the newer of `bin\opengl32.dll` and
+`build\opengl32.dll`.
 
 ## How it works
 

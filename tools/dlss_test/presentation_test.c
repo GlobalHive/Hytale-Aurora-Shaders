@@ -42,7 +42,7 @@ static GLuint test_texture(int width, int height)
 static void capture_test(const char *postEffect)
 {
     const int width = 64, height = 48;
-    const char *start = strstr(postEffect, "        ivec2 inputSize = imageSize(auDlssColor);");
+    const char *start = strstr(postEffect, "        ivec2 inputSize = ivec2(uHookDlssViewport.zw);");
     const char *end = start ? strstr(start, "        // The finished frame") : NULL;
     assert(start && end);
     Str source = {0};
@@ -127,6 +127,41 @@ static void resolve_test(const char *postEffect)
     testDeleteTextures(2, textures); r_glDeleteProgram(g_dlssProg); g_dlssProg = 0; assert(!testError());
 }
 
+// The picture check compares the frame DLSS was given, and the game's own picture the window
+// held before (before < 0: not available), with the window's back buffer afterwards (the 16x16
+// test window here). A lit frame that reaches the window black is the issue-12 failure, also
+// when the capture lost it; dark or invalid input says nothing; any picture in the window passes.
+static void picture_check_test(void)
+{
+    GLuint input = test_texture(32, 24), framebuffer;
+    dl.GenFb(1, &framebuffer); dl.BindFb(0x8d40, framebuffer);
+    dl.FbTex(0x8d40, 0x8ce0, GL_TEXTURE_2D, input, 0);
+    const GLint window[] = {0, 0, 16, 16};
+    const struct { float input, before, window; int verdict; } cases[] = {
+        {.5f, -1, 0, 0}, {.5f, -1, .25f, 1}, {.001f, -1, 0, -1}, {.001f, -1, .25f, 1}, {NAN, -1, 0, -1},
+        {0, .25f, 0, 0}, {0, .01f, 0, -1}, {0, .25f, .25f, 1}};
+    for (int index = 0; index < 8; index++) {
+        const float inputColour[] = {cases[index].input, cases[index].input, cases[index].input, 1};
+        const float beforeColour[] = {cases[index].before, cases[index].before, cases[index].before, 1};
+        const float windowColour[] = {cases[index].window, cases[index].window, cases[index].window, 1};
+        dl.BindFb(0x8d40, framebuffer); testClear(0x1800, 0, inputColour);
+        dl.BindFb(0x8d40, 0);
+        GLfloat before[DLSS_CHECK_GRID * DLSS_CHECK_GRID][4];
+        int haveBefore = cases[index].before >= 0;
+        if (haveBefore) { testClear(0x1800, 0, beforeColour); assert(dlss_read_grid(0, window, before)); }
+        testClear(0x1800, 0, windowColour);
+        dl.BindFb(0x8ca8, framebuffer);
+        int lit = 0, verdict = dlss_check(input, 32, 24, window, haveBefore ? before : NULL, &lit);
+        GLint readFramebuffer = -1; r_glGetIntegerv(0x8caa, &readFramebuffer);
+        int valid = verdict == cases[index].verdict && readFramebuffer == (GLint)framebuffer;
+        printf("picture check input=%.3f before=%.2f window=%.2f: verdict %d, %d lit %s\n",
+            cases[index].input, cases[index].before, cases[index].window, verdict, lit, valid ? "PASS" : "FAIL");
+        testFailures += !valid;
+    }
+    dl.BindFb(0x8d40, 0);
+    testDeleteTextures(1, &input); assert(!testError());
+}
+
 int wmain(int count, wchar_t **arguments)
 {
     assert(count == 2); setvbuf(stdout, NULL, _IONBF, 0); g_log = stdout; wcscpy(g_packDir, arguments[1]);
@@ -157,7 +192,7 @@ int wmain(int count, wchar_t **arguments)
     testScissor = (void *)GetProcAddress(g_real, "glScissor");
     ov.Disable(0x0b71); ov.Disable(0x0be2); ov.Disable(0x0c11); ov.Disable(0x0b44); ov.ColorMask(1, 1, 1, 1);
     char *postEffect = read_file("programs/PostEffectFS.glsl", NULL); assert(postEffect);
-    capture_test(postEffect); resolve_test(postEffect); free(postEffect);
+    capture_test(postEffect); resolve_test(postEffect); picture_check_test(); free(postEffect);
     printf("DLSS presentation: %d failures\n", testFailures);
     return testFailures ? 1 : 0;
 }

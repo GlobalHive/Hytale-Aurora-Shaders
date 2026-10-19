@@ -7,6 +7,7 @@
 #include "AU_Common.glsl"
 #include "AU_LightColour.glsl"
 #include "AU_Surface.glsl"
+#include "AU_SkyLight.glsl"
 
 float GetNoHSquared(float radiusTan, float NoL, float NoV, float VoL)
 {
@@ -119,6 +120,9 @@ bool auSSSUseGI = false;
 vec3 auSSSVolumeLight = vec3(0.0);
 vec3 auSSSVolumeTransmission = vec3(1.0);
 float auSSSMask = 1.0;
+// GTAO (DeferredFS sets it): the AO darkens only the indirect light - sky fill, torch and the
+// minimum light - not the sun, which the shadows already cover.
+bool auAOIndirectOnly = false;
 
 vec3 AU_SSSVolumeRadiance(vec3 transport, vec3 scatteringDepth, vec3 normal, vec3 playerPosition, float skyLight, int subsurfaceMode)
 {
@@ -254,9 +258,20 @@ vec3 AU_DoLighting(vec3 albedo, vec3 normalM, vec3 playerPos, float skyLight, ve
     lightColorM = mix(lightColorM, unboostedLight, outdoor);
     ambientColorM = mix(ambientColorM, ambientColor, outdoor);
     ambientColorM = AU_DirectionalAmbient(ambientColorM, normalM, subsurfaceMode);
+#if AU_SKY_LIGHTING == 1
+    // Sky-derived: the light of the sky as drawn, per facing, in place of the classic sky fill
+    // (day and night; the flood-fill sky light and AO below still darken rooms and caves).
+    if (auSkyCubeValid) {
+        float open = emission > 0.0 ? 0.0 : smoothstep(0.08, 0.8, skyLight) * (1.0 - clamp(IsCameraUnderwater, 0.0, 1.0));
+        ambientColorM = mix(ambientColorM, AU_SkyAmbient(ambientColor, auSkyNormalValid ? auSkyNormal : normalM, subsurfaceMode),
+                            clamp(AU_SKY_LIGHT_STRENGTH, 0.0, 1.0) * open);
+    } else
+#endif
     ambientColorM = AU_OutdoorSkyFill(ambientColorM, ambientColor, normalM, dayUpSkyColor, dayMiddleSkyColor,
                                      outdoor, rainFactor, subsurfaceMode);
-    vec3 sceneLighting = lightColorM * shadowLightMult + ambientColorM * ambientMult;
+    bool indirectAO = auAOIndirectOnly && subsurfaceMode == 0;
+    float indirectVisibility = indirectAO ? pow(clamp(ao, 0.0, 1.0), AU_SSAO_STRENGTH) : 1.0;
+    vec3 sceneLighting = lightColorM * shadowLightMult + ambientColorM * (ambientMult * indirectVisibility);
     float dotSceneLighting = dot(sceneLighting, sceneLighting);
 
     // ---- Ambient occlusion (Hytale's SSAO in place of vanilla AO) ----
@@ -268,6 +283,7 @@ vec3 AU_DoLighting(vec3 albedo, vec3 normalM, vec3 playerPos, float skyLight, ve
         vanillaAO = pow(pow1_5(vanillaAO), 1.0 + dotSceneLighting * 0.02 + NdotUmax0 * (0.15 + 0.25 * pow2(noonFactor * pow2(lightmapY2))));
     }
     vanillaAO = vanillaAO * 0.9 + 0.1;
+    if (indirectAO) vanillaAO = 1.0;
 
     // ---- Light highlight ----
     vec3 lightHighlight = vec3(0.0);
@@ -279,7 +295,9 @@ vec3 AU_DoLighting(vec3 albedo, vec3 normalM, vec3 playerPos, float skyLight, ve
     lightHighlight *= (subsurfaceHighlight + specularHighlight) * highlightColor;
 #endif
 
-    vec3 finalDiffuse = pow2(directionShade * vanillaAO) * (blockLighting + pow2(sceneLighting) + minLighting) + pow2(emission);
+    float indirectVisibility2 = indirectVisibility * indirectVisibility;
+    vec3 finalDiffuse = pow2(directionShade * vanillaAO) * ((blockLighting + minLighting) * indirectVisibility2 + pow2(sceneLighting))
+                      + pow2(emission);
     finalDiffuse = sqrt(max(finalDiffuse, vec3(0.0)));
 
     vec3 scattering = vec3(0.0);

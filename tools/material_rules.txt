@@ -1,0 +1,58 @@
+# Block materials by texture name, for tools/prepare_shaders.ps1 (Windows) and tools/prepare_shaders.py
+# (Linux) - both read this file, so the two always agree. The hook matches the game's block atlas
+# against the resulting materials.txt; DeferredFS and the Ray Reconstruction guides read the result
+# through include/AU_Material.glsl.
+#
+# <class> <level> <condition> [<condition> ...]      the first rule whose conditions all hold wins
+#   class 0 plain (matte, soaks a little when wet), 1 polished, 2 metal, 3 porous
+#   level 0-7: polished = gloss, metal = polish, porous = how much rain it soaks up
+#   1 6 is reserved for ice (it also selects the ice subsurface scattering)
+#   condition: prefix:a|b  contains:a|b  exact:a|b   (lower-case names, | = any of them)
+# Unknown names stay plain. Dry wood, soil, gravel, plants and ordinary rough rock are never glossy.
+
+# Not blocks, and the grass fringe overlaid on soil sides
+0 0 prefix:fluid|dev|editor|t_|transition
+0 0 contains:side_mask
+# Grass, leaf-litter and moss covered ground: soaks rain up, never turns glossy
+3 7 prefix:soil_ contains:grass|leaves
+3 6 prefix:moss_|soil_gravel_mossy
+3 5 prefix:rock_ contains:mossy
+# Plants and leaves (foliage has its own transmission masks)
+0 0 contains:grass|leaves|moss
+
+# Metals: polished plates shine most; goblin iron, rust and scrap are dull
+2 6 prefix:metal_|rock_gold contains:smooth
+2 2 prefix:metal_|rock_gold contains:goblin|rust|scrap
+2 4 prefix:metal_|rock_gold
+
+# Ice and glass
+1 6 prefix:ice
+1 6 contains:_ice
+1 7 prefix:glass
+
+# Glazed tiles and polished stone, graded by how smooth the cut is
+1 5 exact:whitetiles
+1 5 contains:magma_cooled_smooth|iridescent_processed_brick_smooth
+1 4 contains:basalt_brick_smooth|volcanic_brick_smooth|quartzite_brick_smooth
+1 2 contains:sandstone_brick_smooth|sandstone_red_brick_smooth|concrete_slab_brick_smooth
+1 3 contains:stone_brick_smooth|slate_brick_smooth|shale_brick_smooth|calcite_brick_smooth
+# Marble: polished slabs and bricks, but its cobble is rough stone
+3 4 contains:marble contains:cobble
+1 4 contains:marble|quartzite_brick|polish
+# Matte despite the name: chalk, unglazed clay and packed-soil bricks
+0 0 contains:chalk_brick_smooth|clay_smooth|soil_hive_brick_smooth|soil_hive_corrupted_brick_smooth|soil_clay_ocean_brick_smooth
+1 3 contains:smooth
+
+# Fabrics and hay soak rain up
+3 5 prefix:cloth_
+3 5 exact:deco_hay
+
+# Cut stone, planks and other building blocks: plain
+0 0 contains:brick|decorative|ornate|tile|rune|planks
+0 0 prefix:soil_snow
+
+# Loose and natural ground
+3 4 contains:gravel|cobble
+3 6 prefix:soil_|clay
+3 6 contains:sand
+3 3 prefix:rock_|calcite|peachstone|chalk

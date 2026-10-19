@@ -222,39 +222,56 @@ def make_jittered_vs(s):
     return s + "\n// Aurora camera jitter (zero without DLSS).\nuniform vec2 uHookJitter;\nvoid main()\n{\n    auGameMain();\n" + ("#if !USE_SCENE_DATA_OVERRIDE\n" if guard else "") + "    gl_Position.xy += uHookJitter * gl_Position.w;\n" + ("#endif\n" if guard else "") + "}\n"
 
 
-def classify(name):
+def make_screen_vs(s):
+    s, count = re.subn(r"void\s+main\s*\(\s*(?:void)?\s*\)", "void auGameMain()", s, count=1)
+    if not count or "USE_FAR_CORNERS" not in s:
+        raise ValueError("ScreenVS: game shader changed, main() or USE_FAR_CORNERS not found")
+    return s + ("\n// Aurora: the sky's ambient light per facing for the deferred lighting (include/AU_SkyLight.glsl).\n"
+                "#if USE_FAR_CORNERS\n#define AU_SKY_LIGHT_VERTEX 1\n#include \"SceneData_inc.glsl\"\n#include \"AU_SkyLight.glsl\"\n#endif\n"
+                "void main()\n{\n    auGameMain();\n#if USE_FAR_CORNERS\n    AU_SkyLightVertex();\n#endif\n}\n")
+
+
+MATERIAL_RULES = Path(__file__).with_name("material_rules.txt")
+
+
+def load_material_rules(path=MATERIAL_RULES):
+    rules = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        fields = line.split("#", 1)[0].split()
+        if not fields:
+            continue
+        conditions = []
+        for condition in fields[2:]:
+            kind, _, words = condition.partition(":")
+            if kind not in ("prefix", "contains", "exact") or not words:
+                raise ValueError(f"{path.name}:{number}: bad condition {condition!r}")
+            conditions.append((kind, tuple(words.split("|"))))
+        if len(fields) < 3 or not (0 <= int(fields[0]) <= 3 and 0 <= int(fields[1]) <= 7):
+            raise ValueError(f"{path.name}:{number}: expected <class 0-3> <level 0-7> <condition>...")
+        rules.append((int(fields[0]), int(fields[1]), conditions))
+    return rules
+
+
+def classify(name, rules=None):
     n = name.lower()
-    has = lambda *words: any(w in n for w in words)
-    if n.startswith(("fluid", "dev", "editor", "t_", "transition")) or has("grass", "leaves", "moss"):
-        return 0, 0
-    if n.startswith(("metal_", "rock_gold")):
-        return 2, 6 if has("smooth") else 2 if has("goblin", "rust", "scrap") else 4
-    if n.startswith("ice") or has("_ice"):
-        return 1, 6
-    if n.startswith("glass"):
-        return 1, 7
-    if has("smooth", "marble", "polish", "whitetiles", "quartzite_brick"):
-        return 1, 4
-    if has("brick", "decorative", "ornate", "tile", "rune", "planks") or n.startswith("soil_snow"):
-        return 0, 0
-    if has("gravel", "cobble"):
-        return 3, 4
-    if n.startswith(("soil_", "clay")) or has("sand"):
-        return 3, 6
-    if n.startswith(("rock_", "calcite", "peachstone", "chalk")):
-        return 3, 3
+    tests = {"prefix": lambda words: n.startswith(words), "contains": lambda words: any(w in n for w in words),
+             "exact": lambda words: n in words}
+    for kind, level, conditions in rules if rules is not None else load_material_rules():
+        if all(tests[test](words) for test, words in conditions):
+            return kind, level
     return 0, 0
 
 
 def build_materials(assets):
     from PIL import Image
     lines = []
+    rules = load_material_rules()
     with zipfile.ZipFile(assets) as archive:
         for entry in archive.infolist():
             if not entry.filename.startswith("Common/BlockTextures/") or not entry.filename.endswith(".png"):
                 continue
             name = Path(entry.filename).stem
-            kind, level = classify(name)
+            kind, level = classify(name, rules)
             if kind == 0:
                 continue
             with Image.open(BytesIO(archive.read(entry))) as image:
@@ -281,6 +298,7 @@ def prepare(executable, pack, assets=None):
     }
     for name in ("BlockyModelVS", "ParticleVS", "SkyAndCloudsVS", "BasicVS", "BasicFogVS", "BeamVS", "TextVS"):
         generated[name + ".glsl"] = make_jittered_vs(sources[name + ".glsl"])
+    generated["ScreenVS.glsl"] = make_screen_vs(sources["ScreenVS.glsl"])
     index = build_index(sources)
     assets = assets or executable.parent.parent / "Assets.zip"
     materials = build_materials(assets) if assets.is_file() else "# Assets.zip unavailable; no block materials\n"

@@ -127,6 +127,16 @@ static void menu_profile_builtin(int selected)
     menu_profile_set("AU_WATER_CAUSTICS", tier >= 2);
     menu_profile_set("AU_GLASS", tier >= 1);
     menu_profile_set("AU_RAIN_PUDDLES", tier >= 2);
+    // Visual upgrade (docs/surfaces-and-water.md, docs/clouds-and-sky.md), by measured cost:
+    // sky light (per draw, not per pixel), enhanced water and atmosphere from Medium; GTAO (about
+    // 0.3 ms at its medium quality) from High; detailed cloud lighting from Highest. Ground mist
+    // (its altitude depends on the world) and the aurora (a taste) stay user choices.
+    menu_profile_set("AU_SKY_LIGHTING", tier >= 2);
+    menu_profile_set("AU_WATER_MODEL", tier >= 2);
+    menu_profile_set("AU_ATMOSPHERE_MODEL", tier >= 2);
+    menu_profile_set("AU_AO_METHOD", tier >= 3);
+    menu_profile_set("AU_GTAO_QUALITY", tier >= 5 ? 3 : tier == 4 ? 2 : 1);
+    menu_profile_set("AU_CLOUD_LIGHTING", tier >= 4);
 }
 
 static void menu_profile_apply(void)

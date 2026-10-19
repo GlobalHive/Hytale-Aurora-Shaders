@@ -260,6 +260,20 @@ void AU_InitCommon()
     blocklightCol = vec3(0.1775, 0.104, 0.077);
 }
 
+// ---- Adaptive exposure ----
+// The eye adjusting to the dark: brighter where little sky is in view (caves, deep interiors), by
+// Hytale's own temporally smoothed eye brightness (no history buffer of ours, no flicker). Night
+// outdoors stays dark. 1 = no change.
+float AU_AdaptiveExposure()
+{
+#if AU_ADAPTIVE_EXPOSURE
+    float eye = clamp(SceneBrightness.r, 0.0, 1.0);
+    return 1.0 + max(AU_ADAPT_STRENGTH, 0.0) * (1.0 - smoothstep(0.05, 0.6, eye));
+#else
+    return 1.0;
+#endif
+}
+
 // ---- Space helpers -------------------------------------------------------------------
 // Hytale renders camera-relative: "positionFromCameraWS" is world-oriented, camera at origin.
 float GetRenderDistance()

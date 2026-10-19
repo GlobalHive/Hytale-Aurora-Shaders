@@ -45,8 +45,19 @@ if ($settings -notmatch '#define AU_GI_DENOISER 1\s' -or $settings -notmatch '#d
 if (Test-Path -LiteralPath (Join-Path $client '.aurora-old-artifact')) { throw 'Old install debris remained in the game folder.' }
 [IO.File]::WriteAllText((Join-Path $client 'opengl32.dll'), 'updated outside the installer')
 & (Join-Path $package 'install.ps1') -ClientDir $client -Update -NonInteractive
+# A shipped and a local DLL: the newer one is installed.
+New-Item -ItemType Directory -Path (Join-Path $package 'build') -Force | Out-Null
+$shippedTime = (Get-Item -LiteralPath (Join-Path $package 'bin\opengl32.dll')).LastWriteTimeUtc
+$localDll = Join-Path $package 'build\opengl32.dll'
+[IO.File]::WriteAllText($localDll, 'local build')
+(Get-Item -LiteralPath $localDll).LastWriteTimeUtc = $shippedTime.AddMinutes(5)
+& (Join-Path $package 'install.ps1') -ClientDir $client -Update -NonInteractive
+if ([IO.File]::ReadAllText((Join-Path $client 'opengl32.dll')) -ne 'local build') { throw 'A newer local build was not installed.' }
+(Get-Item -LiteralPath $localDll).LastWriteTimeUtc = $shippedTime.AddMinutes(-5)
+& (Join-Path $package 'install.ps1') -ClientDir $client -Update -NonInteractive
+if ([IO.File]::ReadAllText((Join-Path $client 'opengl32.dll')) -ne 'new test proxy') { throw 'An older local build replaced the shipped DLL.' }
 & (Join-Path $package 'install.ps1') -ClientDir $client -Uninstall -NonInteractive
 $remaining = @(Get-ChildItem -LiteralPath $client -Force)
 if ($remaining.Count -ne 1 -or $remaining[0].Name -ne 'HytaleClient.exe') { throw 'Uninstall left shader files or links in the game folder.' }
 if (-not (Test-Path -LiteralPath (Join-Path $foreign 'keep-me.txt'))) { throw 'Uninstall followed a junction into user shaders.' }
-Write-Host 'PASS: clean update, changed DLL, missing backup, settings migration, preserved link target, and complete uninstall.'
+Write-Host 'PASS: clean update, changed DLL, newer of shipped and local DLL, missing backup, settings migration, preserved link target, and complete uninstall.'

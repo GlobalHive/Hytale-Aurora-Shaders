@@ -5,6 +5,7 @@
 #define AU_SKY
 
 #include "AU_Common.glsl"
+#include "AU_Atmosphere.glsl"
 
 vec3 GetSky(float VdotU, float VdotS, float dither, bool doGlare, bool doGround)
 {
@@ -13,6 +14,8 @@ vec3 GetSky(float VdotU, float VdotS, float dither, bool doGlare, bool doGround)
     float VdotSML = sunVisibility > 0.5 ? VdotS : -VdotS;
 #if AU_BIOME_ATMOSPHERE
     vec3 finalSky = AU_BiomeSky(VdotU, VdotS);
+#elif AU_ATMOSPHERE_MODEL == 1
+    vec3 finalSky = AU_AtmosphereSky(VdotU, VdotS, doGround);
 #else
     float nightFactorSqrt2 = sqrt2(nightFactor);
     float nightFactorM = sqrt2(nightFactorSqrt2) * 0.4;

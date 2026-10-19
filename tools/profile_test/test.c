@@ -351,6 +351,18 @@ int wmain(int count, wchar_t **arguments)
         expect_setting("AU_POLISH_SUN_SHADOWS", 1);
         expect_setting("AU_POLISH_SUN_DIAMETER", .75);
         expect_setting("AU_POLISH_CONTACT_WEIGHT", .85);
+        // Visual upgrade tiers: Medium+ sky light, water and atmosphere; High+ GTAO (quality by
+        // tier); Highest+ detailed clouds; mist and aurora never forced on; refined reflections on.
+        int tier = selected % 6;
+        expect_setting("AU_SKY_LIGHTING", tier >= 2);
+        expect_setting("AU_WATER_MODEL", tier >= 2);
+        expect_setting("AU_ATMOSPHERE_MODEL", tier >= 2);
+        expect_setting("AU_AO_METHOD", tier >= 3);
+        expect_setting("AU_GTAO_QUALITY", tier >= 5 ? 3 : tier == 4 ? 2 : 1);
+        expect_setting("AU_CLOUD_LIGHTING", tier >= 4);
+        expect_setting("AU_MIST", 0);
+        expect_setting("AU_AURORA", 0);
+        expect_setting("AU_SSR_REFINED", 1);
         char *settings = read_file(MENU_SETTINGS, NULL);
         double shadow = settings_num(settings, "AU_SHADOW_SAMPLES", 0);
         double cloudStep = settings_num(settings, "AU_CLOUD_STEP", 0);

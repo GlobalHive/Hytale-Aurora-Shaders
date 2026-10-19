@@ -7,7 +7,9 @@
 #include "Fog_inc.glsl"
 #include "AU_Sky.glsl"
 #include "AU_VL.glsl"
+#include "AU_Mist.glsl"
 #include "AU_Rainbow.glsl"
+#include "AU_Aurora.glsl"
 
 uniform sampler2D uStarsTexture;
 uniform float uStarsOpacity;
@@ -116,6 +118,8 @@ void main()
     }
 #endif
 
+    sky += AU_GetAurora(dir, dither);
+
     // Hytale's moon glow: the halo around the moon, in the colour the game sets for it.
     if (1.0 == uDrawSkySunMoonStars.z && AU_MOON_GLOW > 0.0) {
         float dm = min(distance(fragSpherePosition, -uSunPosition) / (uMoonScale * 0.4), 0.99);
@@ -124,6 +128,7 @@ void main()
         sky = mix(sky, uMoonGlowColor.rgb, clamp(uMoonGlowColor.a * glow * uMoonOpacity * AU_MOON_GLOW, 0.0, 1.0));
     }
 
+    AU_ApplyMist(sky, dir * 100000.0, dither);
     sky += AU_GetRainbow(dir, 100000.0, true, dither);
     sky = AU_AddVL(sky, GetVolumetricLight(dir, 100000.0, true, dither));
     // Sky seen from inside a cave (openings, or chunks the game culled): cave fog.

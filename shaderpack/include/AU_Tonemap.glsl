@@ -8,6 +8,14 @@
 
 float AU_Lum(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 
+// White balance: a warmer/cooler and greener/more magenta cast at unchanged brightness.
+vec3 AU_WhiteBalanceGain()
+{
+    float t = clamp(AU_WB_TEMPERATURE, -1.0, 1.0), m = clamp(AU_WB_TINT, -1.0, 1.0);
+    vec3 gain = vec3(1.0 + 0.14 * t, 1.0 + 0.015 * t - 0.08 * m, 1.0 - 0.16 * t);
+    return gain / AU_Lum(gain);
+}
+
 void LinearToRGB(inout vec3 color)
 {
     const vec3 k = vec3(0.055);
@@ -17,7 +25,7 @@ void LinearToRGB(inout vec3 color)
 // Lottes 2016 tonemap, modified.
 void DoTonemap(inout vec3 color)
 {
-    color = max(AU_TM_EXPOSURE * color, vec3(0.0));
+    color = max(AU_TM_EXPOSURE * color, vec3(0.0)) * AU_WhiteBalanceGain();
 
     float initialLuminance = AU_Lum(color);
 
@@ -39,6 +47,15 @@ void DoTonemap(inout vec3 color)
     vec3 c = (hdrMaxAD * midInA - HM1 * midInAD) / (HM2 * midOut);
 
     vec3 colorOut = pow(color, a) / (pow(color, a_d) * b + c);
+    // Highlight colour protection: the curve applied per channel drains bright saturated colours
+    // (lava, a red lantern, a sunset) toward white; applied to the brightest channel instead,
+    // keeping the others in proportion, they hold their hue. Blended in only for highlights.
+    float protect = clamp(AU_TM_HIGHLIGHT_PROTECT, 0.0, 1.0);
+    float peakIn = max(color.r, max(color.g, color.b));
+    if (protect > 0.0 && peakIn > 0.0001) {
+        float peakOut = pow(peakIn, a.x) / (pow(peakIn, a_d.x) * b.x + c.x);
+        colorOut = mix(colorOut, color * (peakOut / peakIn), protect * smoothstep(0.2, 1.5, peakIn));
+    }
     LinearToRGB(colorOut);
 
     // Remove tonemapping from darker colours for better readability
@@ -77,7 +94,11 @@ vec3 AU_InverseTonemap(vec3 displayLinear)
     vec3 b = (-midInA + HM1) / (HM2 * midOut);
     vec3 c = (hdrMaxA * midInA - HM1 * midInA) / (HM2 * midOut);
     vec3 y = min(displayLinear, 0.98 / b);
-    return pow(y * c / max(1.0 - y * b, vec3(1e-4)), 1.0 / a) / AU_TM_EXPOSURE;
+    vec3 scene = pow(y * c / max(1.0 - y * b, vec3(1e-4)), 1.0 / a) / (AU_TM_EXPOSURE * AU_WhiteBalanceGain());
+#ifdef AU_COMMON
+    scene /= AU_AdaptiveExposure();   // the eye's adaptation would otherwise wash glowing blocks out
+#endif
+    return scene;
 }
 
 void DoBSLColorSaturation(inout vec3 color)

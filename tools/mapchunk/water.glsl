@@ -113,12 +113,26 @@
         vec3 wBlock = AU_ExtractBlockLight(fragStaticLight.rgb, skyL, normalWS, false);
         vec3 litWater = AU_DoLighting(waterAlbedo, normalM, fragPositionWS, skyL, wBlock, wShadow, 1.0, 0, 0.0, 1.0, highlightMult, true);
 
+#if AU_WATER_MODEL == 1
+        // Enhanced water: light is absorbed per colour along its path through the water - red
+        // first, then green - with Hytale's water tint as the colour that survives longest, so
+        // shallow edges stay clear and deep water takes the lake's own colour. The view path
+        // through the water and the light's path down to the bed are separate: the bed of a deep
+        // pool is dim even where the water above it is thin to look through at a steep angle.
+        // What the water absorbs on the way is replaced by the light it scatters (litWater).
+        vec3 auAbsorb = AU_WaterAbsorption(glColor);
+        vec3 auViewT = AU_WaterTransmittance(auAbsorb, dist);
+        float auDepthBelow = isTopFace ? max(fragPositionWS.y - floorFromCamWS.y, 0.0) : dist;
+        vec3 auBedT = AU_WaterTransmittance(auAbsorb, AU_WaterBedPath(auDepthBelow, lightVec));
+#endif
         if (IsCameraUnderwater > 0.5) {
             background *= 1.0 - 0.9 * max(0.5 * sqrt(fresnel4), fresnel4);
             reflectMult = 0.5;
             alpha = 0.15;
         } else {
+#if AU_WATER_MODEL != 1
             background *= translucentMult;
+#endif
         }
 
         // Reflections: Hytale's screen-space trace, procedural sky as fallback
@@ -136,10 +150,24 @@
         vec3 auDbgBase = mix(background, litWater, alpha);
         vec3 surface = mix(litWater, reflection, fresnelM);
         vec3 waterColor = mix(background, surface, alpha);
+        float auVLHidden = alpha;
+#if AU_WATER_MODEL == 1
+        if (IsCameraUnderwater < 0.5) {
+            // The bed seen through the water, dimmed on both paths; the scattered water light in
+            // place of what was absorbed; foam is opaque; then the surface reflection on top -
+            // in shallow water as much as in deep (it is the surface that reflects).
+            vec3 auOpacity = mix(1.0 - auViewT, vec3(1.0), max(foam, fresnel4));
+            vec3 auBody = background * auBedT * (1.0 - auOpacity) + litWater * auOpacity;
+            waterColor = mix(auBody, reflection, fresnelM * (1.0 - foam));
+            auDbgBase = auBody;
+            auVLHidden = dot(auOpacity, vec3(0.299, 0.587, 0.114));
+        }
+#endif
         outColor0.rgb = waterColor;
+        if (IsCameraUnderwater < 0.5) AU_ApplyMist(outColor0.rgb, fragPositionWS, auDither);
         // The background already carries the shafts up to the riverbed; the water surface
-        // hides `alpha` of them, so put that part back in front of it.
-        if (IsCameraUnderwater < 0.5) auForwardVL = GetVolumetricLight(nViewPos, lViewPos, false, auDither) * alpha;
+        // hides part of them, so put that part back in front of it.
+        if (IsCameraUnderwater < 0.5) auForwardVL = GetVolumetricLight(nViewPos, lViewPos, false, auDither) * auVLHidden;
 #if AU_DEBUG_WATER == 1
         outColor0.rgb = glColor;
 #elif AU_DEBUG_WATER == 2

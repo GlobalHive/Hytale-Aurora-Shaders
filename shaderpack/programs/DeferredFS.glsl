@@ -11,9 +11,14 @@
 #include "Reconstruction_inc.glsl"
 #include "Fog_inc.glsl"
 #include "AU_Lighting.glsl"
+#include "AU_Material.glsl"
 #include "AU_Tonemap.glsl"
 #include "AU_Temporal.glsl"
+#if AU_AO_METHOD == 1
+#include "AU_GTAO.glsl"
+#endif
 #include "AU_VL.glsl"
+#include "AU_Mist.glsl"
 #include "AU_Clouds.glsl"
 #include "AU_Caustics.glsl"
 #include "AU_Rainbow.glsl"
@@ -46,6 +51,9 @@ uniform sampler2D uFogNoiseTexture;
 
 in vec3 fragFrustumRay;
 in vec2 fragTexCoords;
+#if AU_SKY_LIGHTING == 1
+flat in vec3 auSkyLightCube[6];   // the sky's ambient light per facing (ScreenVS, AU_SkyLight.glsl)
+#endif
 
 out vec4 outColor;
 
@@ -114,6 +122,17 @@ vec2 AU_GIHitAlbedoSky(vec2 uv)
 }
 #endif
 
+#if AU_PRESET >= 2 || AU_RAIN_PUDDLES
+vec3 AU_SSRHitNormal(vec2 uv)
+{
+    vec3 n = decodeNormal(textureLod(uNormalTexture, uv, 0.0).rg);
+#if !INPUT_NORMALS_IN_WS
+    n = mat3(InvViewMatrix) * n;
+#endif
+    return n;
+}
+#endif
+
 float getSSAOValue(vec2 texCoords, float depth)
 {
 #if USE_SSAO
@@ -148,6 +167,10 @@ void main()
     }
 #endif
     AU_InitCommon();
+#if AU_SKY_LIGHTING == 1
+    for (int face = 0; face < 6; face++) auSkyCube[face] = auSkyLightCube[face];
+    auSkyCubeValid = true;
+#endif
 
     vec2 texCoords = fragTexCoords;
     float depth = texture(uDepthTexture, texCoords).r;
@@ -155,7 +178,9 @@ void main()
 #if AU_GI_DENOISE
 #if AU_GI_TEMPORAL_FILTER
         if (uHookPTPass == 3) {
-            ivec2 historySize = imageSize(auGIOutPos);
+            // The history read texture has the write image's size. Not imageSize(): AMD's
+            // compiler does not offer it to #version 410 shaders (issue #17).
+            ivec2 historySize = textureSize(auGIHistPos, 0);
             ivec2 historyPixel = clamp(ivec2(texCoords * vec2(historySize)), ivec2(0), historySize - 1);
             ivec2 representative = ivec2(floor((vec2(historyPixel) + 0.5) * ViewportSize / vec2(historySize)));
             if (all(equal(ivec2(gl_FragCoord.xy), representative)))
@@ -192,6 +217,23 @@ void main()
 
     vec2 surfaceFootprint = AU_SurfaceFootprint(normal, gbuffer0.rgb);
     float dither = GetDither(gl_FragCoord.xy);
+#if AU_AO_METHOD == 1
+    // GTAO in place of Hytale's SSAO on solid surfaces (foliage keeps Hytale's): horizon-based
+    // visibility from the depth buffer, with the light bounced between the occluding faces.
+    if (hasSSAO && !hasBloom) {
+        vec3 posVS = (ViewMatrix * vec4(playerPos, 1.0)).xyz;
+        vec3 bentNormalVS;
+        float visibility = AU_GTAOVisibilityBent(uDepthTexture, texCoords, posVS, normalize(mat3(ViewMatrix) * normal),
+                                                 GetDither2(gl_FragCoord.xy + vec2(37.0, 71.0)), bentNormalVS);
+        ao = AU_GTAOMultiBounce(visibility, albedo);
+        auAOIndirectOnly = true;
+#if AU_SKY_LIGHTING == 1 && AU_GTAO_BENT_NORMALS
+        // Sky light from where the sky is open (recesses, under overhangs: from the opening).
+        auSkyNormal = normalize(mat3(InvViewMatrix) * bentNormalVS);
+        auSkyNormalValid = true;
+#endif
+    }
+#endif
 
 
     // Material classes from Hytale's G-buffer flags:
@@ -232,7 +274,7 @@ void main()
 #endif
 #if AU_GI_DENOISE && AU_GI_TEMPORAL_FILTER
     if (hasBloom && uHookPTPass == 3) {
-        ivec2 historySize = imageSize(auGIOutPos);
+        ivec2 historySize = textureSize(auGIHistPos, 0);
         ivec2 historyPixel = clamp(ivec2(texCoords * vec2(historySize)), ivec2(0), historySize - 1);
         ivec2 representative = ivec2(floor((vec2(historyPixel) + 0.5) * ViewportSize / vec2(historySize)));
         if (all(equal(ivec2(gl_FragCoord.xy), representative)))
@@ -243,31 +285,20 @@ void main()
 
     // Emissive (lava, flames, crystals): brighter texels glow more.
     if (hasBloom) { emission = AU_EMISSION_STRENGTH * mix(0.5, 1.6, smoothstep(0.15, 0.9, GetLuminance(albedo))); shadow = 1.0; }
-    // Block materials (the terrain pass looks them up per atlas tile) and glowing ores share
-    // the meta bits: a material class means the level bits are the material's.
-    uint matClass = hasBloom || subsurfaceMode != 0 ? 0u : AU_MaterialClass(gbuffer0.a);
-    float matLevel = AU_MaterialLevel(gbuffer0.a);
+    // What the surface is made of (include/AU_Material.glsl, shared with the RR guides): the block
+    // material's dry gloss and metal, ore crystal gloss, and rain - a water film on top, soaking
+    // into what absorbs it. Glowing ores keep their glow level in the material bits (class 0).
+    AU_MaterialData mat = AU_GetMaterial(gbuffer0.a, gbuffer0.rgb, normal, skyLight, surfaceFootprint.y,
+                                         hasBloom, subsurfaceMode != 0);
+    uint matClass = mat.kind;
+    float matLevel = mat.level;
 #if AU_SSS
     if (!hasBloom && matClass == 1u && uint(round(matLevel * 7.0)) == 6u) subsurfaceMode = 3;
 #endif
     float oreGlowAmount = hasBloom || AU_MaterialClass(gbuffer0.a) != 0u ? 0.0 : AU_OreGlowLevel(gbuffer0.a);
     bool oreGlow = oreGlowAmount > 0.0;
-    // Gloss of the material: polished stone, bricks and planks a sheen, ice and glass a mirror;
-    // metals reflect in their own colour. Rain soaks everything open to the sky (tops most,
-    // walls less): it all turns glossy, and porous blocks (soil, sand, gravel, stone) darken.
-    float matSmooth = 0.0, metal = 0.0, wet = 0.0;
-#if AU_MATERIALS
-    // Only what really shines: smooth stone, marble, ice, glass (level 4+). Planks and bricks
-    // (level 1) stay matte.
-    if (matClass == 1u) matSmooth = matLevel < 0.5 ? 0.0 : mix(0.12, 0.92, matLevel);
-    if (matClass == 2u) { matSmooth = mix(0.35, 0.85, matLevel); metal = 1.0; }
-    matSmooth = min(matSmooth * AU_MATERIAL_GLOSS, 0.95);
-    matSmooth = AU_TextureSmoothness(matSmooth, matClass, gbuffer0.rgb, surfaceFootprint.y);
-    if (!hasBloom && subsurfaceMode == 0)
-        wet = max(rainFactor, uHookWetness) * smoothstep(0.6, 0.9, skyLight) * mix(0.35, 1.0, max0(normal.y)) * AU_RAIN_WETNESS;
-    if (matClass == 3u) albedo *= 1.0 - 0.4 * wet * (0.4 + 0.6 * matLevel);
-    matSmooth = max(matSmooth, wet * (matClass == 3u ? 0.5 : 0.7));
-#endif
+    float matSmooth = mat.smoothness, metal = mat.metal;
+    albedo = AU_MaterialSoakedAlbedo(albedo, mat);
 
     // Shadows of the volumetric clouds drifting over the land.
     shadow *= hasBloom ? 1.0 : GetCloudShadow(playerPos);
@@ -381,7 +412,7 @@ void main()
     }
     // Ore crystals (the glowing texels of Hytale's REFLECTIVE blocks) are glossy like gems:
     // sharp sun glints here, reflections below.
-    float crystal = smoothstep(0.0, 0.4, oreGlowAmount) * AU_ORE_GLOSS;
+    float crystal = mat.crystal;
     // Glossy materials and wet surfaces: sun glints (metals' brighter).
     if (matSmooth > 0.0) {
         smoothnessG = max(smoothnessG, 0.85 * matSmooth);
@@ -442,10 +473,11 @@ void main()
 #endif
 
         vec3 nView = normalize(playerPos);
-        float fresnel = clamp(1.0 + dot(normal, nView), 0.0, 1.0);
-        // Faint grazing sheen on solids, plus wet surfaces facing up when it rains.
-        float wetness = rainFactor * smoothstep(0.7, 0.95, normal.y) * smoothstep(0.6, 0.9, skyLight);
-        float smoothness = subsurfaceMode == 1 || subsurfaceMode == 2 ? 0.0 : mix(AU_RTX_SMOOTHNESS, 0.85, wetness);
+        // A rain film reflects off the flat block face, not the texture relief under it.
+        vec3 reflNormal = AU_MaterialReflectionNormal(normal, mat);
+        float fresnel = clamp(1.0 + dot(reflNormal, nView), 0.0, 1.0);
+        // Faint grazing sheen on solids (off by default), glossy materials and the rain film.
+        float smoothness = subsurfaceMode == 1 || subsurfaceMode == 2 ? 0.0 : AU_RTX_SMOOTHNESS;
         smoothness = max(smoothness, max(0.85 * crystal, matSmooth));
         smoothness = AU_SpecularSmoothness(smoothness, surfaceFootprint.x);
         // Dielectrics reflect a little head-on (gems a bit more); metals mostly reflect, in
@@ -454,9 +486,9 @@ void main()
         float fresnelM = (f0 + (1.0 - f0) * pow(fresnel, 5.0)) * smoothness;
         fresnelM = mix(fresnelM, smoothness * (0.6 + 0.4 * pow(fresnel, 5.0)), metal);
         if (fresnelM > 0.004) {
-            vec3 rdir = reflect(nView, normal);
+            vec3 rdir = reflect(nView, reflNormal);
             vec3 skyRef = GetSky(rdir.y, dot(rdir, sunVec), dither, true, true) * pow2(skyLight);
-            vec4 ssr = AU_GetSSR(uDepthTexture, playerPos, normal, 1.0 - smoothness, dither);
+            vec4 ssr = AU_GetSSR(uDepthTexture, playerPos, reflNormal, 1.0 - smoothness, dither);
             vec3 refl = mix(skyRef, ssr.rgb, ssr.a) * mix(vec3(1.0), albedo * 1.7, metal);
             color = mix(color, refl, fresnelM);
         }
@@ -522,6 +554,10 @@ void main()
 #endif
 #else
     DoAUFog(color, playerPos, dither, skyLight);
+#endif
+    AU_ApplyMist(color, playerPos, dither);
+#if AU_LOCAL_LIGHTS && AU_LIGHT_FOG
+    color += AU_LightFog(playerPos, dither, GetDither2(gl_FragCoord.xy + vec2(91.0, 13.0)));
 #endif
     color += AU_GetRainbow(playerPos / max(length(playerPos), 0.0001), length(playerPos), false, dither);
 

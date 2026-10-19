@@ -557,6 +557,103 @@ vec3 AU_LocalLighting(vec3 playerPos, vec3 normal, bool flatShading, vec2 random
 #endif
 }
 
+#if AU_LOCAL_LIGHTS && AU_LIGHT_FOG
+// One light's contribution to the air at a point: its colour, the surfaces' falloff (no facing:
+// the air scatters every way) and its cache fade, so a removed light leaves no coloured air.
+vec3 AU_LightFogLight(uint index, ivec3 base, vec3 origin, out vec3 position, out ivec3 block, bool tiled)
+{
+    uint packedCell = imageLoad(auLights, ivec2(1 + 2 * int(index), 0)).r;
+    block = base + ((ivec3(packedCell & 255u, (packedCell >> 8) & 127u, (packedCell >> 15) & 255u) - base) & AU_VOX_MASK);
+    position = AU_EmitterPosition(block, packedCell);
+    vec3 delta = position - origin;
+    float distanceSquared = dot(delta, delta);
+    if (distanceSquared >= pow2(AU_LOCAL_LIGHT_RANGE)) return vec3(0.0);
+    float distanceToLight = sqrt(distanceSquared);
+    float attenuation = pow2(max(1.0 - distanceToLight / AU_LOCAL_LIGHT_RANGE, 0.0));
+    attenuation /= ((packedCell >> 23) & 31u) != 0u ? 0.25 + distanceSquared : 1.0 + 0.08 * distanceSquared;
+    if (((packedCell >> 23) & 31u) != 0u) attenuation *= AU_EMISSIVE_LIGHT_STRENGTH;
+    float cacheWeight = tiled ? uintBitsToFloat(imageLoad(auLights, ivec2(1024 + int(index), 4)).r)
+                              : AU_CachedLightWeight(index, packedCell);
+    return unpackUnorm4x8(imageLoad(auLights, ivec2(2 + 2 * int(index), 0)).r).rgb * (attenuation * cacheWeight);
+}
+
+// Coloured light in the air: torches, lanterns, glowing ores and coloured bulbs light the haze
+// around them. A short march along the view ray; at each step, the nearby lights of that place's
+// light cell (the same culled list the surfaces use) are added up, one of them is picked by its
+// brightness and checked against the voxel grid - walls block it, a doorway lets a beam through -
+// and the step takes the sum when that light is visible. Unbiased per step; the temporal AA or
+// DLSS resolves the noise. Light added to the scene in front of the surface.
+vec3 AU_LightFog(vec3 playerPos, float dither, vec2 noise)
+{
+    uint lightCount = min(imageLoad(auLights, ivec2(0, 0)).r, AU_PT_MAX_LIGHTS);
+    if (lightCount == 0u) return vec3(0.0);
+    float lViewPos = length(playerPos);
+    vec3 dir = playerPos / max(lViewPos, 0.0001);
+    float rayEnd = min(lViewPos, AU_LIGHT_FOG_DISTANCE);
+    const int steps = AU_LIGHT_FOG_SAMPLES;
+    float stepLength = rayEnd / float(steps);
+    ivec3 base = ivec3(floor(CameraPosition)) - AU_VOX_HALF;
+    bool tiled = uHookLocalLightTiles != 0;
+    bool expandedTiles = uHookLocalLightTiles >= 2;
+    vec3 fog = vec3(0.0);
+    for (int i = 0; i < steps; i++) {
+        vec3 origin = CameraPosition + dir * ((float(i) + dither) * stepLength);
+        vec3 total = vec3(0.0), chosenPosition = vec3(0.0);
+        ivec3 chosenBlock = ivec3(0);
+        float weightSum = 0.0;
+        float pick = fract(noise.x + float(i) * 0.618034);
+        if (tiled) {
+            ivec3 tileCell = ivec3(floor(origin / 16.0)) & (expandedTiles ? ivec3(15, 7, 15) : ivec3(3));
+            int tile = expandedTiles ? tileCell.x | (tileCell.y << 4) | (tileCell.z << 7)
+                                     : tileCell.x | (tileCell.y << 2) | (tileCell.z << 4);
+            uint activeWords = imageLoad(auLights, ivec2(expandedTiles ? tile : 1024 + tile, expandedTiles ? 1 : 2)).r;
+            while (activeWords != 0u) {
+                int word = findLSB(activeWords);
+                activeWords &= activeWords - 1u;
+                int address = tile * 32 + word;
+                ivec2 maskAddress = expandedTiles ? ivec2(address & 2047, 5 + (address >> 11)) : ivec2(1 + address, 1);
+                uint mask = imageLoad(auLights, maskAddress).r;
+                while (mask != 0u) {
+                    int bit = findLSB(mask);
+                    mask &= mask - 1u;
+                    uint index = uint(word * 32 + bit);
+                    if (index >= lightCount) continue;
+                    vec3 position; ivec3 block;
+                    vec3 energy = AU_LightFogLight(index, base, origin, position, block, true);
+                    float weight = GetLuminance(energy);
+                    if (weight <= 0.0) continue;
+                    total += energy;
+                    weightSum += weight;
+                    // Pick one in proportion to its brightness (one running choice, re-randomised per light).
+                    if (fract(pick + float(index) * 0.754878) * weightSum < weight) { chosenPosition = position; chosenBlock = block; }
+                }
+            }
+        } else {
+            int candidates = min(int(lightCount), AU_LOCAL_LIGHT_CANDIDATES);
+            for (int candidate = 0; candidate < candidates; candidate++) {
+                uint index = lightCount <= uint(AU_LOCAL_LIGHT_CANDIDATES) ? uint(candidate)
+                    : min(uint(fract(noise.y + float(candidate) * 0.618034) * float(lightCount)), lightCount - 1u);
+                vec3 position; ivec3 block;
+                vec3 energy = AU_LightFogLight(index, base, origin, position, block, false) * (float(lightCount) / float(candidates));
+                float weight = GetLuminance(energy);
+                if (weight <= 0.0) continue;
+                total += energy;
+                weightSum += weight;
+                if (fract(pick + float(candidate) * 0.754878) * weightSum < weight) { chosenPosition = position; chosenBlock = block; }
+            }
+        }
+        if (weightSum <= 0.0) continue;
+        vec3 delta = chosenPosition - origin;
+        float distanceToLight = length(delta);
+        ivec3 hitBlock; vec3 hitNormal; float hitDistance; uint hitCell;
+        bool blocked = AU_VoxTrace(origin, delta / max(distanceToLight, 0.0001), distanceToLight, 48,
+                                   noise.y, hitBlock, hitNormal, hitDistance, hitCell);
+        if (!blocked || all(equal(hitBlock, chosenBlock))) fog += total;
+    }
+    return fog * (stepLength * AU_LIGHT_FOG_DENSITY * 0.015 * AU_LOCAL_LIGHT_STRENGTH);
+}
+#endif
+
 #ifdef AU_RTX
 // Sun light leaving a block face the camera can't see: the block's colour (grey until it
 // has been on screen) lit by the sun when a shadow ray through the grid reaches the sky.

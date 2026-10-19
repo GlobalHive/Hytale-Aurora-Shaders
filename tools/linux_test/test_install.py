@@ -24,6 +24,20 @@ class LinuxInstallTests(unittest.TestCase):
         self.assertEqual(classify("Glass_Clear"), (1, 7))
         self.assertEqual(classify("Wood_Oak_Planks"), (0, 0))
 
+    def test_curated_material_rules(self):
+        # tools/material_rules.txt, shared with the Windows installer.
+        expected = {
+            "Clay_Smooth_Red": (0, 0), "Rock_Chalk_Brick_Smooth": (0, 0), "Soil_Hive_Brick_Smooth": (0, 0),
+            "Rock_Marble_Cobble": (3, 4), "Rock_Marble_Brick_Top": (1, 4), "WhiteTiles": (1, 5),
+            "Rock_Sandstone_Brick_Smooth": (1, 2), "Rock_Stone_Brick_Smooth": (1, 3),
+            "Metal_Iron_Smooth": (2, 6), "Metal_Goblin_Iron": (2, 2), "Rock_Gold_Brick": (2, 4),
+            "Soil_Grass_GS": (3, 7), "Soil_grass_Side_Mask_GS": (0, 0), "Plant_Grass_Lush": (0, 0),
+            "Rock_Stone_Mossy": (3, 5), "Cloth_Red": (3, 5), "Rock_Stone": (3, 3), "Rock_Ice": (1, 6),
+            "Transition_Soil_Grass_GS": (0, 0), "Wood_Birch_Trunk": (0, 0),
+        }
+        for name, material in expected.items():
+            self.assertEqual(classify(name), material, name)
+
     @patch.object(linux_hook, "require_stopped")
     def test_install_update_uninstall_and_game_update(self, stopped):
         with tempfile.TemporaryDirectory() as temporary:

@@ -152,6 +152,45 @@ static int check_atmosphere_pair(int atmosphere, int mood, int sky)
     return valid;
 }
 
+// The generated ScreenVS (sky light cube) linked with DeferredFS, as the deferred pass does.
+static int check_sky_light_pair(int sky, int model, int biome, int preset)
+{
+    GLuint (APIENTRY *createProgram)(void) = (void *)real_wglGetProcAddress("glCreateProgram");
+    void (APIENTRY *deleteProgram)(GLuint) = (void *)real_wglGetProcAddress("glDeleteProgram");
+    void (APIENTRY *getProgramLog)(GLuint, GLsizei, GLsizei *, GLchar *) = (void *)real_wglGetProcAddress("glGetProgramInfoLog");
+    GLuint program = createProgram();
+    int valid = 1;
+    for (int stage = 0; stage < 2; stage++) {
+        char *source = shader_source(stage ? "DeferredFS" : "ScreenVS");
+        if (!stage) source = override_number(source, "USE_FAR_CORNERS", "1");
+        source = override_number(source, "AU_SKY_LIGHTING", sky ? "1" : "0");
+        source = override_number(source, "AU_ATMOSPHERE_MODEL", model ? "1" : "0");
+        source = override_number(source, "AU_BIOME_ATMOSPHERE", biome ? "1" : "0");
+        source = override_number(source, "AU_PRESET", preset == 1 ? "1" : "2");
+        GLuint shader = r_glCreateShader(stage ? GL_FRAGMENT_SHADER : GL_VERTEX_SHADER);
+        const GLchar *pointer = source;
+        r_glShaderSource(shader, 1, &pointer, NULL); r_glCompileShader(shader);
+        GLint compiled = 0; r_glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+        if (!compiled) {
+            char message[8192] = {0}; r_glGetShaderInfoLog(shader, sizeof message, NULL, message);
+            fprintf(stderr, "FAIL sky light %s sky=%d model=%d biome=%d preset=%d: %s\n", stage ? "DeferredFS" : "ScreenVS", sky, model, biome, preset, message);
+            valid = 0;
+        }
+        r_glAttachShader(program, shader); r_glDeleteShader(shader); free(source);
+    }
+    if (valid) {
+        r_glLinkProgram(program);
+        GLint linked = 0; r_glGetProgramiv(program, GL_LINK_STATUS, &linked);
+        if (!linked) {
+            char message[8192] = {0}; getProgramLog(program, sizeof message, NULL, message);
+            fprintf(stderr, "FAIL sky light linked sky=%d model=%d biome=%d preset=%d: %s\n", sky, model, biome, preset, message);
+            valid = 0;
+        }
+    }
+    deleteProgram(program);
+    return valid;
+}
+
 static int check_shadow_pair(int method, int shadow, int alpha, int textures)
 {
     GLuint (APIENTRY *createProgram)(void) = (void *)real_wglGetProcAddress("glCreateProgram");
@@ -301,12 +340,116 @@ int main(int argumentCount, char **arguments)
         failures += !check_atmosphere_pair(atmosphere, mood, sky);
         tested += 2;
     }
+    for (int sky = 0; sky < 2; sky++)
+    for (int model = 0; model < 2; model++)
+    for (int biome = 0; biome < 2; biome++)
+    for (int preset = 1; preset <= 2; preset++) {
+        failures += !check_sky_light_pair(sky, model, biome, preset);
+        tested += 2;
+    }
+    for (int method = 0; method < 2; method++)
+    for (int quality = 1; quality <= 3; quality++)
+    for (int preset = 1; preset <= 2; preset++)
+    for (int linear = 0; linear < 2; linear++) {
+        if (!method && quality > 1) continue;
+        char qualityValue[8]; snprintf(qualityValue, sizeof qualityValue, "%d", quality);
+        char *source = shader_source("DeferredFS");
+        source = override_number(source, "AU_AO_METHOD", method ? "1" : "0");
+        source = override_number(source, "AU_GTAO_QUALITY", qualityValue);
+        source = override_number(source, "AU_PRESET", preset == 1 ? "1" : "2");
+        source = override_number(source, "USE_LINEAR_Z", linear ? "1" : "0");
+        char label[100]; snprintf(label, sizeof(label), "GTAO method=%d quality=%d preset=%d linear=%d", method, quality, preset, linear);
+        failures += !check_source(label, source); tested++;
+    }
+    for (int refined = 0; refined < 2; refined++)
+    for (int preset = 1; preset <= 2; preset++)
+    for (int puddles = 0; puddles < 2; puddles++) {
+        char *source = shader_source("DeferredFS");
+        source = override_number(source, "AU_SSR_REFINED", refined ? "1" : "0");
+        source = override_number(source, "AU_PRESET", preset == 1 ? "1" : "2");
+        source = override_number(source, "AU_RAIN_PUDDLES", puddles ? "1" : "0");
+        char label[100]; snprintf(label, sizeof(label), "SSR refined=%d preset=%d puddles=%d", refined, preset, puddles);
+        failures += !check_source(label, source); tested++;
+    }
+    for (int model = 0; model < 2; model++)
+    for (int caustics = 0; caustics < 2; caustics++)
+    for (int quality = 0; quality < 2; quality++) {
+        char *source = shader_source("MapChunkFS");
+        source = override_number(source, "DEFERRED", "0");
+        source = override_number(source, "ALPHA_BLEND", "1");
+        source = override_number(source, "AU_WATER_MODEL", model ? "1" : "0");
+        source = override_number(source, "AU_WATER_CAUSTICS", caustics ? "1" : "0");
+        source = override_number(source, "AU_DLSS", quality ? "1" : "0");
+        char label[100]; snprintf(label, sizeof(label), "Water model=%d caustics=%d dlss=%d", model, caustics, quality);
+        failures += !check_source(label, source); tested++;
+    }
+    // Sky and finishing extras: aurora, ground mist (deferred, sky, forward water), highlight
+    // protection, white balance and adaptive exposure (deferred emission, post, DLSS resolve).
+    const char *extraPrograms[] = {"DeferredFS", "SkyFS", "MapChunkFS", "PostEffectFS"};
+    for (int program = 0; program < 4; program++)
+    for (int aurora = 0; aurora < 2; aurora++)
+    for (int mist = 0; mist < 3; mist++)
+    for (int adapt = 0; adapt < 2; adapt++)
+    for (int dlss = 0; dlss < 2; dlss++) {
+        char *source = shader_source(extraPrograms[program]);
+        source = override_number(source, "AU_AURORA", aurora ? "1" : "0");
+        source = override_number(source, "AU_AURORA_STYLE", dlss ? "1" : "2");
+        source = override_number(source, "AU_MIST", mist ? "1" : "0");
+        source = override_number(source, "AU_MIST_SAMPLES", mist == 2 ? "16" : "8");
+        source = override_number(source, "AU_ADAPTIVE_EXPOSURE", adapt ? "1" : "0");
+        source = override_number(source, "AU_TM_HIGHLIGHT_PROTECT", adapt ? "0.6" : "0.0");
+        source = override_number(source, "AU_WB_TEMPERATURE", adapt ? "0.4" : "0.0");
+        source = override_number(source, "AU_DLSS", dlss ? "1" : "0");
+        source = override_number(source, "AU_LENSFLARE", dlss ? "1" : "0");
+        if (program == 2) {
+            source = override_number(source, "DEFERRED", "0");
+            source = override_number(source, "ALPHA_BLEND", "1");
+        }
+        char label[120]; snprintf(label, sizeof(label), "Extras %s aurora=%d mist=%d adapt=%d dlss=%d", extraPrograms[program], aurora, mist, adapt, dlss);
+        failures += !check_source(label, source); tested++;
+    }
+    for (int fog = 0; fog < 2; fog++)
+    for (int lights = 0; lights < 2; lights++)
+    for (int preset = 1; preset <= 2; preset++)
+    for (int samples = 0; samples < 2; samples++) {
+        char *source = shader_source("DeferredFS");
+        source = override_number(source, "AU_LIGHT_FOG", fog ? "1" : "0");
+        source = override_number(source, "AU_LOCAL_LIGHTS", lights ? "1" : "0");
+        source = override_number(source, "AU_PRESET", preset == 1 ? "1" : "2");
+        source = override_number(source, "AU_LIGHT_FOG_SAMPLES", samples ? "8" : "4");
+        char label[100]; snprintf(label, sizeof(label), "Light fog=%d lights=%d preset=%d samples=%d", fog, lights, preset, samples);
+        failures += !check_source(label, source); tested++;
+    }
+    const char *skyLightPrograms[] = {"MapChunkFS", "DeferredShadowFS", "ScreenVS"};
+    for (int program = 0; program < 3; program++)
+    for (int sky = 0; sky < 2; sky++) {
+        char *source = shader_source(skyLightPrograms[program]);
+        source = override_number(source, "AU_SKY_LIGHTING", sky ? "1" : "0");
+        if (program == 0) {
+            source = override_number(source, "DEFERRED", "0");
+            source = override_number(source, "ALPHA_BLEND", "1");
+        }
+        failures += !check_source(skyLightPrograms[program], source); tested++;
+    }
+    const char *cloudPrograms[] = {"CloudsFS", "DeferredShadowFS", "MapChunkFS"};
+    for (int program = 0; program < 3; program++)
+    for (int layers = 1; layers <= 2; layers++)
+    for (int lighting = 0; lighting < 2; lighting++)
+    for (int samples = 1; samples <= 2; samples++) {
+        char *source = shader_source(cloudPrograms[program]);
+        source = override_number(source, "AU_CLOUD_LAYERS", layers == 1 ? "1" : "2");
+        source = override_number(source, "AU_CLOUD_LIGHTING", lighting ? "1" : "0");
+        source = override_number(source, "AU_CLOUD_LIGHT_SAMPLES", samples == 1 ? "1" : "2");
+        failures += !check_source(cloudPrograms[program], source); tested++;
+    }
     const char *atmospherePrograms[] = {"DeferredFS", "SkyFS", "CloudsFS", "MapChunkFS", "PostEffectFS", "TemporalAAFS", "BlockyModelFS", "SkyAndCloudsVS"};
+    for (int model = 0; model < 2; model++)
     for (int atmosphere = 0; atmosphere < 2; atmosphere++)
     for (int mood = 0; mood < 2; mood++)
     for (int dlss = 0; dlss < 2; dlss++)
     for (int program = 0; program < 8; program++) {
         char *source = shader_source(atmospherePrograms[program]);
+        if (program != 7) source = override_number(source, "AU_ATMOSPHERE_MODEL", model ? "1" : "0");
         if (program != 7) source = override_number(source, "AU_BIOME_ATMOSPHERE", atmosphere ? "1" : "0");
         source = override_number(source, "USE_MOOD_FOG", mood ? "1" : "0");
         if (program != 7) {
