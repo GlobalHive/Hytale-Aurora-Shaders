@@ -90,10 +90,6 @@ folder for reinstalling after game updates; it is no longer needed to launch the
   settings are kept in `Client/.aurora/shaderpack`. If the game already replaced SDL during
   an update, uninstall keeps that newer library.
 
-**DLSS and its render-scale integration are Windows-only** and are hidden in the Linux menu.
-Linux uses the pack's temporal anti-aliasing. Linux builds, shader generation and installer
-fixtures have been checked; native Linux gameplay has not yet been verified.
-
 ### Windows
 
 1. Download the latest release zip from the [Releases](../../releases) page and extract it

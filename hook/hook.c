@@ -22,6 +22,7 @@
 #ifndef AU_HAS_DLSS
 #define AU_HAS_DLSS 0
 #endif
+static int g_dlssState; // 0 not tried, 1 ready, -1 unavailable
 
 #ifdef _WIN32
 #define AU_GL_EXPORT __declspec(dllexport)
@@ -336,6 +337,12 @@ static void expand(Str *out, const char *text, int depth)
 #if !AU_HAS_DLSS
                     if (!strcmp(name, "AU_Settings.glsl"))
                         str_cstr(out, "\n#undef AU_DLSS\n#define AU_DLSS 0\n#undef AU_DLSS_RR\n#define AU_DLSS_RR 0\n");
+#elif !defined(_WIN32)
+                    if (!strcmp(name, "AU_Settings.glsl")) {
+                        str_cstr(out, "\n#undef AU_DLSS_FRAMEGEN\n#define AU_DLSS_FRAMEGEN 0\n");
+                        if (g_dlssState < 0)
+                            str_cstr(out, "\n#undef AU_DLSS\n#define AU_DLSS 0\n");
+                    }
 #endif
                     str_cstr(out, "\n// END ");
                     str_cstr(out, name);
@@ -1100,7 +1107,7 @@ static void profile_use(const char *name);
 static void gi_release(void);
 static void gi_draw(GLenum mode, GLint first, GLsizei count);
 static GLuint g_dlssProg; // the program writing the DLSS inputs (PostEffectFS, see dlss_draw)
-static int g_dlssState, g_dlssRR;
+static int g_dlssRR;
 static int g_dlssPending; // inputs written this frame, DLSS runs at the present (dlss_present)
 static void dlss_draw(GLenum mode, GLint first, GLsizei count);
 static int dlss_present(void);
@@ -1983,6 +1990,9 @@ static void vox_use(ProgRec *p)
 
 #if AU_HAS_DLSS
 #include "aud_dlss.h"
+#ifndef _WIN32
+__attribute__((used)) static const char linux_dlss_marker[] = "AURORA_LINUX_DLSS_V1";
+#endif
 #if AU_HAS_FRAMEGEN
 #include "aud_framegen.h"
 #endif
@@ -2008,7 +2018,6 @@ typedef void (APIENTRY *PFN_dlBindFramebuffer)(GLenum, GLuint);
 typedef void (APIENTRY *PFN_dlFramebufferTexture2D)(GLenum, GLenum, GLenum, GLuint, GLint);
 typedef GLboolean (APIENTRY *PFN_dlIsEnabled)(GLenum);
 typedef void (APIENTRY *PFN_dlEnable)(GLenum);
-static int g_dlssState;          // 0 not tried, 1 ready, -1 unavailable
 static int g_dlssW, g_dlssH, g_dlssReset;
 static int g_dlssNativeW, g_dlssNativeH;
 static int g_dlssRR;              // the configured feature is Ray Reconstruction
@@ -2023,11 +2032,20 @@ static struct {
     PFN_dlEnable Enable, Disable;
 } dl;
 
+#ifndef _WIN32
+static int g_renderAppliedScale = 100;
+static int linux_physical_size(int *width, int *height);
+#endif
+
 static void *dlss_getproc(const char *name)
 {
+#ifndef _WIN32
+    return (void *)linux_gl_proc(name);
+#else
     void *p = (void *)real_wglGetProcAddress(name);
     if (!p || (uintptr_t)p <= 3 || p == (void *)-1) p = (void *)GetProcAddress(g_real, name);
     return p;
+#endif
 }
 
 // Sizes of the configured feature (render = PostEffectFS viewport, output = the present's
@@ -2050,6 +2068,7 @@ static int dlss_ready(void)
         g_dlssState = -1;
         wchar_t dir[MAX_PATH];
         pack_path(dir, "dlss");
+        CreateDirectoryW(dir, NULL);
         if (!r_glBindImageTexture) r_glBindImageTexture = (PFN_glBindImageTexture)real_wglGetProcAddress("glBindImageTexture");
         if (!r_glMemoryBarrier) r_glMemoryBarrier = (PFN_glMemoryBarrier)real_wglGetProcAddress("glMemoryBarrier");
         dl.Blit = (PFN_dlBlitFramebuffer)dlss_getproc("glBlitFramebuffer");
@@ -2069,6 +2088,9 @@ static int dlss_ready(void)
         if (r_glBindImageTexture && r_glMemoryBarrier && dl.Blit && dl.GenFb && dl.BindFb && dl.FbTex &&
             dl.IsEnabled && dl.Enable && dl.Disable && available)
             g_dlssState = 1;
+#ifndef _WIN32
+        if (g_dlssState < 0) InterlockedExchange(&g_reloadRequested, 1);
+#endif
         logf_("dlss: %s", g_dlssState == 1 ? "ready" : "unavailable, the game upscales as usual");
     }
     return g_dlssState == 1;
@@ -2076,6 +2098,7 @@ static int dlss_ready(void)
 
 static int render_physical_size(int *width, int *height)
 {
+#ifdef _WIN32
     HDC (WINAPI *currentDC)(void) = (HDC (WINAPI *)(void))GetProcAddress(g_real, "wglGetCurrentDC");
     HWND window = currentDC ? WindowFromDC(currentDC()) : NULL;
     RECT client;
@@ -2083,6 +2106,9 @@ static int render_physical_size(int *width, int *height)
     *width = client.right;
     *height = client.bottom;
     return 1;
+#else
+    return linux_physical_size(width, height);
+#endif
 }
 
 #include "dlss_sharpen.h"
@@ -2231,6 +2257,9 @@ static void dlss_draw(GLenum mode, GLint first, GLsizei count)
 #endif
         if (!aud_configure(renderWidth, renderHeight, g_presentW, g_presentH, q, 1, rr, preset)) {
             g_dlssState = -1;
+#ifndef _WIN32
+            InterlockedExchange(&g_reloadRequested, 1);
+#endif
             r_glDrawArrays(mode, first, count);
             return;
         }
@@ -2314,7 +2343,13 @@ static int dlss_present_rect(int x, int y, int w, int h, const char *how, int di
     g_jitterPx[0] = g_sceneJitter[0] * g_dlssW * 0.5f;
     g_jitterPx[1] = g_sceneJitter[1] * g_dlssH * 0.5f;
     if (!aud_evaluate(g_jitterPx[0] * (float)g_setJitterSX, g_jitterPx[1] * (float)g_setJitterSY,
-                      (float)g_setMotionSX, (float)g_setMotionSY, g_dlssReset > 0 || g_setDlssDebug == 2)) return 0;
+                      (float)g_setMotionSX, (float)g_setMotionSY, g_dlssReset > 0 || g_setDlssDebug == 2)) {
+#ifndef _WIN32
+        g_dlssState = -1; // Restore native size on the next SDL resize sync.
+        InterlockedExchange(&g_reloadRequested, 1);
+#endif
+        return 0;
+    }
     if (g_dlssReset > 0) g_dlssReset--;
     g_dlssPresentedFrame = g_frame;
 
@@ -3167,7 +3202,10 @@ static void menu_load(void)
         if (nf >= 5) to_wide(m->help, 192, f[4]);
         snprintf(m->define, sizeof(m->define), "%s", f[0]);
 #ifndef _WIN32
+        if (!strcmp(m->define, "AU_DLSS_FRAMEGEN") || !strcmp(m->define, "!DLSS_FG_INFO")) continue;
+#if !AU_HAS_DLSS
         if (!strncmp(m->define, "AU_DLSS", 7) || !strcmp(m->define, "!DLSS_INFO") || !strcmp(m->define, "AU_RENDER_SCALE")) continue;
+#endif
 #endif
         to_wide(m->label, 64, f[1]);
         char *kind = f[2];
