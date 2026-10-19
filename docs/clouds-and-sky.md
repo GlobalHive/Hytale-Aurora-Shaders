@@ -43,7 +43,7 @@ The cube is computed by the deferred pass's vertex shader (three vertices per dr
 ## Coloured light fog
 
 **Light shafts → Coloured light fog** (off by default; requires Colored area lights) lets torches, lanterns, glowing ores and coloured bulbs light the air around them in their own colour: a warm glow in a torch-lit cave, coloured haze around a bulb.
-- **The march:** a short march along each view ray (**Light fog quality**: 4/6/8 steps, up to **Light fog range** blocks). At each step it sums the lights listed for that spot's 16-block light cell, the same culled list surfaces use.
+- **The march:** a short march along each view ray (**Light fog quality**: 4/6/8 steps, up to **Light fog range** blocks). At each step it sums the lights listed for that spot's 16-block light cell, the same culled list surfaces use. Each frame evaluates half of the steps, alternating, and a cell listing more lights than an eighth of the **Area light budget** (by lava, hundreds) contributes a random share of them, weighted so the average is unchanged. The anti-aliasing averages both.
 - **Walls:** one of those lights is picked by brightness and checked against the voxel grid, so walls block the glow and a doorway lets a beam through.
 - **Removed lights:** they fade with the light cache, leaving no coloured air behind.
 
@@ -55,4 +55,4 @@ A high cirrus layer was tried and removed: in game it read as painted streaks ra
 
 The bounded cloud march adds no render targets. In a controlled 1920x1080 test, the original one-layer path took about 0.19 ms, corrected two-layer Classic about 0.61 ms, and two-layer Detailed about 0.69 ms. The original path ignored the second-layer setting, so these are not equivalent workloads.
 
-The sky/fog approximation also adds no render targets. Ground mist at 12 samples measured about 0.3 ms in the lighting pass plus 0.18 ms in the sky pass on an RTX 5080 at 2560x1351. Coloured light fog was below the scene's frame-to-frame noise. Measurements are pass-specific, not a promise about whole-game FPS; output resolution, GPU and view affect cost.
+The sky/fog approximation also adds no render targets. Ground mist at 12 samples measured about 0.3 ms in the lighting pass plus 0.18 ms in the sky pass on an RTX 5080 at 2560x1351. Coloured light fog was below the scene's frame-to-frame noise with a few torches. Beside a lava lake, where every lava block is a light, it added about 3.6 ms and area lighting about 4 ms at the default Area light budget of 32, down from about 125 ms and 25 ms when every listed light was evaluated. Measurements are pass-specific, not a promise about whole-game FPS; output resolution, GPU and view affect cost.

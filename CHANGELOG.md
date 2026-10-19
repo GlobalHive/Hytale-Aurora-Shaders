@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.1
+
+- Fixed a severe frame-rate drop near lava with Colored area lights (6 FPS on an RTX 5080). Every lava block is a light, and each pixel evaluated all of the hundreds in reach, Coloured light fog once per step. A spot reached by more lights than the new **Area light budget** (default 32) now evaluates a random share each frame, weighted so the brightness stays the same; places with few lights are unchanged. Next to a lava lake the lighting pass went from 155 ms to 15 ms.
+- Coloured light fog evaluates half of its steps each frame and fewer lights per step.
+
 ## 1.5.0
 
 - Fixed the world turning black, with the UI still visible, after changing a shader setting and then loading a world. Switching DLSS on was the most common trigger.

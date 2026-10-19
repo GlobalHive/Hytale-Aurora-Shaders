@@ -49,6 +49,7 @@ AU_LIGHT_CACHE_SECONDS | Light cache duration (seconds) | range 0.1 5.0 0.1 | 1.
 AU_LOCAL_LIGHT_RANGE | Area light reach | range 2.0 16.0 0.5 | 8.0
 AU_LOCAL_LIGHT_SOFTNESS | Area light size | range 0.0 0.8 0.05 | 0.35 | Larger sources cast softer shadows. Zero uses a point source.
 AU_LOCAL_LIGHT_CANDIDATES | Light sampling candidates | enum 4:4 8:8 16:16 | 8 | Candidate count for the fallback without spatial culling. Original and NVIDIA Ray Reconstruction automatically consider nearby lights in their spatial cell to avoid rare bright samples. RGB channels share shadow rays where possible, using one to three rays.
+AU_LOCAL_LIGHT_BUDGET | Area light budget | enum 16:16 32:32 64:64 128:128 | 32 | Most area lights evaluated per pixel. Where more reach a spot (a lava lake lists hundreds), a random share is evaluated each frame and the anti-aliasing averages it: lower is faster and grainier. Coloured light fog uses a quarter of it per step.
 AU_ORE_TORCH_RATIO | Ore light / torch ratio | range 0.0 1.0 0.05 | 0.3 | Ore light brightness relative to a torch, independent of surface glow and bloom.
 AU_SUBSURFACE | Foliage translucency | bool | 1
 AU_SSS | Subsurface scattering | bool | 1 | Coloured transmission through foliage and ice. Voxel mode measures material depth and accumulates scattering along a bounded ray; solid walls still block light.

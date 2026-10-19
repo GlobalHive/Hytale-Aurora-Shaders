@@ -33,7 +33,14 @@
 layout(r32ui) uniform coherent uimage3D auVoxGeo;
 layout(rgba8) uniform image3D auVoxCol;
 
+#ifdef AU_LIGHT_LIST_CACHED
+// Lighting only reads what earlier draws wrote (the hook puts a memory barrier between them), so
+// it reads through the cache: coherent loads bypass it on NVIDIA, and by a lava lake every pixel
+// reads the light list dozens of times.
+layout(r32ui) uniform uimage2D auLights;
+#else
 layout(r32ui) uniform coherent uimage2D auLights;
+#endif
 #define AU_PT_MAX_LIGHTS 1024u
 #ifndef AU_LIGHT_CACHE_SECONDS
 #define AU_LIGHT_CACHE_SECONDS 1.0
@@ -446,6 +453,91 @@ void AU_BuildLocalLightTile(int tileRows)
         AU_BuildLocalLightTileWord(int(gl_FragCoord.x), tile, expandedTiles);
 }
 
+#ifndef AU_LOCAL_LIGHT_BUDGET
+#define AU_LOCAL_LIGHT_BUDGET 32
+#endif
+
+ivec2 AU_TileMaskAddress(int tile, int word, bool expandedTiles)
+{
+    int address = tile * 32 + word;
+    return expandedTiles ? ivec2(address & 2047, 5 + (address >> 11)) : ivec2(1 + address, 1);
+}
+
+// Position of the n-th (from 0) set bit of mask, which has more than n bits set.
+int AU_NthSetBit(uint mask, uint n)
+{
+    int bit = 0;
+    for (int width = 16; width >= 1; width >>= 1) {
+        uint low = uint(bitCount(mask & ((1u << uint(width)) - 1u)));
+        if (n >= low) { n -= low; mask >>= uint(width); bit += width; }
+    }
+    return bit;
+}
+
+// How many lights one 16-block cell lists (one read per non-empty list word; neighbouring pixels
+// share the cell, so the reads mostly come from the cache).
+uint AU_TileLightCount(int tile, bool expandedTiles, uint activeWords)
+{
+    uint total = 0u;
+    for (uint words = activeWords; words != 0u; words &= words - 1u)
+        total += uint(bitCount(imageLoad(auLights, AU_TileMaskAddress(tile, findLSB(words), expandedTiles)).r));
+    return total;
+}
+
+// The lights listed for one 16-block cell (`total` of them), in list order, at most `budget`: all of
+// them when the cell lists no more, otherwise a stratified random share (offset 0-1, new every
+// frame), each one standing for total / budget lights, so the sum stays the same and the temporal AA
+// averages the noise. Every lava block is a light: a cell by a lava lake lists hundreds, and visiting
+// all of them per pixel took 25 ms of lighting, and the light fog 120 ms more.
+struct AU_TileLights {
+    int tile, word;
+    bool expandedTiles;
+    uint words, mask, prefix, total, count, taken;
+    float stride, offset;
+};
+
+AU_TileLights AU_TileLightsBegin(int tile, bool expandedTiles, uint activeWords, uint total, int budget, float offset)
+{
+    AU_TileLights walk;
+    walk.tile = tile;
+    walk.word = -1;
+    walk.expandedTiles = expandedTiles;
+    walk.words = activeWords;
+    walk.mask = 0u;
+    walk.prefix = 0u;
+    walk.total = total;
+    walk.taken = 0u;
+    walk.offset = offset;
+    walk.count = min(total, uint(max(budget, 1)));
+    walk.stride = walk.count > 0u ? float(total) / float(walk.count) : 1.0;
+    return walk;
+}
+
+// What each visited light stands for.
+float AU_TileLightsWeight(AU_TileLights walk)
+{
+    return walk.stride;
+}
+
+bool AU_TileLightsNext(inout AU_TileLights walk, out uint index)
+{
+    index = 0u;
+    if (walk.taken >= walk.count) return false;
+    uint ordinal = walk.count == walk.total ? walk.taken
+        : min(uint((float(walk.taken) + walk.offset) * walk.stride), walk.total - 1u);
+    walk.taken++;
+    // Advance to the list word holding that light.
+    while (walk.word < 0 || ordinal >= walk.prefix + uint(bitCount(walk.mask))) {
+        if (walk.word >= 0) walk.prefix += uint(bitCount(walk.mask));
+        if (walk.words == 0u) { walk.taken = walk.count; return false; }
+        walk.word = findLSB(walk.words);
+        walk.words &= walk.words - 1u;
+        walk.mask = imageLoad(auLights, AU_TileMaskAddress(walk.tile, walk.word, walk.expandedTiles)).r;
+    }
+    index = uint(walk.word * 32 + AU_NthSetBit(walk.mask, ordinal - walk.prefix));
+    return true;
+}
+
 vec3 AU_LocalLightingOriginal(vec3 playerPos, vec3 normal, bool flatShading, vec2 randomValue)
 {
     int row = 0;
@@ -466,43 +558,40 @@ vec3 AU_LocalLightingOriginal(vec3 playerPos, vec3 normal, bool flatShading, vec
     AU_LocalLightSample sampleData;
     sampleData.energy = vec3(0.0);
     sampleData.indices = uvec3(0xffffffffu);
-    while (activeWords != 0u) {
-        int word = findLSB(activeWords);
-        activeWords &= activeWords - 1u;
-        int address = tile * 32 + word;
-        ivec2 maskAddress = expandedTiles ? ivec2(address & 2047, 5 + (address >> 11)) : ivec2(1 + address, 1);
-        uint mask = imageLoad(auLights, maskAddress).r;
-        while (mask != 0u) {
-            int bit = findLSB(mask);
-            mask &= mask - 1u;
-            uint index = uint(word * 32 + bit);
-            if (index >= lightCount) continue;
-            uint packedCell = imageLoad(auLights, ivec2(1 + 2 * int(index), row)).r;
-            ivec3 block = base + ((ivec3(packedCell & 255u, (packedCell >> 8) & 127u, (packedCell >> 15) & 255u) - base) & AU_VOX_MASK);
-            vec3 centerDelta = AU_EmitterPosition(block, packedCell) - origin;
-            if (dot(centerDelta, centerDelta) > pow2(AU_LOCAL_LIGHT_RANGE + AU_LOCAL_LIGHT_SOFTNESS)) continue;
-            vec3 position = AU_EmitterPosition(block, packedCell);
-            vec3 delta = centerDelta;
-            float distanceSquared = dot(delta, delta);
-            if (distanceSquared >= pow2(AU_LOCAL_LIGHT_RANGE) || distanceSquared < 0.0001) continue;
-            float distanceToLight = sqrt(distanceSquared);
-            float facing = flatShading ? 0.7 : max(dot(normal, delta / distanceToLight), 0.0);
-            if (facing <= 0.0) continue;
-            float attenuation = pow2(max(1.0 - distanceToLight / AU_LOCAL_LIGHT_RANGE, 0.0));
-            attenuation /= ((packedCell >> 23) & 31u) != 0u ? 0.0625 + distanceSquared : 1.0 + 0.08 * distanceSquared;
-            if (((packedCell >> 23) & 31u) != 0u) attenuation *= AU_EMISSIVE_LIGHT_STRENGTH;
-            float cacheWeight = uintBitsToFloat(imageLoad(auLights, ivec2(1024 + int(index), 4)).r);
-            vec3 radiance = unpackUnorm4x8(imageLoad(auLights, ivec2(2 + 2 * int(index), row)).r).rgb * (facing * attenuation * cacheWeight);
-            auLocalLightUnshadowed += radiance;
-            uint selectionBits = floatBitsToUint(randomValue.y * 1973.0 + randomValue.x * 9117.0) ^ packedCell * 0x9e3779b9u;
-            selectionBits ^= selectionBits >> 16;
-            selectionBits *= 0x7feb352du;
-            selectionBits ^= selectionBits >> 15;
-            selectionBits *= 0x846ca68bu;
-            selectionBits ^= selectionBits >> 16;
-            float selection = float(selectionBits >> 8) * (1.0 / 16777216.0);
-            AU_SelectLocalLight(sampleData, radiance, position + sampleOffset, block, index, selection);
-        }
+    // The budget applies to the game's expanded cells; the legacy 64-cell layout (wrapping every 64
+    // blocks, so most of a list is out of reach) visits every light.
+    AU_TileLights walk = AU_TileLightsBegin(tile, expandedTiles, activeWords, AU_TileLightCount(tile, expandedTiles, activeWords),
+                                            expandedTiles ? AU_LOCAL_LIGHT_BUDGET : int(AU_PT_MAX_LIGHTS),
+                                            fract(randomValue.x * 7.31 + randomValue.y));
+    float share = AU_TileLightsWeight(walk);
+    uint index;
+    while (AU_TileLightsNext(walk, index)) {
+        if (index >= lightCount) continue;
+        uint packedCell = imageLoad(auLights, ivec2(1 + 2 * int(index), row)).r;
+        ivec3 block = base + ((ivec3(packedCell & 255u, (packedCell >> 8) & 127u, (packedCell >> 15) & 255u) - base) & AU_VOX_MASK);
+        vec3 centerDelta = AU_EmitterPosition(block, packedCell) - origin;
+        if (dot(centerDelta, centerDelta) > pow2(AU_LOCAL_LIGHT_RANGE + AU_LOCAL_LIGHT_SOFTNESS)) continue;
+        vec3 position = AU_EmitterPosition(block, packedCell);
+        vec3 delta = centerDelta;
+        float distanceSquared = dot(delta, delta);
+        if (distanceSquared >= pow2(AU_LOCAL_LIGHT_RANGE) || distanceSquared < 0.0001) continue;
+        float distanceToLight = sqrt(distanceSquared);
+        float facing = flatShading ? 0.7 : max(dot(normal, delta / distanceToLight), 0.0);
+        if (facing <= 0.0) continue;
+        float attenuation = pow2(max(1.0 - distanceToLight / AU_LOCAL_LIGHT_RANGE, 0.0));
+        attenuation /= ((packedCell >> 23) & 31u) != 0u ? 0.0625 + distanceSquared : 1.0 + 0.08 * distanceSquared;
+        if (((packedCell >> 23) & 31u) != 0u) attenuation *= AU_EMISSIVE_LIGHT_STRENGTH;
+        float cacheWeight = uintBitsToFloat(imageLoad(auLights, ivec2(1024 + int(index), 4)).r);
+        vec3 radiance = unpackUnorm4x8(imageLoad(auLights, ivec2(2 + 2 * int(index), row)).r).rgb * (facing * attenuation * cacheWeight * share);
+        auLocalLightUnshadowed += radiance;
+        uint selectionBits = floatBitsToUint(randomValue.y * 1973.0 + randomValue.x * 9117.0) ^ packedCell * 0x9e3779b9u;
+        selectionBits ^= selectionBits >> 16;
+        selectionBits *= 0x7feb352du;
+        selectionBits ^= selectionBits >> 15;
+        selectionBits *= 0x846ca68bu;
+        selectionBits ^= selectionBits >> 16;
+        float selection = float(selectionBits >> 8) * (1.0 / 16777216.0);
+        AU_SelectLocalLight(sampleData, radiance, position + sampleOffset, block, index, selection);
     }
     return AU_ResolveLocalLight(sampleData, origin, randomValue.x);
 }
@@ -596,7 +685,18 @@ vec3 AU_LightFog(vec3 playerPos, float dither, vec2 noise)
     bool tiled = uHookLocalLightTiles != 0;
     bool expandedTiles = uHookLocalLightTiles >= 2;
     vec3 fog = vec3(0.0);
+    // Half the steps each frame, each counting double: the same light on average for half the light
+    // lookups and wall checks (by lava every step has lights). Which half is chosen per 8x8 pixel
+    // block and frame: neighbouring pixels run together on the GPU, so a per-pixel choice saves nothing.
+    uvec2 block = uvec2(gl_FragCoord.xy) >> 3u;
+    uint blockHash = block.x * 0x8da6b343u ^ block.y * 0xd8163841u;
+    blockHash ^= blockHash >> 13;
+    blockHash *= 0x7feb352du;
+    int skipped = int((blockHash >> 16) + uint(uHookFrame)) & 1;
+    int countedTile = -1;   // steps in the same cell share its light count
+    uint countedLights = 0u;
     for (int i = 0; i < steps; i++) {
+        if (((i + skipped) & 1) == 0) continue;
         vec3 origin = CameraPosition + dir * ((float(i) + dither) * stepLength);
         vec3 total = vec3(0.0), chosenPosition = vec3(0.0);
         ivec3 chosenBlock = ivec3(0);
@@ -607,26 +707,22 @@ vec3 AU_LightFog(vec3 playerPos, float dither, vec2 noise)
             int tile = expandedTiles ? tileCell.x | (tileCell.y << 4) | (tileCell.z << 7)
                                      : tileCell.x | (tileCell.y << 2) | (tileCell.z << 4);
             uint activeWords = imageLoad(auLights, ivec2(expandedTiles ? tile : 1024 + tile, expandedTiles ? 1 : 2)).r;
-            while (activeWords != 0u) {
-                int word = findLSB(activeWords);
-                activeWords &= activeWords - 1u;
-                int address = tile * 32 + word;
-                ivec2 maskAddress = expandedTiles ? ivec2(address & 2047, 5 + (address >> 11)) : ivec2(1 + address, 1);
-                uint mask = imageLoad(auLights, maskAddress).r;
-                while (mask != 0u) {
-                    int bit = findLSB(mask);
-                    mask &= mask - 1u;
-                    uint index = uint(word * 32 + bit);
-                    if (index >= lightCount) continue;
-                    vec3 position; ivec3 block;
-                    vec3 energy = AU_LightFogLight(index, base, origin, position, block, true);
-                    float weight = GetLuminance(energy);
-                    if (weight <= 0.0) continue;
-                    total += energy;
-                    weightSum += weight;
-                    // Pick one in proportion to its brightness (one running choice, re-randomised per light).
-                    if (fract(pick + float(index) * 0.754878) * weightSum < weight) { chosenPosition = position; chosenBlock = block; }
-                }
+            if (tile != countedTile) { countedTile = tile; countedLights = AU_TileLightCount(tile, expandedTiles, activeWords); }
+            // An eighth of the surfaces' light budget per step: the steps and frames average each other.
+            AU_TileLights walk = AU_TileLightsBegin(tile, expandedTiles, activeWords, countedLights, expandedTiles ? max(AU_LOCAL_LIGHT_BUDGET / 8, 2) : int(AU_PT_MAX_LIGHTS),
+                                                    fract(noise.y + float(i) * 0.381966));
+            float share = AU_TileLightsWeight(walk);
+            uint index;
+            while (AU_TileLightsNext(walk, index)) {
+                if (index >= lightCount) continue;
+                vec3 position; ivec3 block;
+                vec3 energy = AU_LightFogLight(index, base, origin, position, block, true) * share;
+                float weight = GetLuminance(energy);
+                if (weight <= 0.0) continue;
+                total += energy;
+                weightSum += weight;
+                // Pick one in proportion to its brightness (one running choice, re-randomised per light).
+                if (fract(pick + float(index) * 0.754878) * weightSum < weight) { chosenPosition = position; chosenBlock = block; }
             }
         } else {
             int candidates = min(int(lightCount), AU_LOCAL_LIGHT_CANDIDATES);
@@ -650,7 +746,7 @@ vec3 AU_LightFog(vec3 playerPos, float dither, vec2 noise)
                                    noise.y, hitBlock, hitNormal, hitDistance, hitCell);
         if (!blocked || all(equal(hitBlock, chosenBlock))) fog += total;
     }
-    return fog * (stepLength * AU_LIGHT_FOG_DENSITY * 0.015 * AU_LOCAL_LIGHT_STRENGTH);
+    return fog * (2.0 * stepLength * AU_LIGHT_FOG_DENSITY * 0.015 * AU_LOCAL_LIGHT_STRENGTH);
 }
 #endif
 

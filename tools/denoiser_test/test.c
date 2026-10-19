@@ -278,6 +278,7 @@ static void outdoor_lighting_integration_test(void)
 #include "finishing.h"
 #include "lightfog.h"
 #include "reload.h"
+#include "lavalights.h"
 
 static void cloud_shadow_test(void)
 {
@@ -1411,6 +1412,7 @@ int wmain(int count, wchar_t **arguments)
     original_spatial_guide_test();
     local_light_test(1);
     local_light_test(0);
+    lava_light_budget_test();
     emitter_capture_test(0);
     emitter_capture_test(1);
     emitter_pressure_test();

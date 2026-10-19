@@ -30,6 +30,7 @@
 #define INPUT_NORMALS_IN_WS 1
 #endif
 #if AU_VOXEL_WORLD
+#define AU_LIGHT_LIST_CACHED 1   // its passes are separate draws with barriers (hook gi_draw)
 #include "AU_Voxel.glsl"
 #endif
 #if AU_GI_DENOISE
