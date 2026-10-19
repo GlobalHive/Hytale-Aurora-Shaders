@@ -378,7 +378,6 @@ made through the menu or shader files reload while you play.
   update to 1.5.0, which fixes it. If DLSS itself delivers a black picture, 1.5.0 switches DLSS
   off for that session and writes the reason to `hook.log`; attach that file to your issue
   ([DLSS diagnostics](docs/dlss-diagnostics.md#one-shot-diagnostic)).
-- **Dark, unlit world on an AMD GPU:** update to 1.5.0; the lighting shader failed to compile on AMD.
 - **Linux looks like vanilla:** close Hytale and run `./install.sh`, then start it normally.
   Check `Client/.aurora/shaderpack/hook.log` for `automatic proxy`. Run `./install.sh` again
   after game updates. `./launch.sh --print-command` shows the optional launcher command.
