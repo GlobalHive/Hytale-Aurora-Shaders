@@ -41,7 +41,7 @@ https://github.com/user-attachments/assets/55316aae-4729-4537-8840-b3e5d5a30a6e
 
 # Aurora Shaders for Hytale
 
-[Download 1.4.3](../../releases/tag/v1.4.3) · [Changelog](CHANGELOG.md)
+[Download 1.5.0](../../releases/tag/v1.5.0) · [Changelog](CHANGELOG.md)
 
 A shader pack for Hytale: soft sun shadows, volumetric clouds, light shafts through trees and
 caves, reflective water, ray-traced bounce light and ambient occlusion, rain puddles, rainbows,
@@ -89,6 +89,13 @@ folder for reinstalling after game updates; it is no longer needed to launch the
 - **Uninstall:** `./install.sh --uninstall` restores the original SDL library. Installed
   settings are kept in `Client/.aurora/shaderpack`. If the game already replaced SDL during
   an update, uninstall keeps that newer library.
+
+**DLSS on Linux:** on NVIDIA RTX systems `./install.sh` checks for native DLSS support, then
+prepares and builds it in: Super Resolution, DLAA and, where supported, Ray Reconstruction. If
+the check fails it installs normally and the pack's temporal anti-aliasing is used.
+`AU_DLSS=1 ./install.sh` requires DLSS instead. Frame Generation is Windows-only. Linux DLSS
+has passed its build and bridge checks but has not yet been verified in gameplay; see
+[Linux validation](docs/dlss-diagnostics.md#linux-validation).
 
 ### Windows
 
@@ -231,6 +238,12 @@ detail & shading, add no passes or history buffers, and leave biome atmosphere i
 | **Foliage translucency** | Sunlight shining through leaves and grass when the sun is behind them. |
 | **Scattering method** | Surface approximation, voxel depth + accumulation, or foliage shadow dithering. [Foliage masks and controls](shaderpack/sss/README.md). |
 | **Sun highlights** | Soft sun reflections on surfaces and a sheen on leaves. |
+| **Sky lighting** | **Classic** or **Sky-derived**: walls and undersides lit by the sky actually drawn, warmer toward a sunset, with light bounced off the ground. [Details](docs/clouds-and-sky.md#sky-lighting). |
+| **Ambient occlusion method** | Hytale's SSAO or **GTAO**: occlusion from the real geometry around each pixel, and sky light from the directions the sky is open. [Details](docs/surfaces-and-water.md#ambient-occlusion). |
+
+New looks are off by default; the quality profiles switch them on by cost. **Ores & materials**
+also adds **Rain soaking** (absorbent blocks darken in rain) and **Smooth material relief**
+(polished stone, ice and metal reflect cleanly). [Materials](docs/surfaces-and-water.md#block-materials).
 
 ### Shadows
 
@@ -262,6 +275,9 @@ These only apply with the **RTX** preset.
 | **Rainbows** | A rainbow opposite the sun after rain, in the morning or evening. |
 | **Atmospheric fog** | Haze that softens the distance. |
 | **Fog density** | How thick that haze is. |
+| **Atmosphere model** | **Classic** gradient sky or **Enhanced** scattering, shared with distant haze and cloud ambience. |
+| **Aurora** | Complementary's aurora borealis on clear nights, in its Reimagined or Unbound style. [Details](docs/clouds-and-sky.md#aurora). |
+| **Ground mist** | Mist banks in valleys and over lakes, thickest at dawn, dusk and after rain, lit through the sun's shadows. Set **Mist altitude** near your valleys. [Details](docs/clouds-and-sky.md#ground-mist). |
 
 ### Clouds
 
@@ -272,6 +288,7 @@ These only apply with the **RTX** preset.
 | **Cloud speed** | How fast they drift. |
 | **Cloud layers** | One or two cloud layers. |
 | **Cloud shadows** | Clouds cast moving shadows on the ground. |
+| **Cloud lighting** | **Classic** shading or **Detailed**: self-shadowed interiors and sunlit edges. |
 
 ### Light shafts
 
@@ -282,6 +299,7 @@ These only apply with the **RTX** preset.
 | **Forest / cave beams** | How much the beams falling through gaps - between leaves, through roofs and cave openings - stand out from the general haze. 0 makes them plain haze. |
 | **Beam boost** | Extra brightness for those beams. |
 | **Moonlight haze** | Strength of the moonlit haze at night. |
+| **Coloured light fog** | Torches, lanterns, glowing ores and coloured bulbs light the air around them in their own colour; walls block it. Requires Colored area lights. [Details](docs/clouds-and-sky.md#coloured-light-fog). |
 
 ### Water
 
@@ -293,6 +311,7 @@ These only apply with the **RTX** preset.
 | **Underwater caustics** | Rippling light patterns on surfaces while you are under water. |
 | **Rain puddles** | Reflective puddles on open ground while it rains, drying up after. |
 | **Puddle strength** | How many puddles form and how reflective they are. |
+| **Water colour model** | **Classic** or **Enhanced**: light absorbed per colour, so each lake keeps its own tint, shallow edges stay clear and deep beds dim. **Water clarity** sets how far light travels. [Details](docs/surfaces-and-water.md#water-colour). |
 
 ### Post-processing
 
@@ -310,12 +329,20 @@ These only apply with the **RTX** preset.
 | **Vignette** | Slightly darker screen edges. |
 | **Temporal anti-aliasing** | Smooths edges and cleans up the fine grain in shadows, light shafts and bounce light by combining frames. Turning it off makes those grainy. |
 | **Sharpening** | Sharpens the image (0 is off). |
+| **Highlight colour protection** | Very bright coloured light keeps its hue instead of draining to white. |
+| **White balance** | Warmer or cooler, greener or more magenta, at unchanged brightness. |
+| **Adaptive exposure** | The image brightens where little sky is in view (caves, deep interiors), up to **Adaptation strength**. |
+
+**Screen-space GI → Refined reflections** (on by default) refines reflections so they no longer
+step and fade where screen space runs out. [Details](docs/surfaces-and-water.md#reflections).
 
 ## Performance
 
 The biggest costs, roughly in order: the **RTX** preset (try fewer **Bounce rays** first),
 **Volumetric clouds**, **Light shafts**, and **Shader water** reflections. Non-RTX profiles
-use the lighter lighting path; lower quality levels reduce the other costs.
+use the lighter lighting path; lower quality levels reduce the other costs. The newer looks are
+light: on an RTX 5080 at 1440p, GTAO at Medium adds about 0.3 ms and Ground mist about 0.5 ms
+([GTAO](docs/surfaces-and-water.md#ambient-occlusion), [sky effects](docs/clouds-and-sky.md#cost)).
 
 ## Build it yourself
 
@@ -347,9 +374,11 @@ made through the menu or shader files reload while you play.
 
 ## Troubleshooting
 
-- **Black world with DLSS enabled, but the UI is visible:** update to 1.4.3, which includes
-  the tested capture and synchronization fixes. If it still happens, follow the
-  [DLSS diagnostic steps](docs/dlss-diagnostics.md#one-shot-diagnostic) and attach `hook.log` to your issue.
+- **Black world with the UI visible, after changing a setting (often switching DLSS on):**
+  update to 1.5.0, which fixes it. If DLSS itself delivers a black picture, 1.5.0 switches DLSS
+  off for that session and writes the reason to `hook.log`; attach that file to your issue
+  ([DLSS diagnostics](docs/dlss-diagnostics.md#one-shot-diagnostic)).
+- **Dark, unlit world on an AMD GPU:** update to 1.5.0; the lighting shader failed to compile on AMD.
 - **Linux looks like vanilla:** close Hytale and run `./install.sh`, then start it normally.
   Check `Client/.aurora/shaderpack/hook.log` for `automatic proxy`. Run `./install.sh` again
   after game updates. `./launch.sh --print-command` shows the optional launcher command.

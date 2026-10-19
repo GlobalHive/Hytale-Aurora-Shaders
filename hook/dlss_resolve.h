@@ -269,5 +269,8 @@ static void dlss_check_frame(const GLint *vp)
         dlss_diagnostic_errors("picture check");
         dlss_diagnose(vp);
         g_dlssState = -1;
+#ifndef _WIN32
+        InterlockedExchange(&g_reloadRequested, 1);   // shaders without DLSS, native size (as other Linux DLSS failures)
+#endif
     }
 }

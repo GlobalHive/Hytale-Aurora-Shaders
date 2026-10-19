@@ -55,4 +55,4 @@ A high cirrus layer was tried and removed: in game it read as painted streaks ra
 
 The bounded cloud march adds no render targets. In a controlled 1920x1080 test, the original one-layer path took about 0.19 ms, corrected two-layer Classic about 0.61 ms, and two-layer Detailed about 0.69 ms. The original path ignored the second-layer setting, so these are not equivalent workloads.
 
-The sky/fog approximation also adds no render targets. Measurements are pass-specific, not a promise about whole-game FPS; output resolution, GPU and view affect cost.
+The sky/fog approximation also adds no render targets. Ground mist at 12 samples measured about 0.3 ms in the lighting pass plus 0.18 ms in the sky pass on an RTX 5080 at 2560x1351. Coloured light fog was below the scene's frame-to-frame noise. Measurements are pass-specific, not a promise about whole-game FPS; output resolution, GPU and view affect cost.

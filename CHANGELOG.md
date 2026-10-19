@@ -1,12 +1,21 @@
 # Changelog
 
-## Unreleased
+## 1.5.0
 
-- `./install.sh` now checks native DLSS support and automatically prepares and builds it on supported systems, with normal installation as the fallback.
-
-- Added native Linux DLSS Super Resolution, DLAA and capability-detected Ray Reconstruction through the Vulkan/OpenGL bridge. RTX gameplay validation remains pending.
-- Added Linux DLSS render scaling, native-size fallback, SDK/runtime preparation and standalone checks.
-- Preserve Linux DLSS settings across installation updates when the hook includes DLSS. Frame Generation remains Windows-only.
+- Fixed the world turning black, with the UI still visible, after changing a shader setting and then loading a world. Switching DLSS on was the most common trigger.
+- Fixed a dark, unlit world on AMD GPUs: the lighting shader failed to compile there.
+- DLSS now checks that the world actually reaches the screen. If it arrives black, DLSS is switched off for the session and the reason is written to `hook.log`.
+- Added native Linux DLSS Super Resolution, DLAA and capability-detected Ray Reconstruction through the Vulkan/OpenGL bridge, with render scaling and native-size fallback. `./install.sh` checks DLSS support and prepares and builds it on supported systems, with a normal installation as the fallback, and keeps Linux DLSS settings across updates. Frame Generation remains Windows-only. RTX gameplay validation on Linux is still pending.
+- Added Sky-derived sky lighting: walls and undersides are lit by the sky actually drawn, with ground bounce.
+- Added GTAO ambient occlusion with sky light from open directions (bent normals).
+- Added rain soaking for absorbent blocks and graded polished-stone materials; smooth materials keep less texture relief.
+- Added Enhanced water colour (per-colour absorption that keeps each water's own tint) and a Water clarity control.
+- Added refined screen-space reflections: bisection-refined hits, back-face rejection and confidence fades. On by default.
+- Added Enhanced atmosphere scattering and Detailed cloud lighting with self-shadowing.
+- Added Complementary's aurora borealis, ground mist anchored to the world and lit through the shadow map, and coloured light fog around torches, lanterns and glowing ores.
+- Added highlight colour protection, white balance and adaptive exposure.
+- New looks are off by default. The quality profiles turn them on by measured cost, and Default resets them.
+- The Windows installer uses the newer of the shipped and a locally built `opengl32.dll`.
 
 ## 1.4.3
 
