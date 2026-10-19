@@ -31,16 +31,22 @@ void AU_GIQuadFilter(vec3 position, vec3 normal, bool emissive, inout vec3 gi,
 #if AU_GI_SPATIAL_FILTER
     vec2 direction = vec2(0.5) - vec2(ivec2(gl_FragCoord.xy) & ivec2(1));
     vec3 deltaX = dFdx(position), deltaY = dFdy(position);
-    bool sameSurface = length(fwidth(normal)) < AU_GI_NORMAL_THRESHOLD && fwidth(float(emissive)) < 0.5
+    // The guide normal can itself come from position derivatives. Do not take
+    // fwidth(normal): that would introduce higher-order derivatives as well.
+    float planeSlope = abs(dot(deltaX, normal)) / max(length(deltaX), 1e-6)
+                     + abs(dot(deltaY, normal)) / max(length(deltaY), 1e-6);
+    bool sameSurface = planeSlope < AU_GI_NORMAL_THRESHOLD && fwidth(float(emissive)) < 0.5
         && abs(dot(deltaX, normal)) + abs(dot(deltaY, normal)) < 0.015
         && max(length(deltaX), length(deltaY)) < 0.1 + length(position) * 0.003;
     vec4 lighting = vec4(gi, skyVis);
-    vec4 horizontal = lighting + direction.x * dFdx(lighting);
-    vec4 filtered = horizontal + direction.y * dFdy(horizontal);
-    float horizontalAO = occlusion + direction.x * dFdx(occlusion);
-    float filteredAO = horizontalAO + direction.y * dFdy(horizontalAO);
-    vec3 horizontalLight = directLight + direction.x * dFdx(directLight);
-    vec3 filteredLight = horizontalLight + direction.y * dFdy(horizontalLight);
+    // Average this lane and its horizontal/vertical neighbours. Taking dFdy of
+    // a value containing dFdx is a mixed higher-order derivative: undefined in
+    // GLSL, even when it happens to produce a four-lane average on one driver.
+    // Use only first derivatives; the three non-negative weights preserve energy
+    // and keep filtered lighting within the input samples' range.
+    vec4 filtered = lighting + (direction.x * dFdx(lighting) + direction.y * dFdy(lighting)) * (2.0 / 3.0);
+    float filteredAO = occlusion + (direction.x * dFdx(occlusion) + direction.y * dFdy(occlusion)) * (2.0 / 3.0);
+    vec3 filteredLight = directLight + (direction.x * dFdx(directLight) + direction.y * dFdy(directLight)) * (2.0 / 3.0);
     if (sameSurface) {
         gi = mix(gi, max(filtered.rgb, vec3(0.0)), AU_GI_SPATIAL_STRENGTH);
         skyVis = mix(skyVis, max(filtered.a, 0.0), AU_GI_SPATIAL_STRENGTH);

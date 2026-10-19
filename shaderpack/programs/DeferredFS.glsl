@@ -629,6 +629,22 @@ void main()
         color = md > 32.0 ? vec3(0.5, 0.0, 0.0) : vec3(fract(md * 0.5), 1.0 - md / 32.0, 0.2);
     }
 #endif
+#if AU_LOCAL_LIGHTS && AU_LOCAL_LIGHT_DIAGNOSTIC == 1
+    // Raw area light before GI history/filtering, independent of material colour.
+    color = sqrt(max(localLighting, vec3(0.0))) * 0.5;
+#elif AU_LOCAL_LIGHTS && AU_LOCAL_LIGHT_DIAGNOSTIC == 2
+    vec3 receiverPosition = playerPos + CameraPosition + normal * 0.04;
+    uint receiverGeometry = AU_VoxGet(ivec3(floor(receiverPosition)));
+    uint receiverType = receiverGeometry & 3u;
+    color = receiverType == AU_VOX_UNKNOWN ? vec3(1.0, 0.05, 0.05)
+          : receiverType == AU_VOX_AIR ? vec3(0.05, 0.15, 1.0)
+          : receiverType == AU_VOX_POROUS ? vec3(0.7, 0.05, 0.8)
+          : (receiverGeometry & AU_VOX_SMALL) != 0u ? vec3(1.0, 0.45, 0.05)
+          : vec3(0.05, 0.85, 0.1);
+    if (receiverType == AU_VOX_UNKNOWN && length(AU_LocalLightOrigin(playerPos, normal) - receiverPosition) > 0.0001)
+        color = vec3(0.05, 0.85, 0.85); // shallow face inferred from neighbouring solids
+    color *= 0.65 + 0.35 * clamp(GetLuminance(albedo), 0.0, 1.0);
+#endif
     // Meta for the bloom pass: 1 SSAO, 2 emissive, bits 2-4 ore glow level.
     uint oreLevel = uint(round(oreGlowAmount * 7.0));
     outColor = vec4(color, float((hasSSAO ? 1u : 0u) | (hasBloom ? 2u : 0u) | (oreLevel << 2)) / 255.0);

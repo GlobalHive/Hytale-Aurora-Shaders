@@ -166,17 +166,17 @@ public static class AuroraPrep
     {
         string source = Read(Path.Combine(pack, "original", "BlockyModelFS.glsl"));
         source = Rep(source, "#version 410 core\n", "#version 410 core\n#extension GL_ARB_shader_image_load_store : enable\n#include \"AU_Settings.glsl\"\n");
-        source = Rep(source, "#include \"ModelVFX_inc.glsl\"\n", "#if AU_VOXEL_WORLD && !USE_DISTORTION_RT && !USE_SCENE_DATA_OVERRIDE && !FIRST_PERSON_VIEW\n"
+        source = Rep(source, "#include \"ModelVFX_inc.glsl\"\n", "#if AU_VOXEL_WORLD && !USE_ENTITY_DATA_BUFFER && !USE_DISTORTION_RT && !USE_SCENE_DATA_OVERRIDE && !FIRST_PERSON_VIEW\n"
             + "#define AU_VOX_WRITER_ONLY\n#include \"AU_Voxel.glsl\"\n#endif\n#include \"ModelVFX_inc.glsl\"\n");
         string gbuffer = "    writeToGBuffer(color.rgb, normalWS, defLight, staticLightColor.a, hasSSAO, hasBloom, false, outColor0, outColor1, outColor2);";
-        source = Rep(source, gbuffer, "#if AU_VOXEL_WORLD && !USE_SCENE_DATA_OVERRIDE && !FIRST_PERSON_VIEW\n"
+        source = Rep(source, gbuffer, "#if AU_VOXEL_WORLD && !USE_ENTITY_DATA_BUFFER && !USE_SCENE_DATA_OVERRIDE && !FIRST_PERSON_VIEW\n"
             + "    if (hasBloom && !hasHighlight) {\n"
             + "        vec3 auEmission = color.rgb * staticLightColor.rgb;\n"
             + "        float auPeak = max(auEmission.r, max(auEmission.g, auEmission.b));\n"
             + "        if (auPeak > 0.001) AU_RecordEmitterAt(fragPositionWS + CameraPosition - normalWS * 0.04, auEmission, min(auEmission.r, min(auEmission.g, auEmission.b)) < auPeak * 0.8);\n"
             + "    }\n#endif\n" + gbuffer);
         string forwardLight = "    color.rgb *= computeSimpleLightColor(normalWS, shadingMode);";
-        source = Rep(source, forwardLight, "#if AU_VOXEL_WORLD && !USE_SCENE_DATA_OVERRIDE && !FIRST_PERSON_VIEW\n"
+        source = Rep(source, forwardLight, "#if AU_VOXEL_WORLD && !USE_ENTITY_DATA_BUFFER && !USE_SCENE_DATA_OVERRIDE && !FIRST_PERSON_VIEW\n"
             + "    if (shadingMode == SHADING_FULLBRIGHT && !hasHighlight) {\n"
             + "        vec3 auEmission = color.rgb * staticLightColor.rgb;\n"
             + "        float auPeak = max(auEmission.r, max(auEmission.g, auEmission.b));\n"

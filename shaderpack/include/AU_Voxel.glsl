@@ -417,6 +417,65 @@ vec3 AU_ResolveLocalLight(AU_LocalLightSample sampleData, vec3 origin, float ran
     return sampleData.energy * visibility * AU_LOCAL_LIGHT_STRENGTH;
 }
 
+// A voxel represents the whole block, including inset model faces. Start a
+// shadow ray outside that representation, not inside the receiver's own voxel.
+// Otherwise grazing rays hit neighbouring floor cells and draw a block grid.
+vec3 AU_LocalLightOrigin(vec3 playerPos, vec3 surfaceNormal)
+{
+    vec3 origin = playerPos + CameraPosition + surfaceNormal * 0.04;
+    vec3 axisWeight = abs(surfaceNormal);
+    int axis = axisWeight.x > axisWeight.y ? (axisWeight.x > axisWeight.z ? 0 : 2)
+                                           : (axisWeight.y > axisWeight.z ? 1 : 2);
+    // Use the stored surface normal, not depth derivatives: reconstructed
+    // normals can select a sideways face on distant, shallow-angle floors.
+    // An angular cutoff also makes the correction disappear in thin bands.
+    // Use the dominant voxel face consistently whenever the origin is solid.
+    ivec3 cell = ivec3(floor(origin));
+    uint geometry = AU_VoxGet(cell);
+    float side = sign(surfaceNormal[axis]);
+    float face = float(cell[axis]) + (side > 0.0 ? 1.0 : 0.0);
+    bool receiverSolid = (geometry & 7u) == AU_VOX_SOLID;
+    // Only visible chunk geometry populates the grid. A missing receiver cell
+    // must not cast a checkerboard against recorded neighbours on the same plane.
+    // Infer a shallow inset face from two solid tangential neighbours; never
+    // reinterpret known air, porous/small models or the middle of an empty cell.
+    if ((geometry & 3u) == AU_VOX_UNKNOWN && abs(face - origin[axis]) < 0.2) {
+        int supports = 0;
+        for (int tangent = 0; tangent < 3; tangent++) {
+            if (tangent == axis) continue;
+            ivec3 offset = ivec3(0);
+            offset[tangent] = 1;
+            supports += (AU_VoxGet(cell + offset) & 7u) == AU_VOX_SOLID ? 1 : 0;
+            supports += (AU_VoxGet(cell - offset) & 7u) == AU_VOX_SOLID ? 1 : 0;
+        }
+        receiverSolid = supports >= 2;
+    }
+    if (receiverSolid) origin[axis] = face + side * 0.02;
+    return origin;
+}
+
+// Integrate a small fixed quadrature for each light instead of selecting one
+// light per colour channel. Visibility is bounded and stable even without TAA/RR;
+// a hidden bright emitter cannot randomly erase an unrelated visible light.
+float AU_LocalLightVisibility(vec3 origin, vec3 position, ivec3 sourceBlock)
+{
+    const vec3 offsets[4] = vec3[4](vec3(1, 1, 1), vec3(1, -1, -1),
+                                   vec3(-1, 1, -1), vec3(-1, -1, 1));
+    float visible = 0.0;
+    for (int sampleIndex = 0; sampleIndex < 4; sampleIndex++) {
+        vec3 delta = position + offsets[sampleIndex] * (AU_LOCAL_LIGHT_SOFTNESS * 0.57735027) - origin;
+        float distanceToLight = length(delta);
+        ivec3 hitBlock;
+        vec3 hitNormal;
+        float hitDistance;
+        uint hitCell;
+        bool blocked = AU_VoxTrace(origin, delta / max(distanceToLight, 0.0001), distanceToLight, 64,
+                                   (float(sampleIndex) + 0.5) * 0.25, hitBlock, hitNormal, hitDistance, hitCell);
+        visible += !blocked || all(equal(hitBlock, sourceBlock)) ? 0.25 : 0.0;
+    }
+    return visible;
+}
+
 void AU_BuildLocalLightTileWord(int word, int tile, bool expandedTiles)
 {
     ivec3 tileCell = expandedTiles ? ivec3(tile & 15, (tile >> 4) & 7, tile >> 7)
@@ -454,7 +513,7 @@ void AU_BuildLocalLightTile(int tileRows)
 }
 
 #ifndef AU_LOCAL_LIGHT_BUDGET
-#define AU_LOCAL_LIGHT_BUDGET 32
+#define AU_LOCAL_LIGHT_BUDGET 128
 #endif
 
 ivec2 AU_TileMaskAddress(int tile, int word, bool expandedTiles)
@@ -544,13 +603,14 @@ vec3 AU_LocalLightingOriginal(vec3 playerPos, vec3 normal, bool flatShading, vec
     uint lightCount = min(imageLoad(auLights, ivec2(0, row)).r, AU_PT_MAX_LIGHTS);
     if (lightCount == 0u) return vec3(0.0);
     ivec3 base = ivec3(floor(CameraPosition)) - AU_VOX_HALF;
-    vec3 origin = playerPos + CameraPosition + normal * 0.04;
+    vec3 origin = AU_LocalLightOrigin(playerPos, normal);
     bool expandedTiles = uHookLocalLightTiles >= 2;
     ivec3 tileCell = ivec3(floor(origin / 16.0)) & (expandedTiles ? ivec3(15, 7, 15) : ivec3(3));
     int tile = expandedTiles ? tileCell.x | (tileCell.y << 4) | (tileCell.z << 7)
                              : tileCell.x | (tileCell.y << 2) | (tileCell.z << 4);
     uint activeWords = imageLoad(auLights, ivec2(expandedTiles ? tile : 1024 + tile, expandedTiles ? 1 : 2)).r;
     if (activeWords == 0u) return vec3(0.0);
+    vec3 lighting = vec3(0.0);
     float sampleAngle = randomValue.y * 6.2831853;
     float sampleHeight = randomValue.x * 2.0 - 1.0;
     float sampleRadius = sqrt(max(1.0 - sampleHeight * sampleHeight, 0.0));
@@ -558,6 +618,7 @@ vec3 AU_LocalLightingOriginal(vec3 playerPos, vec3 normal, bool flatShading, vec
     AU_LocalLightSample sampleData;
     sampleData.energy = vec3(0.0);
     sampleData.indices = uvec3(0xffffffffu);
+
     // The budget applies to the game's expanded cells; the legacy 64-cell layout (wrapping every 64
     // blocks, so most of a list is out of reach) visits every light.
     AU_TileLights walk = AU_TileLightsBegin(tile, expandedTiles, activeWords, AU_TileLightCount(tile, expandedTiles, activeWords),
@@ -569,7 +630,8 @@ vec3 AU_LocalLightingOriginal(vec3 playerPos, vec3 normal, bool flatShading, vec
         if (index >= lightCount) continue;
         uint packedCell = imageLoad(auLights, ivec2(1 + 2 * int(index), row)).r;
         ivec3 block = base + ((ivec3(packedCell & 255u, (packedCell >> 8) & 127u, (packedCell >> 15) & 255u) - base) & AU_VOX_MASK);
-        vec3 centerDelta = AU_EmitterPosition(block, packedCell) - origin;
+        // Shadow bias must not change the physical distance or diffuse angle.
+        vec3 centerDelta = AU_EmitterPosition(block, packedCell) - (playerPos + CameraPosition);
         if (dot(centerDelta, centerDelta) > pow2(AU_LOCAL_LIGHT_RANGE + AU_LOCAL_LIGHT_SOFTNESS)) continue;
         vec3 position = AU_EmitterPosition(block, packedCell);
         vec3 delta = centerDelta;
@@ -584,16 +646,23 @@ vec3 AU_LocalLightingOriginal(vec3 playerPos, vec3 normal, bool flatShading, vec
         float cacheWeight = uintBitsToFloat(imageLoad(auLights, ivec2(1024 + int(index), 4)).r);
         vec3 radiance = unpackUnorm4x8(imageLoad(auLights, ivec2(2 + 2 * int(index), row)).r).rgb * (facing * attenuation * cacheWeight * share);
         auLocalLightUnshadowed += radiance;
-        uint selectionBits = floatBitsToUint(randomValue.y * 1973.0 + randomValue.x * 9117.0) ^ packedCell * 0x9e3779b9u;
-        selectionBits ^= selectionBits >> 16;
-        selectionBits *= 0x7feb352du;
-        selectionBits ^= selectionBits >> 15;
-        selectionBits *= 0x846ca68bu;
-        selectionBits ^= selectionBits >> 16;
-        float selection = float(selectionBits >> 8) * (1.0 / 16777216.0);
-        AU_SelectLocalLight(sampleData, radiance, position + sampleOffset, block, index, selection);
+        // Dense lists still use the bounded stochastic estimator: tracing four
+        // rays for every budgeted lava emitter would undo the lava performance fix.
+        if (share > 1.0) {
+            uint selectionBits = floatBitsToUint(randomValue.y * 1973.0 + randomValue.x * 9117.0) ^ packedCell * 0x9e3779b9u;
+            selectionBits ^= selectionBits >> 16;
+            selectionBits *= 0x7feb352du;
+            selectionBits ^= selectionBits >> 15;
+            selectionBits *= 0x846ca68bu;
+            selectionBits ^= selectionBits >> 16;
+            float selection = float(selectionBits >> 8) * (1.0 / 16777216.0);
+            AU_SelectLocalLight(sampleData, radiance, position + sampleOffset, block, index, selection);
+        } else if (max(radiance.r, max(radiance.g, radiance.b)) > 0.0) {
+            lighting += radiance * AU_LocalLightVisibility(origin, position, block);
+        }
     }
-    return AU_ResolveLocalLight(sampleData, origin, randomValue.x);
+    return share > 1.0 ? AU_ResolveLocalLight(sampleData, origin, randomValue.x)
+                       : lighting * AU_LOCAL_LIGHT_STRENGTH;
 }
 #endif
 
@@ -604,7 +673,8 @@ vec3 AU_LocalLighting(vec3 playerPos, vec3 normal, bool flatShading, vec2 random
     uint lightCount = min(imageLoad(auLights, ivec2(0, row)).r, AU_PT_MAX_LIGHTS);
     if (lightCount == 0u) return vec3(0.0);
     ivec3 base = ivec3(floor(CameraPosition)) - AU_VOX_HALF;
-    vec3 origin = playerPos + CameraPosition + normal * 0.04;
+    vec3 origin = AU_LocalLightOrigin(playerPos, normal);
+    vec3 lighting = vec3(0.0);
     AU_LocalLightSample sampleData;
     sampleData.energy = vec3(0.0);
     sampleData.indices = uvec3(0xffffffffu);
@@ -618,7 +688,8 @@ vec3 AU_LocalLighting(vec3 playerPos, vec3 normal, bool flatShading, vec2 random
             : min(uint(fract(randomValue.x + float(candidate) * 0.618034) * float(lightCount)), lightCount - 1u);
         uint packedCell = imageLoad(auLights, ivec2(1 + 2 * int(index), row)).r;
         ivec3 block = base + ((ivec3(packedCell & 255u, (packedCell >> 8) & 127u, (packedCell >> 15) & 255u) - base) & AU_VOX_MASK);
-        vec3 centerDelta = AU_EmitterPosition(block, packedCell) - origin;
+        // Shadow bias must not change the physical distance or diffuse angle.
+        vec3 centerDelta = AU_EmitterPosition(block, packedCell) - (playerPos + CameraPosition);
         if (dot(centerDelta, centerDelta) > pow2(AU_LOCAL_LIGHT_RANGE + AU_LOCAL_LIGHT_SOFTNESS)) continue;
         vec3 position = AU_EmitterPosition(block, packedCell);
         vec3 delta = centerDelta;
@@ -638,8 +709,12 @@ vec3 AU_LocalLighting(vec3 playerPos, vec3 normal, bool flatShading, vec2 random
         selectionBits *= 0x846ca68bu;
         selectionBits ^= selectionBits >> 16;
         float selection = float(selectionBits >> 8) * (1.0 / 16777216.0);
-        AU_SelectLocalLight(sampleData, radiance, position + sampleOffset, block, index, selection);
+        if (lightCount <= uint(AU_LOCAL_LIGHT_CANDIDATES))
+            lighting += radiance * AU_LocalLightVisibility(origin, position, block);
+        else
+            AU_SelectLocalLight(sampleData, radiance, position + sampleOffset, block, index, selection);
     }
+    if (lightCount <= uint(AU_LOCAL_LIGHT_CANDIDATES)) return lighting * AU_LOCAL_LIGHT_STRENGTH;
     return AU_ResolveLocalLight(sampleData, origin, randomValue.x) * (float(lightCount) / float(candidates));
 #else
     return vec3(0.0);

@@ -96,7 +96,7 @@ static void lava_light_budget_test(void)
     }
     // Every light visited: the same value on every pixel. The budget: the same light on average,
     // noise per pixel, and much cheaper.
-    assert(means[0] > .05 && variances[0] < 1e-8);
+    assert(means[0] > .05 && variances[0] < 1e-6 * means[0] * means[0]);
     assert(fabs(means[1] / means[0] - 1.0) < .02 && variances[1] > 1e-6);
     assert(milliseconds[1] < milliseconds[0] * .5);
     deleteQueries(2, queries);

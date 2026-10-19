@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Stabilized ordinary colored area-light lists with four fixed visibility samples per light instead of one randomly selected light per color channel. Dense lists retain budgeted sampling for performance.
+- Raised the default Area light budget from 32 to 128. In-game Linux testing confirmed that 128 removed the moving dots in the reported cave; scenes exceeding the selected budget can still show sampling noise.
+- Corrected shadow origins on inset solid faces, removed the hard normal-angle cutoff, and separated shadow bias from light attenuation. In-game testing confirmed that the large nearby grid and thin lines disappeared. Shadow origins now use stored surface normals; shallow unknown cells can use support from neighboring solids.
+- **Known remaining issue:** a distant/view-dependent grid still appears with Colored area lights enabled, including with DLSS off. It can be stronger with DLSS and becomes less visible when centered or approached. The stored-normal and sparse-cell changes did not eliminate it. Turning Colored area lights off removes it. Optional Lighting/Receiver cells diagnostic views are available and default to Off.
+- Excluded fullbright instanced entities from the stationary area-light cache to prevent exaggerated lighting and trails from glowing creature parts, while preserving their visible glow.
+- Removed undefined higher-order derivatives from the inline GI filter. Added native Linux rendering regressions for occluded lights, surface-edge filtering, dense/sparse floor and ceiling receivers, wall-shadow preservation and the lava-light budget, plus installer-generation checks for entity emission. Targeted rendering tests passed on Mesa and NVIDIA; 28 Python checks and all tested deferred shader/diagnostic variants passed. These checks do not establish that the remaining in-game grid is fixed.
+
 ## 1.5.1
 
 - Fixed a severe frame-rate drop near lava with Colored area lights (6 FPS on an RTX 5080). Every lava block is a light, and each pixel evaluated all of the hundreds in reach, Coloured light fog once per step. A spot reached by more lights than the new **Area light budget** (default 32) now evaluates a random share each frame, weighted so the brightness stays the same; places with few lights are unchanged. Next to a lava lake the lighting pass went from 155 ms to 15 ms.

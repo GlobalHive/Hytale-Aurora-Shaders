@@ -109,11 +109,12 @@ def material_mips(source):
 
 
 def make_blocky_model_fs(source):
+    # Instanced entity fullbright pixels are visual glow, not stationary world emitters.
     source = replace(source, "#version 410 core\n", "#version 410 core\n#extension GL_ARB_shader_image_load_store : enable\n#include \"AU_Settings.glsl\"\n")
     source = replace(source, '#include "ModelVFX_inc.glsl"\n',
-                     '#if AU_VOXEL_WORLD && !USE_DISTORTION_RT && !USE_SCENE_DATA_OVERRIDE && !FIRST_PERSON_VIEW\n'
+                     '#if AU_VOXEL_WORLD && !USE_ENTITY_DATA_BUFFER && !USE_DISTORTION_RT && !USE_SCENE_DATA_OVERRIDE && !FIRST_PERSON_VIEW\n'
                      '#define AU_VOX_WRITER_ONLY\n#include "AU_Voxel.glsl"\n#endif\n#include "ModelVFX_inc.glsl"\n')
-    capture = ('#if AU_VOXEL_WORLD && !USE_SCENE_DATA_OVERRIDE && !FIRST_PERSON_VIEW\n'
+    capture = ('#if AU_VOXEL_WORLD && !USE_ENTITY_DATA_BUFFER && !USE_SCENE_DATA_OVERRIDE && !FIRST_PERSON_VIEW\n'
                '    if (CONDITION && !hasHighlight) {\n'
                '        vec3 auEmission = color.rgb * staticLightColor.rgb;\n'
                '        float auPeak = max(auEmission.r, max(auEmission.g, auEmission.b));\n'

@@ -277,6 +277,9 @@ static void outdoor_lighting_integration_test(void)
 #include "skypreview.h"
 #include "finishing.h"
 #include "lightfog.h"
+#ifdef __linux__
+#define DeleteCriticalSection pthread_mutex_destroy
+#endif
 #include "reload.h"
 #include "lavalights.h"
 
@@ -562,12 +565,15 @@ static void original_spatial_guide_test(void)
             }
         double variance = square - mean * mean;
         printf("Original %s spatial guide mean %.6f variance %.8f\n", geometric ? "geometric" : "normal-mapped", mean, variance);
-        assert(fabs(mean - .25) < .00001 && (geometric ? variance < .000001 : variance > .18));
+        assert(fabs(mean - .25) < .00001 && (geometric ? fabs(variance - 1.0 / 48.0) < .000001 : variance > .18));
         if (geometric)
             for (int pixel = 0; pixel < 64 * 64; pixel++) {
                 int column = pixel % 64, row = pixel / 64;
-                if (column == 30 || column == 31 || row == 30 || row == 31)
-                    assert(fabsf(pixels[pixel * 4] - pixels[pixel * 4 + 1]) < .00001f);
+                float expected = pixels[pixel * 4 + 1];
+                if (column != 30 && column != 31 && row != 30 && row != 31)
+                    expected = (expected + pixels[(row * 64 + (column ^ 1)) * 4 + 1]
+                                + pixels[((row ^ 1) * 64 + column) * 4 + 1]) / 3.0f;
+                assert(fabsf(pixels[pixel * 4] - expected) < .00001f);
             }
     }
     PFN_glDeleteTextures deleteTextures = (void *)GetProcAddress(g_real, "glDeleteTextures");
@@ -813,6 +819,43 @@ static void local_light_test(int legacyTiles)
         }
         r_glUniform1f(r_glGetUniformLocation(program, "testEmitterStrength"), 1.0f);
     }
+    // Issue #21: a visible warm light and a hidden brighter light of the same
+    // colour used to produce random black/bright pixels via the RGB reservoir.
+    // Test the raw lighting, with no temporal filter or DLSS to hide variance.
+    vox_clear();
+    uint32_t blocker = 2u;
+    r_glBindTexture(GL_TEXTURE_3D, g_voxTex[0]);
+    update3D(GL_TEXTURE_3D, 0, 1, 0, 1, 1, 1, 1, GL_RED_INTEGER, GL_UNSIGNED_INT, &blocker);
+    uint32_t caveLights[5] = {2, 2u << 15, 128u | (64u << 8), 2u | (2u << 15), 255u | (128u << 8)};
+    r_glUniform3f(r_glGetUniformLocation(program, "testPosition"), .5f, .5f, .5f);
+    r_glUniform1f(r_glGetUniformLocation(program, "testSoftness"), .35f);
+    for (int original = 0; original < 2; original++) {
+        r_glUniform1i(r_glGetUniformLocation(program, "testOriginal"), original);
+        double reference = 0.0;
+        for (int sources = 1; sources <= 2; sources++) {
+            caveLights[0] = sources;
+            r_glBindTexture(GL_TEXTURE_2D, g_voxLights);
+            update2D(GL_TEXTURE_2D, 0, 0, 0, 5, 1, GL_RED_INTEGER, GL_UNSIGNED_INT, caveLights);
+            r_glUniform1i(r_glGetUniformLocation(program, "testCull"), 1);
+            ov.Viewport(0, 0, 32, 64);
+            r_glDrawArrays(OV_GL_TRIANGLE_STRIP, 0, 4);
+            r_glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+            r_glUniform1i(r_glGetUniformLocation(program, "testCull"), 0);
+            ov.Viewport(0, 0, 64, 64);
+            r_glDrawArrays(OV_GL_TRIANGLE_STRIP, 0, 4);
+            readPixels(0, 0, 64, 64, GL_RGBA, GL_FLOAT, pixels);
+            double mean = 0.0, square = 0.0;
+            for (int pixel = 0; pixel < 4096; pixel++) {
+                double value = pixels[pixel * 4];
+                assert(isfinite(value) && value > 0.0);
+                mean += value / 4096.0; square += value * value / 4096.0;
+            }
+            if (sources == 1) reference = mean;
+            printf("Cave lights path %d sources %d mean %.6f variance %.9f\n", original, sources, mean, square - mean * mean);
+            assert(fabs(mean - reference) < .00001 && fabs(square - mean * mean) < .000001);
+        }
+    }
+    puts("PASS: hidden lights do not erase visible light or add speckle without DLSS/temporal filtering");
     uint32_t expired[1024];
     for (int slot = 0; slot < 1024; slot++) expired[slot] = 1001u;
     r_glBindTexture(GL_TEXTURE_2D, g_voxLights);
@@ -1363,6 +1406,37 @@ static void foliage_shadow_test(void)
     puts("PASS: real shadow fragment shader, 0/0.5/0.8 permeability, stable repeated frames, opaque veins, flipped masks, unknown materials and untouched camera depth");
 }
 
+#include "local_receiver.h"
+
+#ifdef __linux__
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+int main(int count, char **arguments)
+{
+    assert(count == 2); setvbuf(stdout, NULL, _IONBF, 0); g_log = stdout;
+    au_to_wide(g_packDir, MAX_PATH, arguments[1]);
+    PFNEGLGETPLATFORMDISPLAYEXTPROC platform = (void *)eglGetProcAddress("eglGetPlatformDisplayEXT");
+    EGLDisplay display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (!eglInitialize(display, NULL, NULL)) {
+        display = platform ? platform(EGL_PLATFORM_SURFACELESS_MESA, NULL, NULL) : EGL_NO_DISPLAY;
+        if (!eglInitialize(display, NULL, NULL)) { puts("SKIP: EGL display unavailable"); return 77; }
+    }
+    assert(eglBindAPI(EGL_OPENGL_API));
+    EGLint attrs[] = {EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT, EGL_NONE};
+    EGLConfig config; EGLint configs;
+    assert(eglChooseConfig(display, attrs, &config, 1, &configs) && configs);
+    EGLint size[] = {EGL_WIDTH, 16, EGL_HEIGHT, 16, EGL_NONE};
+    EGLSurface surface = eglCreatePbufferSurface(display, config, size);
+    EGLint version[] = {EGL_CONTEXT_MAJOR_VERSION, 4, EGL_CONTEXT_MINOR_VERSION, 3, EGL_NONE};
+    EGLContext context = eglCreateContext(display, config, EGL_NO_CONTEXT, version);
+    if (context == EGL_NO_CONTEXT || !eglMakeCurrent(display, surface, surface, context)) {
+        puts("SKIP: OpenGL 4.3 context unavailable"); return 77;
+    }
+    const unsigned char *(*rendererString)(unsigned) = (void *)eglGetProcAddress("glGetString");
+    printf("Linux GL renderer: %s\n", rendererString(0x1f01));
+    linux_sdl_getproc = (SDL_GetProc)eglGetProcAddress;
+    real_wglGetProcAddress = linux_gl_proc;
+#else
 int wmain(int count, wchar_t **arguments)
 {
     assert(count == 2); setvbuf(stdout, NULL, _IONBF, 0); g_log = stdout; wcscpy(g_packDir, arguments[1]);
@@ -1378,6 +1452,7 @@ int wmain(int count, wchar_t **arguments)
     HGLRC (WINAPI *createContext)(HDC) = (void *)GetProcAddress(g_real, "wglCreateContext");
     BOOL (WINAPI *makeCurrent)(HDC, HGLRC) = (void *)GetProcAddress(g_real, "wglMakeCurrent");
     HGLRC context = createContext(windowDC); assert(context && makeCurrent(windowDC, context));
+#endif
     r_glGetIntegerv = (void *)GetProcAddress(g_real, "glGetIntegerv"); r_glBindTexture = (void *)GetProcAddress(g_real, "glBindTexture");
     r_glDrawArrays = (void *)GetProcAddress(g_real, "glDrawArrays");
 #define TEST_GL(name) r_##name = (void *)real_wglGetProcAddress(#name); assert(r_##name)
@@ -1390,6 +1465,15 @@ int wmain(int count, wchar_t **arguments)
     assert(ov_init()); readPixels = (void *)GetProcAddress(g_real, "glReadPixels"); getError = (void *)GetProcAddress(g_real, "glGetError");
     generateFramebuffer = (void *)real_wglGetProcAddress("glGenFramebuffers"); bindFramebuffer = (void *)real_wglGetProcAddress("glBindFramebuffer");
     attachTexture = (void *)real_wglGetProcAddress("glFramebufferTexture2D");
+    if (getenv("AU_RECEIVER_TEST_ONLY")) { local_receiver_test(); return 0; }
+    if (getenv("AU_LOCAL_LIGHT_TEST_ONLY")) {
+        original_noise_test(0); original_noise_test(1);
+        original_spatial_guide_test();
+        local_light_test(1); local_light_test(0);
+        lava_light_budget_test();
+        local_receiver_test();
+        return 0;
+    }
     if (getenv("AU_SKY_PREVIEW_ONLY")) { sky_preview_test(); return 0; }   // fast iteration on sky effects
     reload_test();
     surface_polish_test();

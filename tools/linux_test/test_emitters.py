@@ -2,6 +2,9 @@ from io import BytesIO
 import json
 from pathlib import Path
 import sys
+import re
+import shutil
+import subprocess
 import tempfile
 import unittest
 import zipfile
@@ -10,9 +13,27 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from build_emitters import build_emitters, texture_tiles
+from prepare_shaders import make_blocky_model_fs
 
 
 class EmitterClassificationTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("cpp"), "C preprocessor unavailable")
+    def test_entity_fullbright_does_not_enter_world_light_cache(self):
+        # Exercise generated deferred and forward variants, as installation does.
+        source = ('#version 410 core\n#include "ModelVFX_inc.glsl"\n'
+                  '#if DEFERRED\n'
+                  '    writeToGBuffer(color.rgb, normalWS, defLight, staticLightColor.a, hasSSAO, hasBloom, false, outColor0, outColor1, outColor2);\n'
+                  '#else\n    color.rgb *= computeSimpleLightColor(normalWS, shadingMode);\n#endif\n')
+        generated = make_blocky_model_fs(source)
+        code = re.sub(r"^#(?:version|extension|include).*\n", "", generated, flags=re.M)
+        for deferred in (0, 1):
+            for entity in (0, 1):
+                result = subprocess.run(["cpp", "-P", "-undef", "-DAU_VOXEL_WORLD=1",
+                                         f"-DDEFERRED={deferred}", f"-DUSE_ENTITY_DATA_BUFFER={entity}"],
+                                        input=code, text=True, capture_output=True, check=True).stdout
+                self.assertEqual("AU_RecordEmitterAt" in result, not entity)
+                self.assertIn("writeToGBuffer" if deferred else "computeSimpleLightColor", result)
+
     def test_model_fallback_does_not_make_sandy_gravel_emissive(self):
         with tempfile.TemporaryDirectory() as temporary:
             assets = Path(temporary) / "Assets.zip"

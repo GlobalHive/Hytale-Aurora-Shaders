@@ -194,6 +194,7 @@
 #define AU_GI_LEGACY AU_GI_DENOISE
 #define AU_NATIVE_EMISSION 1
 #define AU_NATIVE_EMISSION_STRENGTH 1.0
+#define AU_LOCAL_LIGHT_DIAGNOSTIC 0
 #define AU_LOCAL_LIGHTS 1
 #define AU_LOCAL_LIGHT_RANGE 8.0
 #define AU_LOCAL_LIGHT_STRENGTH 1.0
@@ -202,7 +203,7 @@
 #define AU_LIGHT_CACHE_SECONDS 1.0
 #define AU_LOCAL_LIGHT_SOFTNESS 0.35
 #define AU_LOCAL_LIGHT_CANDIDATES 8
-#define AU_LOCAL_LIGHT_BUDGET 32       // most area lights evaluated per pixel; more reaching a spot are sampled
+#define AU_LOCAL_LIGHT_BUDGET 128       // most area lights evaluated per pixel; more reaching a spot are sampled
 #define AU_ORE_TORCH_RATIO 0.3
 #define AU_VOXEL_WORLD (AU_VOXELS || AU_LOCAL_LIGHTS || (AU_SSS && AU_SSS_VOXEL == 1))
 

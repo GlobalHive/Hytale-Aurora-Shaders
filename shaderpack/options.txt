@@ -49,7 +49,8 @@ AU_LIGHT_CACHE_SECONDS | Light cache duration (seconds) | range 0.1 5.0 0.1 | 1.
 AU_LOCAL_LIGHT_RANGE | Area light reach | range 2.0 16.0 0.5 | 8.0
 AU_LOCAL_LIGHT_SOFTNESS | Area light size | range 0.0 0.8 0.05 | 0.35 | Larger sources cast softer shadows. Zero uses a point source.
 AU_LOCAL_LIGHT_CANDIDATES | Light sampling candidates | enum 4:4 8:8 16:16 | 8 | Candidate count for the fallback without spatial culling. Original and NVIDIA Ray Reconstruction automatically consider nearby lights in their spatial cell to avoid rare bright samples. RGB channels share shadow rays where possible, using one to three rays.
-AU_LOCAL_LIGHT_BUDGET | Area light budget | enum 16:16 32:32 64:64 128:128 | 32 | Most area lights evaluated per pixel. Where more reach a spot (a lava lake lists hundreds), a random share is evaluated each frame and the anti-aliasing averages it: lower is faster and grainier. Coloured light fog uses a quarter of it per step.
+AU_LOCAL_LIGHT_BUDGET | Area light budget | enum 16:16 32:32 64:64 128:128 | 128 | Most area lights evaluated per pixel. Where more reach a spot (a lava lake lists hundreds), a random share is evaluated each frame and the anti-aliasing averages it: lower is faster and grainier. Coloured light fog uses a quarter of it per step.
+AU_LOCAL_LIGHT_DIAGNOSTIC | Area light check | enum 0:Off 1:Lighting 2:Receiver_cells | 0 | Troubleshooting view. Lighting shows only colored area lights. Receiver cells: green is a corrected solid cell, cyan a face supported by neighbouring solids, orange a small solid model, purple porous geometry, blue known air, and red an unknown cell. Return to Off for normal rendering.
 AU_ORE_TORCH_RATIO | Ore light / torch ratio | range 0.0 1.0 0.05 | 0.3 | Ore light brightness relative to a torch, independent of surface glow and bloom.
 AU_SUBSURFACE | Foliage translucency | bool | 1
 AU_SSS | Subsurface scattering | bool | 1 | Coloured transmission through foliage and ice. Voxel mode measures material depth and accumulates scattering along a bounded ray; solid walls still block light.
@@ -123,7 +124,7 @@ AU_VOXEL_DEBUG | Voxel view | enum 0:Off 1:Voxels 2:Blend | 0
 AU_GI_DENOISER | Denoiser | enum 1:Original 2:NVIDIA_DLSS_RR | 1 | Original is the built-in single-pass denoiser. NVIDIA uses DLSS Ray Reconstruction when DLSS is enabled and supported; Original remains the fallback until that backend is ready.
 AU_GI_HISTORY_TAPS | History samples | enum 1:1_tap 4:4_taps 9:9_taps | 9 | Original history-gather cost. Nine samples smooth sparse lighting most; fewer reduce GPU work.
 AU_GI_SPATIAL_STRENGTH | Spatial filter strength | range 0.0 1.0 0.05 | 1.0 | Amount of same-surface lighting sharing in Original. Zero preserves each pixel's current ray sample.
-AU_GI_NORMAL_THRESHOLD | Spatial normal tolerance | range 0.01 0.25 0.01 | 0.05 | Limits sharing between surfaces with different normals. Lower values preserve more edges.
+AU_GI_NORMAL_THRESHOLD | Spatial normal tolerance | range 0.01 0.25 0.01 | 0.05 | Limits sharing when neighbouring positions depart from the surface plane. Lower values preserve more edges.
 AU_GI_PLANE_TOLERANCE | History surface tolerance | range 0.005 0.1 0.005 | 0.03 | Maximum perpendicular history mismatch in blocks, plus a distance allowance. Lower values reject history more aggressively.
 AU_GI_HISTORY_REACH | History neighborhood reach | range 0.05 0.6 0.05 | 0.3 | Maximum history sample displacement in blocks, plus a distance allowance.
 AU_GI_MAX_HISTORY | Maximum history weight | range 0.0 0.97 0.01 | 0.92 | Caps previous-light retention independently of history length. Lower values reduce trails; zero uses only new lighting.
